@@ -1,2 +1,1 @@
 New file delivered by libAutoUpdater 2.0.0.
-

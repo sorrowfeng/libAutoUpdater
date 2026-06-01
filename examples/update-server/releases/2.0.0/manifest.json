@@ -14,18 +14,18 @@
   "files": [
     {
       "path": "bin/demo_app.txt",
-      "sha256": "9e2115478b531957e19cf627593245a88272ebeae01dc2c6ce39ac95c4050e28",
-      "size": 70
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
+      "size": 69
     },
     {
       "path": "config/settings.json",
-      "sha256": "36d5f4228001d99652dc3537269e859f6186c49dfeda286a8cbc7047441fe655",
-      "size": 81
+      "sha256": "ae6f581760da916349094247049984a26c12ac1534ca8681816d1186e9f7e0a7",
+      "size": 80
     },
     {
       "path": "resources/feature.txt",
-      "sha256": "3031327938693dce6c701946794940377ad5340c06ac3c738fc3e63ad11caeb2",
-      "size": 45
+      "sha256": "072a6005bca8a3b2918639d7ab3db05559a517216a2954dd1855a62e0c419783",
+      "size": 44
     }
   ],
   "remove": [

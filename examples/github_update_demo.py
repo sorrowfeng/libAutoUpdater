@@ -167,17 +167,27 @@ def main() -> int:
         return result.returncode if result.returncode != 0 else 1
 
     deadline = time.time() + 20
+    last_error = "update results are not visible yet"
     while time.time() < deadline:
         try:
             assert_text(install_dir / "bin" / "demo_app.txt", NEW_APP)
             assert_text(install_dir / "config" / "settings.json", UNCHANGED_SETTINGS)
             assert_text(install_dir / "resources" / "feature.txt", "New file delivered by libAutoUpdater 2.0.0.\n")
-            if not (install_dir / "legacy" / "remove-me.txt").exists():
+            if (install_dir / "legacy" / "remove-me.txt").exists():
+                last_error = "legacy/remove-me.txt still exists"
+            else:
                 break
         except (AssertionError, FileNotFoundError):
+            last_error = sys.exc_info()[1]
             time.sleep(0.2)
     else:
-        raise AssertionError("The external updater did not finish before timeout")
+        print("\nTimed out while waiting for the external updater. Current install tree:")
+        print_tree(install_dir)
+        print_file(install_dir, "bin/demo_app.txt")
+        print_file(install_dir, "config/settings.json")
+        print_file(install_dir, "resources/feature.txt")
+        print_file(install_dir, "legacy/remove-me.txt")
+        raise AssertionError(f"The external updater did not finish before timeout: {last_error}")
 
     print("\nAfter update")
     print_tree(install_dir)

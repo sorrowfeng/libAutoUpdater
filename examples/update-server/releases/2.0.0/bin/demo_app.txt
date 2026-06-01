@@ -1,4 +1,3 @@
 libAutoUpdater demo application
 version=2.0.0
 served-from=github-raw
-
