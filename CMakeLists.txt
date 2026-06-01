@@ -12,6 +12,7 @@ option(LIBAUTOUPDATER_BUILD_UPDATER "Build the external updater executable" ON)
 option(LIBAUTOUPDATER_BUILD_EXAMPLES "Build examples" ON)
 option(LIBAUTOUPDATER_BUILD_TESTS "Build tests" ON)
 option(LIBAUTOUPDATER_WITH_CURL "Build libcurl network adapter when available" ON)
+option(LIBAUTOUPDATER_REQUIRE_CURL "Fail configure if libcurl network adapter cannot be built" OFF)
 option(LIBAUTOUPDATER_WITH_OPENSSL "Build OpenSSL signature verifier when available" ON)
 option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" OFF)
 option(LIBAUTOUPDATER_ENABLE_WARNINGS "Enable common compiler warnings for project targets" ON)
@@ -20,6 +21,10 @@ option(LIBAUTOUPDATER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBe
 
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
+
+if(LIBAUTOUPDATER_REQUIRE_CURL AND NOT LIBAUTOUPDATER_WITH_CURL)
+    message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON requires LIBAUTOUPDATER_WITH_CURL=ON")
+endif()
 
 if(LIBAUTOUPDATER_ENABLE_SANITIZERS)
     if(MSVC)
@@ -118,6 +123,8 @@ if(LIBAUTOUPDATER_WITH_CURL)
         target_link_libraries(libAutoUpdater PRIVATE CURL::libcurl)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CURL=1)
         set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL TRUE)
+    elseif(LIBAUTOUPDATER_REQUIRE_CURL)
+        message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON but CMake could not find CURL")
     endif()
 endif()
 

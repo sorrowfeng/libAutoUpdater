@@ -143,6 +143,7 @@ LIBAUTOUPDATER_BUILD_UPDATER=ON
 LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
+LIBAUTOUPDATER_REQUIRE_CURL=OFF
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
 LIBAUTOUPDATER_ENABLE_WARNINGS=ON
@@ -279,6 +280,13 @@ This repository also contains a real static update feed under
 `raw.githubusercontent.com`, so the repository itself acts as the update server.
 
 Build the project with libcurl enabled, then run:
+
+```sh
+cmake -S . -B build -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON
+cmake --build build --config Debug --parallel
+```
+
+Run the demo:
 
 ```sh
 python examples/github_update_demo.py
