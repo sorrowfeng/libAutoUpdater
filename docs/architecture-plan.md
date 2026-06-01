@@ -395,6 +395,8 @@ install/.autoupdater/state.json
 
 第一阶段可以允许 `Config.manifestUrl` 直接指向 release manifest，index manifest 作为可选增强。
 
+当前实现允许 `Config.manifestUrl` 指向 release manifest 或 index manifest。指向 index manifest 时，客户端会按 `platform` 与 `arch` 选择匹配的 `manifestUrl`，然后继续下载 release manifest。
+
 ### 5.2 Release Manifest
 
 示例：

@@ -216,6 +216,7 @@ Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
                     return copied;
                 }
             }
+            applied.push_back(std::move(appliedOperation));
 
             if (operation.type == ApplyOperationType::Replace) {
                 const auto source = joinChecked(plan.stagingDir, operation.source);
@@ -241,7 +242,6 @@ Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
                 }
             }
 
-            applied.push_back(std::move(appliedOperation));
             writeJournal(plan, applied, "applying");
         }
 

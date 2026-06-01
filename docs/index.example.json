@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "appId": "com.example.myapp",
+  "channel": "stable",
+  "generatedAt": "2026-06-01T10:00:00Z",
+  "targets": [
+    {
+      "platform": "windows",
+      "arch": "x64",
+      "manifestUrl": "https://example.com/releases/1.4.0/windows-x64/manifest.json"
+    },
+    {
+      "platform": "macos",
+      "arch": "arm64",
+      "manifestUrl": "https://example.com/releases/1.4.0/macos-arm64/manifest.json"
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "manifestUrl": "https://example.com/releases/1.4.0/linux-x64/manifest.json"
+    }
+  ]
+}
+

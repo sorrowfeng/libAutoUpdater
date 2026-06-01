@@ -212,6 +212,20 @@ python tools/make_manifest.py dist/MyApp \
 
 The generated `manifest.json` can be uploaded with the release files to any static HTTP/HTTPS server.
 
+For multi-platform release routing, generate an index manifest:
+
+```sh
+python tools/make_index.py \
+  --app-id com.example.myapp \
+  --channel stable \
+  --generated-at 2026-06-01T10:00:00Z \
+  --target windows/x64=https://example.com/releases/1.4.0/windows-x64/manifest.json \
+  --target macos/arm64=https://example.com/releases/1.4.0/macos-arm64/manifest.json \
+  --output index.json
+```
+
+`Config::manifestUrl` may point directly to a release manifest or to an index manifest.
+
 Optionally sign the manifest with a detached signature:
 
 ```sh
