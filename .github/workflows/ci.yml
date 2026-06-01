@@ -25,6 +25,7 @@ jobs:
           -DLIBAUTOUPDATER_BUILD_TESTS=ON
           -DLIBAUTOUPDATER_BUILD_UPDATER=ON
           -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build --config Debug --parallel
@@ -39,7 +40,7 @@ jobs:
         run: cmake --install build --config Debug --prefix install-probe
 
       - name: Consumer Probe Configure
-        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-probe"
+        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-probe" -DCMAKE_BUILD_TYPE=Debug
 
       - name: Consumer Probe Build
         run: cmake --build consumer-build --config Debug --parallel
