@@ -159,11 +159,12 @@ def main() -> int:
     print(result.stdout)
     if result.stderr:
         print(result.stderr, file=sys.stderr)
-    if result.returncode != 0:
-        if "No HTTP network adapter is available" in result.stderr:
+    combined_output = result.stdout + result.stderr
+    if result.returncode != 0 or "state=Failed" in combined_output:
+        if "No HTTP network adapter is available" in combined_output:
             print("This build does not include libcurl, so it cannot fetch GitHub HTTPS URLs.")
             print("Reconfigure with LIBAUTOUPDATER_WITH_CURL=ON and make sure CMake finds CURL.")
-        return result.returncode
+        return result.returncode if result.returncode != 0 else 1
 
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -189,4 +190,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

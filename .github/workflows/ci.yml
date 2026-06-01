@@ -233,3 +233,29 @@ jobs:
         with:
           name: libAutoUpdater-${{ runner.os }}-${{ github.sha }}
           path: artifacts/*
+
+  github-hosted-demo:
+    name: GitHub-hosted update demo
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON
+          -DLIBAUTOUPDATER_BUILD_TESTS=OFF
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=ON
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Run Demo Against GitHub Raw
+        run: python examples/github_update_demo.py --branch main --work-dir github-demo-work

@@ -5,6 +5,7 @@ cmake-build-*/
 out/
 install-*/
 artifacts/
+demo-work/
 
 # CMake generated files
 CMakeCache.txt

@@ -299,6 +299,9 @@ the file tree before and after the update. You should see:
 - `legacy/remove-me.txt` removed.
 - `config/settings.json` left unchanged because its SHA-256 already matches.
 
+The `GitHub-hosted update demo` CI job also runs this flow on pushes to `main`,
+using GitHub Raw as the real HTTPS update server.
+
 ## End-to-End Flow Test
 
 The test suite includes a smoke test for the complete static-file update flow:

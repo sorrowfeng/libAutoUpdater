@@ -116,8 +116,7 @@ int main(int argc, char** argv) {
         }
         if (state == autoupdater::State::UpToDate ||
             state == autoupdater::State::UpdateAvailable ||
-            state == autoupdater::State::Applying ||
-            state == autoupdater::State::Failed) {
+            state == autoupdater::State::Applying) {
             std::lock_guard<std::mutex> lock(mutex);
             done = true;
             cv.notify_one();
@@ -198,7 +197,7 @@ int main(int argc, char** argv) {
         lock.lock();
         cv.wait_for(lock, std::chrono::seconds(5), [&] {
             const auto state = updater.state();
-            return done || state == autoupdater::State::Applying || state == autoupdater::State::Failed;
+            return done || state == autoupdater::State::Applying;
         });
     }
 
