@@ -15,6 +15,9 @@ option(LIBAUTOUPDATER_WITH_CURL "Build libcurl network adapter when available" O
 option(LIBAUTOUPDATER_WITH_OPENSSL "Build OpenSSL signature verifier when available" ON)
 option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" OFF)
 
+set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
+set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
+
 set(LIBAUTOUPDATER_PUBLIC_HEADERS
     include/libAutoUpdater/ApplyPlan.h
     include/libAutoUpdater/Config.h
@@ -82,6 +85,7 @@ if(LIBAUTOUPDATER_WITH_CURL)
         target_sources(libAutoUpdater PRIVATE src/default/CurlNetworkClient.cpp)
         target_link_libraries(libAutoUpdater PRIVATE CURL::libcurl)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CURL=1)
+        set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL TRUE)
     endif()
 endif()
 
@@ -91,6 +95,7 @@ if(LIBAUTOUPDATER_WITH_OPENSSL)
         target_sources(libAutoUpdater PRIVATE src/default/OpenSslSignatureVerifier.cpp)
         target_link_libraries(libAutoUpdater PRIVATE OpenSSL::Crypto)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_OPENSSL=1)
+        set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL TRUE)
     endif()
 endif()
 

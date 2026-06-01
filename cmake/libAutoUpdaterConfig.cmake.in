@@ -1,6 +1,15 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+
+if(@LIBAUTOUPDATER_CONFIG_REQUIRES_CURL@)
+    find_dependency(CURL)
+endif()
+
+if(@LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL@)
+    find_dependency(OpenSSL)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/libAutoUpdaterTargets.cmake")
 
 check_required_components(libAutoUpdater)
-
