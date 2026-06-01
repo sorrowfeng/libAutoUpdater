@@ -7,6 +7,7 @@ void testManifestParsing();
 void testManifestRejectsPathTraversal();
 void testManifestFetcherRoutesIndexManifest();
 void testManifestFetcherRejectsDisallowedIndexTarget();
+void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
 void testApplyExecutorRollsBackCurrentFailedOperation();
@@ -14,6 +15,7 @@ void testApplyExecutorRejectsExistingLock();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
+void testUpdaterQueuedCallbacksOutliveUpdater();
 
 int main() {
     const std::vector<TestCase> tests = {
@@ -22,6 +24,7 @@ int main() {
         {"ManifestRejectsPathTraversal", testManifestRejectsPathTraversal},
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
         {"ManifestFetcherRejectsDisallowedIndexTarget", testManifestFetcherRejectsDisallowedIndexTarget},
+        {"ManifestFetcherRejectsAllowedBaseUrlPrefixBypass", testManifestFetcherRejectsAllowedBaseUrlPrefixBypass},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
@@ -29,6 +32,7 @@ int main() {
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
+        {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
     };
 
     int failed = 0;

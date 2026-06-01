@@ -24,7 +24,14 @@ bool urlStartsWithAny(const std::string& url, const std::vector<std::string>& al
         return true;
     }
     return std::any_of(allowed.begin(), allowed.end(), [&](const std::string& prefix) {
-        return !prefix.empty() && url.compare(0, prefix.size(), prefix) == 0;
+        if (prefix.empty() || url.compare(0, prefix.size(), prefix) != 0) {
+            return false;
+        }
+        if (prefix.back() == '/' || url.size() == prefix.size()) {
+            return true;
+        }
+        const auto next = url[prefix.size()];
+        return next == '/' || next == '?' || next == '#';
     });
 }
 

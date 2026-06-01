@@ -9,7 +9,8 @@ add_executable(libAutoUpdater_tests
     HashTests.cpp
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp
-    StateStoreTests.cpp)
+    StateStoreTests.cpp
+    UpdaterTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)

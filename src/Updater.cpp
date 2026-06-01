@@ -86,12 +86,35 @@ struct Updater::Impl {
         callbacks = std::move(value);
     }
 
+    struct Dependencies {
+        std::shared_ptr<INetworkClient> network;
+        std::shared_ptr<IHashProvider> hashProvider;
+        std::shared_ptr<IFileSystem> fileSystem;
+        std::shared_ptr<ISignatureVerifier> signatureVerifier;
+        std::shared_ptr<IEventDispatcher> dispatcher;
+        std::shared_ptr<IProcessLauncher> processLauncher;
+        std::shared_ptr<IStateStore> stateStore;
+    };
+
+    Dependencies dependenciesCopy() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return Dependencies{
+            network,
+            hashProvider,
+            fileSystem,
+            signatureVerifier,
+            dispatcher,
+            processLauncher,
+            stateStore,
+        };
+    }
+
     void setState(State next) {
         stateValue.store(next, std::memory_order_relaxed);
-        post([this, next] {
-            Callbacks copy = callbacksCopy();
-            if (copy.onStateChanged) {
-                copy.onStateChanged(next);
+        auto callback = callbacksCopy().onStateChanged;
+        post([callback = std::move(callback), next] {
+            if (callback) {
+                callback(next);
             }
         });
     }
@@ -113,6 +136,11 @@ struct Updater::Impl {
     }
 
     void joinWorker() {
+        std::lock_guard<std::mutex> lock(workerMutex);
+        joinWorkerUnlocked();
+    }
+
+    void joinWorkerUnlocked() {
         if (worker.joinable()) {
             worker.join();
         }
@@ -124,7 +152,7 @@ struct Updater::Impl {
     }
 
     void post(std::function<void()> fn) {
-        auto target = dispatcher;
+        auto target = dependenciesCopy().dispatcher;
         if (target) {
             target->post(std::move(fn));
         }
@@ -132,36 +160,38 @@ struct Updater::Impl {
 
     void reportError(Error error) {
         setState(State::Failed);
-        post([this, error = std::move(error)] {
-            auto copy = callbacksCopy();
-            if (copy.onError) {
-                copy.onError(error);
+        auto callback = callbacksCopy().onError;
+        post([callback = std::move(callback), error = std::move(error)] {
+            if (callback) {
+                callback(error);
             }
         });
     }
 
-    Result<void> validateConfig() {
+    Result<void> validateConfig(const Dependencies& deps) {
         if (config.manifestUrl.empty()) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "manifestUrl is required"});
         }
         if (config.installDir.empty()) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "installDir is required"});
         }
-        if (!network || !hashProvider || !fileSystem || !signatureVerifier || !dispatcher || !processLauncher) {
+        if (!deps.network || !deps.hashProvider || !deps.fileSystem || !deps.signatureVerifier ||
+            !deps.dispatcher || !deps.processLauncher) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "Updater dependencies are incomplete"});
         }
         return Result<void>::ok();
     }
 
     Result<UpdateDecision> checkInternal(Config& effectiveConfig,
-                                         ManifestEnvelope& envelopeOut) {
-        auto valid = validateConfig();
+                                         ManifestEnvelope& envelopeOut,
+                                         const Dependencies& deps) {
+        auto valid = validateConfig(deps);
         if (!valid) {
             return Result<UpdateDecision>::fail(valid.error());
         }
 
         setState(State::Checking);
-        auto envelope = fetchAndVerifyManifest(effectiveConfig, *network, *hashProvider, *signatureVerifier, *tokenCopy());
+        auto envelope = fetchAndVerifyManifest(effectiveConfig, *deps.network, *deps.hashProvider, *deps.signatureVerifier, *tokenCopy());
         if (!envelope) {
             return Result<UpdateDecision>::fail(envelope.error());
         }
@@ -171,14 +201,14 @@ struct Updater::Impl {
                 "staging" / safeVersionForPath(envelope.value().manifest.version);
         }
 
-        auto snapshot = buildLocalSnapshot(effectiveConfig, envelope.value().manifest, *fileSystem, *hashProvider);
+        auto snapshot = buildLocalSnapshot(effectiveConfig, envelope.value().manifest, *deps.fileSystem, *deps.hashProvider);
         if (!snapshot) {
             return Result<UpdateDecision>::fail(snapshot.error());
         }
 
         std::optional<Version> lastAccepted;
-        if (stateStore) {
-            auto loaded = stateStore->loadLastAcceptedVersion();
+        if (deps.stateStore) {
+            auto loaded = deps.stateStore->loadLastAcceptedVersion();
             if (loaded) {
                 lastAccepted = loaded.value();
             }
@@ -195,7 +225,8 @@ struct Updater::Impl {
 
     void start(std::function<void()> task) noexcept {
         try {
-            joinWorker();
+            std::lock_guard<std::mutex> workerLock(workerMutex);
+            joinWorkerUnlocked();
             auto token = std::make_shared<CancellationToken>();
             {
                 std::lock_guard<std::mutex> lock(tokenMutex);
@@ -212,9 +243,10 @@ struct Updater::Impl {
 
     void checkAsync() noexcept {
         start([this] {
+            auto deps = dependenciesCopy();
             Config effective = config;
             ManifestEnvelope envelope;
-            auto decision = checkInternal(effective, envelope);
+            auto decision = checkInternal(effective, envelope, deps);
             if (!decision) {
                 reportError(decision.error());
                 return;
@@ -229,10 +261,10 @@ struct Updater::Impl {
 
             const auto check = decision.value().checkResult;
             setState(check.updateAvailable ? State::UpdateAvailable : State::UpToDate);
-            post([this, check] {
-                auto copy = callbacksCopy();
-                if (copy.onCheckResult) {
-                    copy.onCheckResult(check);
+            auto callback = callbacksCopy().onCheckResult;
+            post([callback = std::move(callback), check] {
+                if (callback) {
+                    callback(check);
                 }
             });
         });
@@ -240,19 +272,20 @@ struct Updater::Impl {
 
     void checkAndDownloadAsync() noexcept {
         start([this] {
+            auto deps = dependenciesCopy();
             Config effective = config;
             ManifestEnvelope envelope;
-            auto decision = checkInternal(effective, envelope);
+            auto decision = checkInternal(effective, envelope, deps);
             if (!decision) {
                 reportError(decision.error());
                 return;
             }
 
             const auto check = decision.value().checkResult;
-            post([this, check] {
-                auto copy = callbacksCopy();
-                if (copy.onCheckResult) {
-                    copy.onCheckResult(check);
+            auto checkCallback = callbacksCopy().onCheckResult;
+            post([callback = std::move(checkCallback), check] {
+                if (callback) {
+                    callback(check);
                 }
             });
 
@@ -269,15 +302,15 @@ struct Updater::Impl {
             auto downloaded = executeDownloads(
                 effective,
                 decision.value(),
-                *network,
-                *fileSystem,
-                *hashProvider,
-                stateStore.get(),
+                *deps.network,
+                *deps.fileSystem,
+                *deps.hashProvider,
+                deps.stateStore.get(),
                 [this](const Progress& progress) {
-                    post([this, progress] {
-                        auto copy = callbacksCopy();
-                        if (copy.onProgress) {
-                            copy.onProgress(progress);
+                    auto callback = callbacksCopy().onProgress;
+                    post([callback = std::move(callback), progress] {
+                        if (callback) {
+                            callback(progress);
                         }
                     });
                 },
@@ -287,19 +320,19 @@ struct Updater::Impl {
                 return;
             }
 
-            auto written = writeApplyPlan(effective, envelope, decision.value(), *fileSystem);
+            auto written = writeApplyPlan(effective, envelope, decision.value(), *deps.fileSystem);
             if (!written) {
                 reportError(written.error());
                 return;
             }
 
-            if (stateStore) {
+            if (deps.stateStore) {
                 PendingUpdate pending;
                 pending.version = envelope.manifest.version;
                 pending.releaseId = envelope.manifest.releaseId;
                 pending.backupDir = written.value().plan.backupDir;
                 pending.applyPlanPath = written.value().path;
-                stateStore->savePendingUpdate(pending);
+                deps.stateStore->savePendingUpdate(pending);
             }
 
             {
@@ -311,10 +344,10 @@ struct Updater::Impl {
             }
 
             setState(State::ReadyToApply);
-            post([this] {
-                auto copy = callbacksCopy();
-                if (copy.onReadyToApply) {
-                    copy.onReadyToApply();
+            auto readyCallback = callbacksCopy().onReadyToApply;
+            post([callback = std::move(readyCallback)] {
+                if (callback) {
+                    callback();
                 }
             });
         });
@@ -388,6 +421,7 @@ struct Updater::Impl {
 
     void downloadAsync() noexcept {
         start([this] {
+            auto deps = dependenciesCopy();
             Config effective;
             ManifestEnvelope envelope;
             UpdateDecision decision;
@@ -409,7 +443,7 @@ struct Updater::Impl {
             }
 
             if (!hadDecision) {
-                auto checked = checkInternal(effective, envelope);
+                auto checked = checkInternal(effective, envelope, deps);
                 if (!checked) {
                     reportError(checked.error());
                     return;
@@ -426,15 +460,15 @@ struct Updater::Impl {
             auto downloaded = executeDownloads(
                 effective,
                 decision,
-                *network,
-                *fileSystem,
-                *hashProvider,
-                stateStore.get(),
+                *deps.network,
+                *deps.fileSystem,
+                *deps.hashProvider,
+                deps.stateStore.get(),
                 [this](const Progress& progress) {
-                    post([this, progress] {
-                        auto copy = callbacksCopy();
-                        if (copy.onProgress) {
-                            copy.onProgress(progress);
+                    auto callback = callbacksCopy().onProgress;
+                    post([callback = std::move(callback), progress] {
+                        if (callback) {
+                            callback(progress);
                         }
                     });
                 },
@@ -444,7 +478,7 @@ struct Updater::Impl {
                 return;
             }
 
-            auto written = writeApplyPlan(effective, envelope, decision, *fileSystem);
+            auto written = writeApplyPlan(effective, envelope, decision, *deps.fileSystem);
             if (!written) {
                 reportError(written.error());
                 return;
@@ -457,10 +491,10 @@ struct Updater::Impl {
                 lastApplyPlan = written.value();
             }
             setState(State::ReadyToApply);
-            post([this] {
-                auto copy = callbacksCopy();
-                if (copy.onReadyToApply) {
-                    copy.onReadyToApply();
+            auto readyCallback = callbacksCopy().onReadyToApply;
+            post([callback = std::move(readyCallback)] {
+                if (callback) {
+                    callback();
                 }
             });
         });
@@ -468,6 +502,7 @@ struct Updater::Impl {
 
     void applyAndRestartAsync() noexcept {
         start([this] {
+            auto deps = dependenciesCopy();
             std::optional<Config> effective;
             std::optional<WrittenApplyPlan> plan;
             {
@@ -480,7 +515,7 @@ struct Updater::Impl {
                 return;
             }
             setState(State::Applying);
-            auto launched = launchApplyProcess(*effective, plan->path, *processLauncher);
+            auto launched = launchApplyProcess(*effective, plan->path, *deps.processLauncher);
             if (!launched) {
                 reportError(launched.error());
                 return;
@@ -489,26 +524,31 @@ struct Updater::Impl {
     }
 
     Result<void> markCurrentVersionHealthy() noexcept {
-        if (!stateStore) {
+        auto deps = dependenciesCopy();
+        if (!deps.stateStore) {
             return Result<void>::ok();
         }
         std::string releaseId;
-        auto pending = stateStore->loadPendingUpdate();
+        auto pending = deps.stateStore->loadPendingUpdate();
         if (pending && pending.value()) {
             releaseId = pending.value()->releaseId;
         }
-        auto save = stateStore->saveLastAcceptedVersion(config.currentVersion, releaseId);
+        auto save = deps.stateStore->saveLastAcceptedVersion(config.currentVersion, releaseId);
         if (!save) {
             return save;
         }
-        return stateStore->clearPendingUpdate();
+        return deps.stateStore->clearPendingUpdate();
     }
 
     Result<void> rollbackLastUpdate() noexcept {
-        if (!stateStore) {
+        auto deps = dependenciesCopy();
+        if (!deps.stateStore) {
             return Result<void>::ok();
         }
-        auto pending = stateStore->loadPendingUpdate();
+        if (!deps.fileSystem) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
+        }
+        auto pending = deps.stateStore->loadPendingUpdate();
         if (!pending) {
             return Result<void>::fail(pending.error());
         }
@@ -519,7 +559,7 @@ struct Updater::Impl {
             return Result<void>::fail({ErrorCode::ApplyFailed, "Pending update has no apply plan path"});
         }
 
-        auto text = fileSystem->readText(pending.value()->applyPlanPath);
+        auto text = deps.fileSystem->readText(pending.value()->applyPlanPath);
         if (!text) {
             return Result<void>::fail(text.error());
         }
@@ -538,20 +578,20 @@ struct Updater::Impl {
                 return Result<void>::fail(backup.error());
             }
 
-            if (fileSystem->exists(backup.value())) {
-                auto copied = fileSystem->copyFile(backup.value(), target.value(), true);
+            if (deps.fileSystem->exists(backup.value())) {
+                auto copied = deps.fileSystem->copyFile(backup.value(), target.value(), true);
                 if (!copied) {
                     return copied;
                 }
             } else if (it->type == ApplyOperationType::Replace) {
-                auto removed = fileSystem->remove(target.value());
+                auto removed = deps.fileSystem->remove(target.value());
                 if (!removed) {
                     return removed;
                 }
             }
         }
 
-        return stateStore->clearPendingUpdate();
+        return deps.stateStore->clearPendingUpdate();
     }
 
     Config config;
@@ -568,6 +608,7 @@ struct Updater::Impl {
     std::thread worker;
     std::thread periodicWorker;
     std::atomic<State> stateValue{State::Idle};
+    std::mutex workerMutex;
     std::mutex tokenMutex;
     std::shared_ptr<CancellationToken> currentToken;
     std::mutex periodicMutex;
@@ -589,30 +630,37 @@ void Updater::setCallbacks(Callbacks callbacks) {
 }
 
 void Updater::setNetworkClient(std::shared_ptr<INetworkClient> network) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->network = std::move(network);
 }
 
 void Updater::setHashProvider(std::shared_ptr<IHashProvider> hashProvider) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->hashProvider = std::move(hashProvider);
 }
 
 void Updater::setFileSystem(std::shared_ptr<IFileSystem> fileSystem) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->fileSystem = std::move(fileSystem);
 }
 
 void Updater::setSignatureVerifier(std::shared_ptr<ISignatureVerifier> verifier) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->signatureVerifier = std::move(verifier);
 }
 
 void Updater::setEventDispatcher(std::shared_ptr<IEventDispatcher> dispatcher) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->dispatcher = std::move(dispatcher);
 }
 
 void Updater::setProcessLauncher(std::shared_ptr<IProcessLauncher> launcher) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->processLauncher = std::move(launcher);
 }
 
 void Updater::setStateStore(std::shared_ptr<IStateStore> store) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->stateStore = std::move(store);
 }
 
