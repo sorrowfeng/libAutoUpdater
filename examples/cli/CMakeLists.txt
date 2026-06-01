@@ -1,4 +1,4 @@
 add_executable(libAutoUpdater_cli main.cpp)
 target_compile_features(libAutoUpdater_cli PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_cli PRIVATE libAutoUpdater)
-
+libautoupdater_apply_project_warnings(libAutoUpdater_cli)

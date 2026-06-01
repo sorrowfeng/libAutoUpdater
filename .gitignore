@@ -3,6 +3,8 @@ build/
 build-*/
 cmake-build-*/
 out/
+install-*/
+artifacts/
 
 # CMake generated files
 CMakeCache.txt

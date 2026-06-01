@@ -5,33 +5,27 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  source-hygiene:
+    name: Source hygiene
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
-      - name: Configure
-        run: >
-          cmake -S . -B build
-          -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON
-          -DLIBAUTOUPDATER_BUILD_TESTS=ON
-          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
-          -DLIBAUTOUPDATER_WITH_QT=OFF
-          -DCMAKE_BUILD_TYPE=Debug
-
-      - name: Build
-        run: cmake --build build --config Debug --parallel
-
-      - name: Test
-        run: ctest --test-dir build -C Debug --output-on-failure
+      - name: Whitespace Check
+        run: |
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD -- .
+          else
+            git diff --check -- .
+          fi
 
       - name: Validate Python Tools
         run: python -m py_compile tools/make_manifest.py tools/make_index.py tools/sign_manifest.py
@@ -42,7 +36,7 @@ jobs:
           printf 'probe' > packaging-probe/release/bin/app.txt
           python tools/make_manifest.py packaging-probe/release \
             --app-id com.example.probe \
-            --platform "$RUNNER_OS" \
+            --platform linux \
             --arch x64 \
             --version 1.2.3 \
             --release-date 2026-06-01T10:00:00Z \
@@ -51,24 +45,191 @@ jobs:
             --app-id com.example.probe \
             --channel stable \
             --generated-at 2026-06-01T10:00:00Z \
-            --target "$RUNNER_OS"/x64=https://example.com/releases/1.2.3/manifest.json \
+            --target linux/x64=https://example.com/releases/1.2.3/manifest.json \
             --output packaging-probe/index.json
+
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-gcc-debug
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+            build_type: Debug
+            cmake_args: -DLIBAUTOUPDATER_WITH_QT=OFF
+
+          - name: ubuntu-clang-debug-no-optional-deps
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            build_type: Debug
+            cmake_args: -DLIBAUTOUPDATER_WITH_QT=OFF -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_OPENSSL=OFF -DLIBAUTOUPDATER_WARNINGS_AS_ERRORS=ON
+
+          - name: ubuntu-gcc-release
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            cmake_args: -DLIBAUTOUPDATER_WITH_QT=OFF
+
+          - name: macos-appleclang-debug
+            os: macos-latest
+            cc: ""
+            cxx: ""
+            build_type: Debug
+            cmake_args: -DLIBAUTOUPDATER_WITH_QT=OFF
+
+          - name: windows-msvc-debug
+            os: windows-latest
+            cc: ""
+            cxx: ""
+            build_type: Debug
+            cmake_args: -DLIBAUTOUPDATER_WITH_QT=OFF
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
         shell: bash
+        run: |
+          if [ -n "${{ matrix.cc }}" ]; then
+            export CC="${{ matrix.cc }}"
+            export CXX="${{ matrix.cxx }}"
+          fi
+          cmake -S . -B build \
+            -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON \
+            -DLIBAUTOUPDATER_BUILD_TESTS=ON \
+            -DLIBAUTOUPDATER_BUILD_UPDATER=ON \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
       - name: Install Probe
-        run: cmake --install build --config Debug --prefix install-probe
+        run: cmake --install build --config ${{ matrix.build_type }} --prefix install-probe
 
       - name: Consumer Probe Configure
-        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-probe" -DCMAKE_BUILD_TYPE=Debug
+        shell: bash
+        run: >
+          cmake -S tests/consumer -B consumer-build
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-probe"
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
       - name: Consumer Probe Build
-        run: cmake --build consumer-build --config Debug --parallel
+        run: cmake --build consumer-build --config ${{ matrix.build_type }} --parallel
 
       - name: Consumer Probe Run
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            ./consumer-build/Debug/libAutoUpdater_consumer_probe.exe
+            ./consumer-build/${{ matrix.build_type }}/libAutoUpdater_consumer_probe.exe
           else
             ./consumer-build/libAutoUpdater_consumer_probe
           fi
+
+  library-only-config:
+    name: Library-only CMake config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=OFF
+          -DLIBAUTOUPDATER_BUILD_UPDATER=OFF
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=OFF
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install Probe
+        run: cmake --install build --config Release --prefix install-probe
+
+  sanitizers:
+    name: ASan/UBSan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_CXX_COMPILER=clang++
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=OFF
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DLIBAUTOUPDATER_ENABLE_SANITIZERS=ON
+          -DLIBAUTOUPDATER_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+  package-install-tree:
+    name: Package install tree (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [build-test]
+    if: github.event_name == 'push'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=OFF
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Install
+        run: cmake --install build --config Release --prefix install-package
+
+      - name: Archive
         shell: bash
+        run: |
+          mkdir -p artifacts
+          cmake -E tar cfv "artifacts/libAutoUpdater-${RUNNER_OS}-${GITHUB_SHA}.zip" --format=zip install-package
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libAutoUpdater-${{ runner.os }}-${{ github.sha }}
+          path: artifacts/*

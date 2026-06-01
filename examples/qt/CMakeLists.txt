@@ -17,3 +17,4 @@ target_link_libraries(libAutoUpdater_qt
         libAutoUpdater
         Qt6::Core
         Qt6::Network)
+libautoupdater_apply_project_warnings(libAutoUpdater_qt)

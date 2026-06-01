@@ -145,6 +145,9 @@ LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
+LIBAUTOUPDATER_ENABLE_WARNINGS=ON
+LIBAUTOUPDATER_WARNINGS_AS_ERRORS=OFF
+LIBAUTOUPDATER_ENABLE_SANITIZERS=OFF
 ```
 
 Use from another CMake project after installation:
@@ -159,6 +162,24 @@ Or embed directly:
 ```cmake
 add_subdirectory(external/libAutoUpdater)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+## CI/CD
+
+GitHub Actions is configured as a C++ library quality gate:
+
+- `source-hygiene`: whitespace checks plus Python tool and manifest generation validation.
+- `build-test`: GCC, Clang, AppleClang, and MSVC builds across Debug/Release and optional-dependency-off variants.
+- `library-only-config`: verifies the library can be configured without updater, examples, tests, curl, or OpenSSL.
+- `sanitizers`: runs ASan/UBSan on Ubuntu with Clang.
+- `package-install-tree`: installs the Release build and uploads install-tree artifacts on pushes.
+- `CodeQL`: builds the C++ project and runs GitHub code scanning on pushes, pull requests, and a weekly schedule.
+- `release`: when a `v*` tag is pushed, builds release ZIPs for Windows, macOS, and Linux, writes SHA-256 files, and publishes them to GitHub Releases.
+
+The normal test command also includes the end-to-end update flow:
+
+```sh
+ctest --test-dir build -C Debug --output-on-failure
 ```
 
 ## Minimal Client Usage

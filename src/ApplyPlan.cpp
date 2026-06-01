@@ -156,7 +156,7 @@ std::string ApplyPlan::toJson() const {
     }
     root.emplace("restartCommand", std::move(restart));
 
-    util::Json::Array operations;
+    util::Json::Array operationItems;
     for (const auto& operation : this->operations) {
         util::Json::Object item;
         item.emplace("type", opToString(operation.type));
@@ -168,12 +168,11 @@ std::string ApplyPlan::toJson() const {
             item.emplace("sha256", operation.sha256);
         }
         item.emplace("size", static_cast<double>(operation.size));
-        operations.emplace_back(std::move(item));
+        operationItems.emplace_back(std::move(item));
     }
-    root.emplace("operations", std::move(operations));
+    root.emplace("operations", std::move(operationItems));
 
     return util::Json(std::move(root)).stringify(2);
 }
 
 } // namespace autoupdater
-

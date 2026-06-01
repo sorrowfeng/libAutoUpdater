@@ -14,9 +14,39 @@ option(LIBAUTOUPDATER_BUILD_TESTS "Build tests" ON)
 option(LIBAUTOUPDATER_WITH_CURL "Build libcurl network adapter when available" ON)
 option(LIBAUTOUPDATER_WITH_OPENSSL "Build OpenSSL signature verifier when available" ON)
 option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" OFF)
+option(LIBAUTOUPDATER_ENABLE_WARNINGS "Enable common compiler warnings for project targets" ON)
+option(LIBAUTOUPDATER_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
+option(LIBAUTOUPDATER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer on supported compilers" OFF)
 
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
+
+if(LIBAUTOUPDATER_ENABLE_SANITIZERS)
+    if(MSVC)
+        message(FATAL_ERROR "LIBAUTOUPDATER_ENABLE_SANITIZERS is supported only on GCC/Clang-style compilers")
+    else()
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+    endif()
+endif()
+
+function(libautoupdater_apply_project_warnings target)
+    if(NOT LIBAUTOUPDATER_ENABLE_WARNINGS)
+        return()
+    endif()
+
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        if(LIBAUTOUPDATER_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        if(LIBAUTOUPDATER_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
 
 set(LIBAUTOUPDATER_PUBLIC_HEADERS
     include/libAutoUpdater/ApplyPlan.h
@@ -62,6 +92,8 @@ set(LIBAUTOUPDATER_SOURCES
 
 add_library(libAutoUpdater ${LIBAUTOUPDATER_PUBLIC_HEADERS} ${LIBAUTOUPDATER_SOURCES})
 add_library(libAutoUpdater::libAutoUpdater ALIAS libAutoUpdater)
+
+libautoupdater_apply_project_warnings(libAutoUpdater)
 
 target_compile_features(libAutoUpdater PUBLIC cxx_std_17)
 target_include_directories(libAutoUpdater
