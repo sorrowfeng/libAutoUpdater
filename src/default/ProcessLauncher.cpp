@@ -6,6 +6,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -40,6 +42,19 @@ std::wstring quoteWindows(const std::wstring& value) {
     }
     result += L"\"";
     return result;
+}
+#else
+void detachStandardStreams() noexcept {
+    const int devNull = open("/dev/null", O_RDWR);
+    if (devNull < 0) {
+        return;
+    }
+    dup2(devNull, STDIN_FILENO);
+    dup2(devNull, STDOUT_FILENO);
+    dup2(devNull, STDERR_FILENO);
+    if (devNull > STDERR_FILENO) {
+        close(devNull);
+    }
 }
 #endif
 
@@ -86,6 +101,10 @@ public:
             return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "fork failed"});
         }
         if (pid == 0) {
+            if (request.detached) {
+                setsid();
+                detachStandardStreams();
+            }
             if (!request.workingDirectory.empty()) {
                 chdir(request.workingDirectory.string().c_str());
             }
