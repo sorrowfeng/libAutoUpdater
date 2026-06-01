@@ -1,10 +1,10 @@
 # libAutoUpdater
 
-`libAutoUpdater` is a planned production-oriented C++17 online update library for desktop applications on Windows, macOS, and Linux.
+`libAutoUpdater` is a production-oriented C++17 online update library for desktop applications on Windows, macOS, and Linux.
 
 The project is designed around static-file release hosting: an application can publish manifests and release files to any HTTP/HTTPS server without running a custom backend.
 
-> Status: architecture and implementation plan are being established. The detailed design lives in [docs/architecture-plan.md](docs/architecture-plan.md).
+The detailed architecture lives in [docs/architecture-plan.md](docs/architecture-plan.md).
 
 ## Goals
 
@@ -59,7 +59,7 @@ Main App
   -> autoupdater_apply backs up, replaces, verifies, rolls back on failure, restarts the app
 ```
 
-## Planned Features
+## Features
 
 - SemVer parsing and comparison, including prerelease labels.
 - Release manifests with schema versioning.
@@ -72,18 +72,19 @@ Main App
 - Detached manifest signature support.
 - Anti-downgrade and anti-replay checks.
 - Transactional apply plan and updater journal.
-- CLI example and optional Qt integration example.
+- CLI example and optional Qt example.
 - CMake package export for `find_package` and `add_subdirectory`.
 
-## Planned Repository Layout
+## Repository Layout
 
 ```text
 include/libAutoUpdater/       Public C++ headers
 src/                          Core implementation and default adapters
 updater/                      External apply executable
-examples/                     CLI and Qt examples
-tests/                        Unit and integration tests
-tools/                        Release manifest generation scripts
+examples/cli/                 CLI example
+examples/qt/                  Optional Qt example
+tests/                        Unit tests
+tools/                        Release manifest generation script
 docs/                         Architecture, manifest, and apply-plan docs
 ```
 
@@ -120,18 +121,24 @@ docs/                         Architecture, manifest, and apply-plan docs
 }
 ```
 
-## Build Direction
+## Build
 
-The intended build system is CMake:
+Configure and build:
 
-```cmake
-find_package(libAutoUpdater CONFIG REQUIRED)
-target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```sh
+cmake -S . -B build
+cmake --build build --config Debug
 ```
 
-Planned options:
+Run tests:
 
-```cmake
+```sh
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+CMake options:
+
+```text
 LIBAUTOUPDATER_BUILD_UPDATER=ON
 LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
@@ -139,6 +146,85 @@ LIBAUTOUPDATER_WITH_CURL=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
 ```
+
+Use from another CMake project after installation:
+
+```cmake
+find_package(libAutoUpdater CONFIG REQUIRED)
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+Or embed directly:
+
+```cmake
+add_subdirectory(external/libAutoUpdater)
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+## Minimal Client Usage
+
+```cpp
+autoupdater::Config config;
+config.appId = "com.example.myapp";
+config.manifestUrl = "https://example.com/releases/1.4.0/windows-x64/manifest.json";
+config.currentVersion = autoupdater::Version::parse("1.3.0").value();
+config.installDir = "C:/Program Files/MyApp";
+config.updaterExecutable = "C:/Program Files/MyApp/autoupdater_apply.exe";
+config.restartCommand = {"C:/Program Files/MyApp/MyApp.exe"};
+
+autoupdater::Updater updater(config);
+updater.setCallbacks(callbacks);
+updater.checkAndDownloadAsync();
+```
+
+When the new application version starts successfully, call:
+
+```cpp
+updater.markCurrentVersionHealthy();
+```
+
+If a pending update should be reverted before it is marked healthy, call:
+
+```cpp
+updater.rollbackLastUpdate();
+```
+
+## Release Manifest Generation
+
+Generate a manifest from a release directory:
+
+```sh
+python tools/make_manifest.py dist/MyApp \
+  --app-id com.example.myapp \
+  --platform windows \
+  --arch x64 \
+  --version 1.4.0 \
+  --release-date 2026-06-01T10:00:00Z \
+  --base-url https://example.com/releases/1.4.0/windows-x64/
+```
+
+The generated `manifest.json` can be uploaded with the release files to any static HTTP/HTTPS server.
+
+## CLI Example
+
+```sh
+build/examples/cli/Debug/libAutoUpdater_cli.exe \
+  --manifest file:///C:/path/to/release/manifest.json \
+  --version 1.3.0 \
+  --install C:/path/to/install \
+  --updater build/updater/Debug/autoupdater_apply.exe
+```
+
+Without libcurl, the default network adapter supports local paths and `file://` URLs. With libcurl available, HTTP/HTTPS manifests and files are supported.
+
+## Security Notes
+
+- Keep TLS verification enabled in production.
+- Treat manifest signing as mandatory for public update channels.
+- Store the public key in the application binary or another trusted channel.
+- Do not include absolute paths or `..` segments in manifests; the parser rejects them.
+- Prefer staging under the install directory so replacements stay on the same filesystem.
+- For package-manager-owned installs, use the system package manager rather than self-updating.
 
 ## Roadmap
 
@@ -152,4 +238,3 @@ LIBAUTOUPDATER_WITH_QT=OFF
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
-

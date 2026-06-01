@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "appId": "com.example.myapp",
+  "channel": "stable",
+  "platform": "windows",
+  "arch": "x64",
+  "version": "1.4.0",
+  "releaseId": "1.4.0+20260601.1",
+  "releaseDate": "2026-06-01T10:00:00Z",
+  "publishedAt": "2026-06-01T10:00:00Z",
+  "expiresAt": "2026-07-01T00:00:00Z",
+  "minVersion": "1.2.0",
+  "minClientVersion": "0.1.0",
+  "mandatory": false,
+  "allowDowngrade": false,
+  "notes": "Fix startup crash and improve sync performance.",
+  "baseUrl": "https://example.com/releases/1.4.0/windows-x64/",
+  "files": [
+    {
+      "path": "bin/MyApp.exe",
+      "sha256": "9b3f...",
+      "size": 18432000
+    }
+  ],
+  "remove": [
+    "plugins/old_plugin.dll"
+  ]
+}
+
