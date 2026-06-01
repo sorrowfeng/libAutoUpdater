@@ -36,6 +36,25 @@ jobs:
       - name: Validate Python Tools
         run: python -m py_compile tools/make_manifest.py tools/make_index.py tools/sign_manifest.py
 
+      - name: Validate Packaging Tools
+        run: |
+          mkdir -p packaging-probe/release/bin
+          printf 'probe' > packaging-probe/release/bin/app.txt
+          python tools/make_manifest.py packaging-probe/release \
+            --app-id com.example.probe \
+            --platform "$RUNNER_OS" \
+            --arch x64 \
+            --version 1.2.3 \
+            --release-date 2026-06-01T10:00:00Z \
+            --base-url https://example.com/releases/1.2.3/
+          python tools/make_index.py \
+            --app-id com.example.probe \
+            --channel stable \
+            --generated-at 2026-06-01T10:00:00Z \
+            --target "$RUNNER_OS"/x64=https://example.com/releases/1.2.3/manifest.json \
+            --output packaging-probe/index.json
+        shell: bash
+
       - name: Install Probe
         run: cmake --install build --config Debug --prefix install-probe
 

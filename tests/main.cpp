@@ -12,6 +12,7 @@ void testApplyPlanRoundTrip();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testSha256Provider();
+void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 
 int main() {
@@ -26,6 +27,7 @@ int main() {
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"Sha256Provider", testSha256Provider},
+        {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
     };
 
