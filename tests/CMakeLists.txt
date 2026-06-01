@@ -22,3 +22,16 @@ if(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL)
 endif()
 
 add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)
+    add_test(
+        NAME libAutoUpdater_e2e_flow
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/e2e_flow.py
+            --cli $<TARGET_FILE:libAutoUpdater_cli>
+            --updater $<TARGET_FILE:autoupdater_apply>
+            --make-manifest ${CMAKE_SOURCE_DIR}/tools/make_manifest.py
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/e2e-flow)
+endif()

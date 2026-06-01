@@ -246,7 +246,23 @@ build/examples/cli/Debug/libAutoUpdater_cli.exe \
   --updater build/updater/Debug/autoupdater_apply.exe
 ```
 
+Add `--apply` to let the CLI launch the external updater after the files are
+downloaded and the apply plan is ready.
+
 Without libcurl, the default network adapter supports local paths and `file://` URLs. With libcurl available, HTTP/HTTPS manifests and files are supported.
+
+## End-to-End Flow Test
+
+The test suite includes a smoke test for the complete static-file update flow:
+
+```sh
+ctest --test-dir build -C Debug -R libAutoUpdater_e2e_flow --output-on-failure
+```
+
+That test creates a local `1.0.0` install tree, creates a `2.0.0` release tree,
+generates `manifest.json`, runs the CLI to check and download only changed
+files, launches `autoupdater_apply`, and verifies that replaced, added,
+unchanged, and removed files all end in the expected state.
 
 ## Security Notes
 

@@ -1,5 +1,6 @@
 #include "libAutoUpdater/Updater.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <iostream>
@@ -9,7 +10,7 @@ namespace {
 
 void usage() {
     std::cout << "Usage:\n"
-              << "  libAutoUpdater_cli --manifest <url-or-file> --version <x.y.z> --install <dir> [--updater <path>]\n";
+              << "  libAutoUpdater_cli --manifest <url-or-file> --version <x.y.z> --install <dir> [--updater <path>] [--apply]\n";
 }
 
 } // namespace
@@ -18,6 +19,7 @@ int main(int argc, char** argv) {
     autoupdater::Config config;
     config.appId = "libAutoUpdater.example";
     config.restartCommand = {};
+    bool applyWhenReady = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -34,6 +36,8 @@ int main(int argc, char** argv) {
             config.installDir = argv[++i];
         } else if (arg == "--updater" && i + 1 < argc) {
             config.updaterExecutable = argv[++i];
+        } else if (arg == "--apply") {
+            applyWhenReady = true;
         } else if (arg == "--help") {
             usage();
             return 0;
@@ -54,7 +58,10 @@ int main(int argc, char** argv) {
     autoupdater::Callbacks callbacks;
     callbacks.onStateChanged = [&](autoupdater::State state) {
         std::cout << "state=" << static_cast<int>(state) << "\n";
-        if (state == autoupdater::State::UpToDate || state == autoupdater::State::UpdateAvailable) {
+        if (state == autoupdater::State::UpToDate ||
+            state == autoupdater::State::UpdateAvailable ||
+            state == autoupdater::State::Applying ||
+            state == autoupdater::State::Failed) {
             std::lock_guard<std::mutex> lock(mutex);
             done = true;
             cv.notify_one();
@@ -94,6 +101,17 @@ int main(int argc, char** argv) {
         const auto state = updater.state();
         return done || state == autoupdater::State::UpToDate || state == autoupdater::State::UpdateAvailable;
     });
+
+    if (exitCode == 0 && applyWhenReady && updater.state() == autoupdater::State::ReadyToApply) {
+        done = false;
+        lock.unlock();
+        updater.applyAndRestartAsync();
+        lock.lock();
+        cv.wait_for(lock, std::chrono::seconds(5), [&] {
+            const auto state = updater.state();
+            return done || state == autoupdater::State::Applying || state == autoupdater::State::Failed;
+        });
+    }
 
     return exitCode;
 }
