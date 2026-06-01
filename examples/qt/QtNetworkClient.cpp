@@ -57,19 +57,25 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
             return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::FileSystemError, ec.message()});
         }
 
+        const bool appending = options.enableResume && resume && resume->offset > 0;
         QFile file(QString::fromStdString(target.u8string()));
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const auto mode = appending
+            ? (QIODevice::WriteOnly | QIODevice::Append)
+            : (QIODevice::WriteOnly | QIODevice::Truncate);
+        if (!file.open(mode)) {
             return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::DownloadFailed, "Failed to open target"});
         }
 
         QNetworkRequest request(QUrl(QString::fromStdString(url)));
-        if (options.enableResume && resume && resume->offset > 0) {
+        if (appending) {
             QByteArray range("bytes=");
             range += QByteArray::number(static_cast<qint64>(resume->offset));
             range += "-";
             request.setRawHeader("Range", range);
             if (!resume->etag.empty()) {
                 request.setRawHeader("If-Range", QByteArray::fromStdString(resume->etag));
+            } else if (!resume->lastModified.empty()) {
+                request.setRawHeader("If-Range", QByteArray::fromStdString(resume->lastModified));
             }
         }
 
@@ -77,7 +83,7 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         QTimer timer;
         timer.setSingleShot(true);
         auto* reply = manager_.get(request);
-        std::uint64_t written = 0;
+        std::uint64_t written = appending ? resume->offset : 0;
         QObject::connect(reply, &QNetworkReply::readyRead, [&] {
             const auto data = reply->readAll();
             file.write(data);
@@ -85,8 +91,9 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         });
         QObject::connect(reply, &QNetworkReply::downloadProgress, [&](qint64 received, qint64 total) {
             if (progress) {
-                progress({static_cast<std::uint64_t>(received),
-                          total > 0 ? static_cast<std::uint64_t>(total) : 0,
+                const auto base = appending ? resume->offset : 0;
+                progress({base + static_cast<std::uint64_t>(received),
+                          total > 0 ? base + static_cast<std::uint64_t>(total) : 0,
                           target.generic_string()});
             }
         });
@@ -107,9 +114,18 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
             reply->deleteLater();
             return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::DownloadFailed, message});
         }
+        const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (appending && status == 200) {
+            file.close();
+            QFile::remove(QString::fromStdString(target.u8string()));
+            reply->deleteLater();
+            return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::DownloadFailed, "Server ignored Range request"});
+        }
 
         autoupdater::DownloadResult result;
         result.bytesWritten = written;
+        result.etag = reply->rawHeader("ETag").toStdString();
+        result.lastModified = reply->rawHeader("Last-Modified").toStdString();
         reply->deleteLater();
         return autoupdater::Result<autoupdater::DownloadResult>::ok(result);
     } catch (...) {
