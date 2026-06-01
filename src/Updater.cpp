@@ -232,7 +232,7 @@ struct Updater::Impl {
                 std::lock_guard<std::mutex> lock(tokenMutex);
                 currentToken = token;
             }
-            worker = std::thread([this, task = std::move(task), token] {
+            worker = std::thread([task = std::move(task), token] {
                 (void)token;
                 task();
             });
