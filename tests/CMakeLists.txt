@@ -4,7 +4,8 @@ add_executable(libAutoUpdater_tests
     ManifestTests.cpp
     UpdatePlannerTests.cpp
     ApplyPlanTests.cpp
-    HashTests.cpp)
+    HashTests.cpp
+    StateStoreTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)

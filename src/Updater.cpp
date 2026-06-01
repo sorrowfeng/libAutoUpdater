@@ -9,6 +9,7 @@
 #include "util/PathUtil.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <utility>
 
 namespace autoupdater {
@@ -76,6 +77,7 @@ struct Updater::Impl {
 
     ~Impl() {
         cancel();
+        stopPeriodicCheck();
         joinWorker();
     }
 
@@ -270,6 +272,7 @@ struct Updater::Impl {
                 *network,
                 *fileSystem,
                 *hashProvider,
+                stateStore.get(),
                 [this](const Progress& progress) {
                     post([this, progress] {
                         auto copy = callbacksCopy();
@@ -317,6 +320,72 @@ struct Updater::Impl {
         });
     }
 
+    void checkOnStartupAsync(bool downloadWhenAvailable) noexcept {
+        if (downloadWhenAvailable) {
+            checkAndDownloadAsync();
+        } else {
+            checkAsync();
+        }
+    }
+
+    void startPeriodicCheck(std::chrono::milliseconds interval,
+                            bool downloadWhenAvailable,
+                            bool runImmediately) noexcept {
+        if (interval.count() <= 0) {
+            reportError({ErrorCode::InvalidConfig, "Periodic check interval must be positive"});
+            return;
+        }
+
+        stopPeriodicCheck();
+        {
+            std::lock_guard<std::mutex> lock(periodicMutex);
+            periodicStop = false;
+        }
+
+        try {
+            periodicWorker = std::thread([this, interval, downloadWhenAvailable, runImmediately] {
+                auto trigger = [this, downloadWhenAvailable] {
+                    const auto current = state();
+                    if (current == State::Checking || current == State::Downloading || current == State::Applying) {
+                        return;
+                    }
+                    if (downloadWhenAvailable) {
+                        checkAndDownloadAsync();
+                    } else {
+                        checkAsync();
+                    }
+                };
+
+                if (runImmediately) {
+                    trigger();
+                }
+
+                std::unique_lock<std::mutex> lock(periodicMutex);
+                while (!periodicStop) {
+                    if (periodicCv.wait_for(lock, interval, [this] { return periodicStop; })) {
+                        break;
+                    }
+                    lock.unlock();
+                    trigger();
+                    lock.lock();
+                }
+            });
+        } catch (...) {
+            reportError({ErrorCode::InternalError, "Failed to start periodic updater thread"});
+        }
+    }
+
+    void stopPeriodicCheck() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(periodicMutex);
+            periodicStop = true;
+        }
+        periodicCv.notify_all();
+        if (periodicWorker.joinable()) {
+            periodicWorker.join();
+        }
+    }
+
     void downloadAsync() noexcept {
         start([this] {
             Config effective;
@@ -360,6 +429,7 @@ struct Updater::Impl {
                 *network,
                 *fileSystem,
                 *hashProvider,
+                stateStore.get(),
                 [this](const Progress& progress) {
                     post([this, progress] {
                         auto copy = callbacksCopy();
@@ -496,9 +566,13 @@ struct Updater::Impl {
     mutable std::mutex mutex;
     Callbacks callbacks;
     std::thread worker;
+    std::thread periodicWorker;
     std::atomic<State> stateValue{State::Idle};
     std::mutex tokenMutex;
     std::shared_ptr<CancellationToken> currentToken;
+    std::mutex periodicMutex;
+    std::condition_variable periodicCv;
+    bool periodicStop = false;
 
     std::optional<Config> lastConfig;
     std::optional<ManifestEnvelope> lastEnvelope;
@@ -546,6 +620,10 @@ void Updater::checkAsync() noexcept {
     impl_->checkAsync();
 }
 
+void Updater::checkOnStartupAsync(bool downloadWhenAvailable) noexcept {
+    impl_->checkOnStartupAsync(downloadWhenAvailable);
+}
+
 void Updater::checkAndDownloadAsync() noexcept {
     impl_->checkAndDownloadAsync();
 }
@@ -556,6 +634,16 @@ void Updater::downloadAsync() noexcept {
 
 void Updater::applyAndRestartAsync() noexcept {
     impl_->applyAndRestartAsync();
+}
+
+void Updater::startPeriodicCheck(std::chrono::milliseconds interval,
+                                 bool downloadWhenAvailable,
+                                 bool runImmediately) noexcept {
+    impl_->startPeriodicCheck(interval, downloadWhenAvailable, runImmediately);
+}
+
+void Updater::stopPeriodicCheck() noexcept {
+    impl_->stopPeriodicCheck();
 }
 
 Result<void> Updater::markCurrentVersionHealthy() noexcept {

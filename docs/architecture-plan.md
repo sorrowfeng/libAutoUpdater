@@ -666,6 +666,8 @@ verify raw bytes with public key
 parse manifest only after signature passes
 ```
 
+签名文件可以是原始二进制，也可以是 base64 文本。发布侧可使用 `tools/sign_manifest.py` 生成 `manifest.json.sig`。
+
 优点：
 
 - 避免 JSON canonicalization 问题。
@@ -1073,4 +1075,3 @@ apply 过程中可能中断。
 - 覆盖失败能回滚。
 - 新版本可通过健康确认清理备份。
 - CMake 支持 `find_package` 和 `add_subdirectory`。
-

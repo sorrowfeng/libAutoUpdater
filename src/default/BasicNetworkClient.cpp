@@ -49,7 +49,7 @@ public:
     Result<DownloadResult> downloadToFile(const std::string& url,
                                           const std::filesystem::path& target,
                                           const NetworkOptions&,
-                                          const std::optional<DownloadResumeInfo>&,
+                                          const std::optional<DownloadResumeInfo>& resume,
                                           ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         auto source = localPathFromUrl(url);
@@ -70,13 +70,19 @@ public:
             }
 
             std::ifstream input(source.value(), std::ios::binary);
-            std::ofstream output(target, std::ios::binary | std::ios::trunc);
+            if (resume && resume->offset > 0) {
+                input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
+            }
+            const auto outputMode = (resume && resume->offset > 0)
+                ? (std::ios::binary | std::ios::app)
+                : (std::ios::binary | std::ios::trunc);
+            std::ofstream output(target, outputMode);
             if (!input || !output) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local download streams"});
             }
 
             std::array<char, 64 * 1024> buffer{};
-            std::uint64_t written = 0;
+            std::uint64_t written = resume ? resume->offset : 0;
             while (input) {
                 if (cancel.isCancelled()) {
                     return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});

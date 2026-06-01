@@ -110,6 +110,77 @@ public:
         return saveRoot(root.value());
     }
 
+    Result<void> saveDownloadResume(const DownloadResumeState& state) noexcept override {
+        auto root = loadRoot();
+        if (!root) {
+            return Result<void>::fail(root.error());
+        }
+        util::Json::Object downloads;
+        const auto downloadsIt = root.value().find("downloadResume");
+        if (downloadsIt != root.value().end() && downloadsIt->second.isObject()) {
+            downloads = downloadsIt->second.asObject();
+        }
+
+        util::Json::Object record;
+        record.emplace("offset", static_cast<double>(state.offset));
+        record.emplace("etag", state.etag);
+        record.emplace("lastModified", state.lastModified);
+        record.emplace("sha256", state.sha256);
+        downloads[state.key] = util::Json(std::move(record));
+        root.value()["downloadResume"] = util::Json(std::move(downloads));
+        return saveRoot(root.value());
+    }
+
+    Result<std::optional<DownloadResumeState>> loadDownloadResume(const std::string& key) noexcept override {
+        auto root = loadRoot();
+        if (!root) {
+            return Result<std::optional<DownloadResumeState>>::fail(root.error());
+        }
+        const auto downloadsIt = root.value().find("downloadResume");
+        if (downloadsIt == root.value().end() || !downloadsIt->second.isObject()) {
+            return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+        }
+        const auto recordIt = downloadsIt->second.asObject().find(key);
+        if (recordIt == downloadsIt->second.asObject().end() || !recordIt->second.isObject()) {
+            return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+        }
+
+        DownloadResumeState state;
+        state.key = key;
+        const auto& object = recordIt->second;
+        const auto* offset = object.get("offset");
+        if (offset && offset->isNumber()) {
+            state.offset = static_cast<std::uint64_t>(offset->asNumber());
+        }
+        const auto* etag = object.get("etag");
+        if (etag && etag->isString()) {
+            state.etag = etag->asString();
+        }
+        const auto* lastModified = object.get("lastModified");
+        if (lastModified && lastModified->isString()) {
+            state.lastModified = lastModified->asString();
+        }
+        const auto* sha256 = object.get("sha256");
+        if (sha256 && sha256->isString()) {
+            state.sha256 = sha256->asString();
+        }
+        return Result<std::optional<DownloadResumeState>>::ok(state);
+    }
+
+    Result<void> clearDownloadResume(const std::string& key) noexcept override {
+        auto root = loadRoot();
+        if (!root) {
+            return Result<void>::fail(root.error());
+        }
+        const auto downloadsIt = root.value().find("downloadResume");
+        if (downloadsIt != root.value().end() && downloadsIt->second.isObject()) {
+            auto downloads = downloadsIt->second.asObject();
+            downloads.erase(key);
+            root.value()["downloadResume"] = util::Json(std::move(downloads));
+        }
+        return saveRoot(root.value());
+    }
+
 private:
     Result<util::Json::Object> loadRoot() noexcept {
         try {

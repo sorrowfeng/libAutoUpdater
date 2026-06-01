@@ -177,6 +177,13 @@ updater.setCallbacks(callbacks);
 updater.checkAndDownloadAsync();
 ```
 
+Startup and periodic checks are also available:
+
+```cpp
+updater.checkOnStartupAsync();
+updater.startPeriodicCheck(std::chrono::hours(6));
+```
+
 When the new application version starts successfully, call:
 
 ```cpp
@@ -205,6 +212,16 @@ python tools/make_manifest.py dist/MyApp \
 
 The generated `manifest.json` can be uploaded with the release files to any static HTTP/HTTPS server.
 
+Optionally sign the manifest with a detached signature:
+
+```sh
+python tools/sign_manifest.py dist/MyApp/manifest.json \
+  --private-key keys/update-ed25519-private.pem \
+  --algorithm ed25519
+```
+
+This writes `manifest.json.sig` as base64 text. Configure `SecurityOptions::requireManifestSignature` and embed the matching public key in the client.
+
 ## CLI Example
 
 ```sh
@@ -221,6 +238,8 @@ Without libcurl, the default network adapter supports local paths and `file://` 
 
 - Keep TLS verification enabled in production.
 - Treat manifest signing as mandatory for public update channels.
+- Detached signatures may be raw binary or base64 text.
+- Resumable downloads persist partial `.download` file metadata in `.autoupdater/state.json`.
 - Store the public key in the application binary or another trusted channel.
 - Do not include absolute paths or `..` segments in manifests; the parser rejects them.
 - Prefer staging under the install directory so replacements stay on the same filesystem.

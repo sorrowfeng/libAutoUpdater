@@ -20,6 +20,7 @@ Result<void> executeDownloads(const Config& config,
                               INetworkClient& network,
                               IFileSystem& fileSystem,
                               IHashProvider& hashProvider,
+                              IStateStore* stateStore,
                               ProgressCallback progress,
                               CancellationToken& cancel) {
     std::uint64_t totalBytes = 0;
@@ -58,13 +59,33 @@ Result<void> executeDownloads(const Config& config,
             }
 
             const auto tempPath = temporaryDownloadPath(download.stagingPath);
-            fileSystem.remove(tempPath);
+            std::optional<DownloadResumeInfo> resume;
+            if (config.network.enableResume && fileSystem.exists(tempPath)) {
+                auto tempSize = fileSystem.fileSize(tempPath);
+                if (tempSize && tempSize.value() > 0) {
+                    DownloadResumeState resumeState;
+                    resumeState.key = download.url;
+                    resumeState.offset = tempSize.value();
+                    resumeState.sha256 = download.file.sha256;
+                    if (stateStore) {
+                        auto loaded = stateStore->loadDownloadResume(download.url);
+                        if (loaded && loaded.value() && loaded.value()->sha256 == download.file.sha256) {
+                            resumeState = loaded.value().value();
+                            resumeState.offset = tempSize.value();
+                        }
+                    }
+                    resume = DownloadResumeInfo{resumeState.offset, resumeState.etag, resumeState.lastModified};
+                }
+            }
+            if (!resume) {
+                fileSystem.remove(tempPath);
+            }
 
             auto result = network.downloadToFile(
                 download.url,
                 tempPath,
                 config.network,
-                std::nullopt,
+                resume,
                 [&](const Progress& current) {
                     if (progress) {
                         Progress aggregate;
@@ -77,17 +98,47 @@ Result<void> executeDownloads(const Config& config,
                 cancel);
             if (!result) {
                 lastError = result.error();
+                if (config.network.enableResume && stateStore && fileSystem.exists(tempPath)) {
+                    auto tempSize = fileSystem.fileSize(tempPath);
+                    if (tempSize && tempSize.value() > 0) {
+                        DownloadResumeState state;
+                        state.key = download.url;
+                        state.offset = tempSize.value();
+                        state.sha256 = download.file.sha256;
+                        if (resume) {
+                            state.etag = resume->etag;
+                            state.lastModified = resume->lastModified;
+                        }
+                        stateStore->saveDownloadResume(state);
+                    }
+                }
             } else {
+                if (stateStore) {
+                    DownloadResumeState state;
+                    state.key = download.url;
+                    state.offset = result.value().bytesWritten;
+                    state.etag = result.value().etag;
+                    state.lastModified = result.value().lastModified;
+                    state.sha256 = download.file.sha256;
+                    stateStore->saveDownloadResume(state);
+                }
                 auto hash = hashProvider.sha256File(tempPath);
                 if (!hash) {
                     lastError = hash.error();
                 } else if (hash.value() != download.file.sha256) {
                     lastError = {ErrorCode::HashMismatch, "Downloaded file SHA-256 mismatch: " + download.file.path};
+                    fileSystem.remove(tempPath);
+                    if (stateStore) {
+                        stateStore->clearDownloadResume(download.url);
+                    }
                 } else {
                     auto replaced = fileSystem.renameOrReplace(tempPath, download.stagingPath);
                     if (!replaced) {
                         lastError = replaced.error();
                     } else {
+                        if (stateStore) {
+                            stateStore->clearDownloadResume(download.url);
+                        }
                         success = true;
                         break;
                     }
@@ -113,4 +164,3 @@ Result<void> executeDownloads(const Config& config,
 }
 
 } // namespace autoupdater
-

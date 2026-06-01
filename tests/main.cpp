@@ -8,6 +8,7 @@ void testManifestRejectsPathTraversal();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
 void testSha256Provider();
+void testStateStoreDownloadResume();
 
 int main() {
     const std::vector<TestCase> tests = {
@@ -17,6 +18,7 @@ int main() {
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"Sha256Provider", testSha256Provider},
+        {"StateStoreDownloadResume", testStateStoreDownloadResume},
     };
 
     int failed = 0;

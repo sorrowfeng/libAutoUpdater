@@ -13,6 +13,7 @@ option(LIBAUTOUPDATER_BUILD_EXAMPLES "Build examples" ON)
 option(LIBAUTOUPDATER_BUILD_TESTS "Build tests" ON)
 option(LIBAUTOUPDATER_WITH_CURL "Build libcurl network adapter when available" ON)
 option(LIBAUTOUPDATER_WITH_OPENSSL "Build OpenSSL signature verifier when available" ON)
+option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" OFF)
 
 set(LIBAUTOUPDATER_PUBLIC_HEADERS
     include/libAutoUpdater/ApplyPlan.h

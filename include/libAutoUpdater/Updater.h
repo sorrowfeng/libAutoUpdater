@@ -35,9 +35,14 @@ public:
     void setStateStore(std::shared_ptr<IStateStore> store);
 
     void checkAsync() noexcept;
+    void checkOnStartupAsync(bool downloadWhenAvailable = false) noexcept;
     void checkAndDownloadAsync() noexcept;
     void downloadAsync() noexcept;
     void applyAndRestartAsync() noexcept;
+    void startPeriodicCheck(std::chrono::milliseconds interval,
+                            bool downloadWhenAvailable = false,
+                            bool runImmediately = false) noexcept;
+    void stopPeriodicCheck() noexcept;
     Result<void> markCurrentVersionHealthy() noexcept;
     Result<void> rollbackLastUpdate() noexcept;
 

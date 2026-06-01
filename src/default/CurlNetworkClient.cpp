@@ -4,6 +4,8 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <mutex>
 
@@ -30,6 +32,8 @@ struct FileContext {
     std::string currentFile;
     std::uint64_t downloaded = 0;
     std::uint64_t total = 0;
+    std::string etag;
+    std::string lastModified;
     CancellationToken* cancel = nullptr;
 };
 
@@ -53,6 +57,32 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
     context->downloaded += static_cast<std::uint64_t>(bytes);
     if (context->progress) {
         context->progress({context->downloaded, context->total, context->currentFile});
+    }
+    return bytes;
+}
+
+std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
+    auto* context = static_cast<FileContext*>(userdata);
+    const auto bytes = size * nmemb;
+    std::string line(ptr, bytes);
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+        line.pop_back();
+    }
+    const auto colon = line.find(':');
+    if (colon != std::string::npos) {
+        auto key = line.substr(0, colon);
+        auto value = line.substr(colon + 1);
+        while (!value.empty() && value.front() == ' ') {
+            value.erase(value.begin());
+        }
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (key == "etag") {
+            context->etag = value;
+        } else if (key == "last-modified") {
+            context->lastModified = value;
+        }
     }
     return bytes;
 }
@@ -116,7 +146,10 @@ public:
                 }
             }
 
-            std::ofstream output(target, std::ios::binary | std::ios::trunc);
+            const auto outputMode = (options.enableResume && resume && resume->offset > 0)
+                ? (std::ios::binary | std::ios::app)
+                : (std::ios::binary | std::ios::trunc);
+            std::ofstream output(target, outputMode);
             if (!output) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
             }
@@ -130,11 +163,14 @@ public:
             context.output = &output;
             context.progress = std::move(progress);
             context.currentFile = target.generic_string();
+            context.downloaded = resume ? resume->offset : 0;
             context.cancel = &cancel;
 
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFile);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, writeHeader);
+            curl_easy_setopt(curl, CURLOPT_HEADERDATA, &context);
             applyCommonOptions(curl, options);
 
             struct curl_slist* headers = nullptr;
@@ -172,12 +208,19 @@ public:
             if (code != CURLE_OK) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, curl_easy_strerror(code)});
             }
+            if (resume && resume->offset > 0 && response == 200) {
+                std::error_code ec;
+                std::filesystem::remove(target, ec);
+                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
+            }
             if (response >= 400) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "HTTP error " + std::to_string(response)});
             }
 
             DownloadResult result;
             result.bytesWritten = context.downloaded;
+            result.etag = context.etag;
+            result.lastModified = context.lastModified;
             return Result<DownloadResult>::ok(result);
         } catch (...) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Unexpected curl download failure"});
