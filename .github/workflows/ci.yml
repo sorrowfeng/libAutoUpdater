@@ -235,19 +235,35 @@ jobs:
           path: artifacts/*
 
   github-hosted-demo:
-    name: GitHub-hosted update demo
-    runs-on: ubuntu-latest
+    name: GitHub-hosted update demo (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
     needs: [build-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-curl
+            os: ubuntu-latest
+            install_deps: |
+              sudo apt-get update
+              sudo apt-get install -y libcurl4-openssl-dev
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON -DLIBAUTOUPDATER_WITH_WINHTTP=OFF
+
+          - name: windows-winhttp
+            os: windows-latest
+            install_deps: ""
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_WINHTTP=ON
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev
+        if: matrix.install_deps != ''
+        shell: bash
+        run: ${{ matrix.install_deps }}
 
       - name: Configure
         run: >
@@ -255,9 +271,8 @@ jobs:
           -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON
           -DLIBAUTOUPDATER_BUILD_TESTS=OFF
           -DLIBAUTOUPDATER_BUILD_UPDATER=ON
-          -DLIBAUTOUPDATER_WITH_CURL=ON
-          -DLIBAUTOUPDATER_REQUIRE_CURL=ON
           -DLIBAUTOUPDATER_WITH_QT=OFF
+          ${{ matrix.cmake_args }}
           -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build

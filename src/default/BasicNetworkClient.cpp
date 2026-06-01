@@ -109,7 +109,7 @@ public:
 
 } // namespace
 
-#ifndef LIBAUTOUPDATER_HAS_CURL
+#if !defined(LIBAUTOUPDATER_HAS_CURL) && !defined(LIBAUTOUPDATER_HAS_WINHTTP)
 std::shared_ptr<INetworkClient> createDefaultNetworkClient() {
     return std::make_shared<BasicNetworkClient>();
 }

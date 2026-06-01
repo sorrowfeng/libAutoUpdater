@@ -69,7 +69,8 @@ def default_updater(root: Path) -> Path:
 
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def print_tree(root: Path) -> None:
@@ -162,8 +163,9 @@ def main() -> int:
     combined_output = result.stdout + result.stderr
     if result.returncode != 0 or "state=Failed" in combined_output:
         if "No HTTP network adapter is available" in combined_output:
-            print("This build does not include libcurl, so it cannot fetch GitHub HTTPS URLs.")
-            print("Reconfigure with LIBAUTOUPDATER_WITH_CURL=ON and make sure CMake finds CURL.")
+            print("This build does not include an HTTP/HTTPS network adapter.")
+            print("On Windows, rebuild with LIBAUTOUPDATER_WITH_WINHTTP=ON.")
+            print("On other platforms, install libcurl development files and rebuild with LIBAUTOUPDATER_WITH_CURL=ON.")
         return result.returncode if result.returncode != 0 else 1
 
     deadline = time.time() + 20

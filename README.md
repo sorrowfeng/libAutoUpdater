@@ -144,6 +144,7 @@ LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
 LIBAUTOUPDATER_REQUIRE_CURL=OFF
+LIBAUTOUPDATER_WITH_WINHTTP=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
 LIBAUTOUPDATER_ENABLE_WARNINGS=ON
@@ -174,6 +175,7 @@ GitHub Actions is configured as a C++ library quality gate:
 - `library-only-config`: verifies the library can be configured without updater, examples, tests, curl, or OpenSSL.
 - `sanitizers`: runs ASan/UBSan on Ubuntu with Clang.
 - `package-install-tree`: installs the Release build and uploads install-tree artifacts on pushes.
+- `github-hosted-demo`: runs the real GitHub Raw update flow on Ubuntu/libcurl and Windows/WinHTTP.
 - `CodeQL`: builds the C++ project and runs GitHub code scanning on pushes, pull requests, and a weekly schedule.
 - `release`: when a `v*` tag is pushed, builds release ZIPs for Windows, macOS, and Linux, writes SHA-256 files, and publishes them to GitHub Releases.
 
@@ -271,7 +273,10 @@ build/examples/cli/Debug/libAutoUpdater_cli.exe \
 Add `--apply` to let the CLI launch the external updater after the files are
 downloaded and the apply plan is ready.
 
-Without libcurl, the default network adapter supports local paths and `file://` URLs. With libcurl available, HTTP/HTTPS manifests and files are supported.
+The default network adapter always supports local paths and `file://` URLs.
+HTTP/HTTPS is provided by libcurl when available. On Windows, if libcurl is not
+available and `LIBAUTOUPDATER_WITH_WINHTTP=ON`, the default adapter uses the
+native WinHTTP API instead.
 
 ## GitHub-Hosted Demo
 
@@ -279,7 +284,15 @@ This repository also contains a real static update feed under
 `examples/update-server`. GitHub serves it over HTTPS through
 `raw.githubusercontent.com`, so the repository itself acts as the update server.
 
-Build the project with libcurl enabled, then run:
+Build the project with an HTTP/HTTPS backend, then run. On Windows this works
+without libcurl because WinHTTP is enabled by default:
+
+```sh
+cmake -S . -B build -DLIBAUTOUPDATER_WITH_WINHTTP=ON
+cmake --build build --config Debug --parallel
+```
+
+On Linux/macOS, install libcurl development files and configure with:
 
 ```sh
 cmake -S . -B build -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON
