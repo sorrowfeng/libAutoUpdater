@@ -272,6 +272,33 @@ downloaded and the apply plan is ready.
 
 Without libcurl, the default network adapter supports local paths and `file://` URLs. With libcurl available, HTTP/HTTPS manifests and files are supported.
 
+## GitHub-Hosted Demo
+
+This repository also contains a real static update feed under
+`examples/update-server`. GitHub serves it over HTTPS through
+`raw.githubusercontent.com`, so the repository itself acts as the update server.
+
+Build the project with libcurl enabled, then run:
+
+```sh
+python examples/github_update_demo.py
+```
+
+The script creates a local `1.0.0` install tree, fetches this manifest from
+GitHub:
+
+```text
+https://raw.githubusercontent.com/sorrowfeng/libAutoUpdater/main/examples/update-server/releases/2.0.0/manifest.json
+```
+
+Then it runs the CLI with `--apply`, launches `autoupdater_apply`, and prints
+the file tree before and after the update. You should see:
+
+- `bin/demo_app.txt` replaced from `version=1.0.0` to `version=2.0.0`.
+- `resources/feature.txt` added.
+- `legacy/remove-me.txt` removed.
+- `config/settings.json` left unchanged because its SHA-256 already matches.
+
 ## End-to-End Flow Test
 
 The test suite includes a smoke test for the complete static-file update flow:
