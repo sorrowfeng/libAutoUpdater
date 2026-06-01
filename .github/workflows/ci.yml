@@ -32,6 +32,23 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
 
+      - name: Validate Python Tools
+        run: python -m py_compile tools/make_manifest.py tools/make_index.py tools/sign_manifest.py
+
       - name: Install Probe
         run: cmake --install build --config Debug --prefix install-probe
 
+      - name: Consumer Probe Configure
+        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install-probe"
+
+      - name: Consumer Probe Build
+        run: cmake --build consumer-build --config Debug --parallel
+
+      - name: Consumer Probe Run
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./consumer-build/Debug/libAutoUpdater_consumer_probe.exe
+          else
+            ./consumer-build/libAutoUpdater_consumer_probe
+          fi
+        shell: bash

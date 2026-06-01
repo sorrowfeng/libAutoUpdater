@@ -6,9 +6,11 @@ void testVersionParsingAndOrdering();
 void testManifestParsing();
 void testManifestRejectsPathTraversal();
 void testManifestFetcherRoutesIndexManifest();
+void testManifestFetcherRejectsDisallowedIndexTarget();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
 void testApplyExecutorRollsBackCurrentFailedOperation();
+void testApplyExecutorRejectsExistingLock();
 void testSha256Provider();
 void testStateStoreDownloadResume();
 
@@ -18,9 +20,11 @@ int main() {
         {"ManifestParsing", testManifestParsing},
         {"ManifestRejectsPathTraversal", testManifestRejectsPathTraversal},
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
+        {"ManifestFetcherRejectsDisallowedIndexTarget", testManifestFetcherRejectsDisallowedIndexTarget},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
+        {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"Sha256Provider", testSha256Provider},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
     };

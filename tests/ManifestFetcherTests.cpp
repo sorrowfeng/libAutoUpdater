@@ -102,3 +102,35 @@ void testManifestFetcherRoutesIndexManifest() {
     LAU_REQUIRE(verifier.calls == 2);
 }
 
+void testManifestFetcherRejectsDisallowedIndexTarget() {
+    const std::string indexUrl = "https://updates.example.com/index.json";
+
+    FakeNetworkClient network;
+    network.texts[indexUrl] = R"json({
+      "schemaVersion": 1,
+      "appId": "com.example.app",
+      "channel": "stable",
+      "targets": [
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "manifestUrl": "https://evil.example.com/manifest.json"
+        }
+      ]
+    })json";
+
+    auto hash = autoupdater::createDefaultHashProvider();
+    CountingSignatureVerifier verifier;
+    autoupdater::CancellationToken cancel;
+    autoupdater::Config config;
+    config.appId = "com.example.app";
+    config.channel = "stable";
+    config.platform = "windows";
+    config.arch = "x64";
+    config.manifestUrl = indexUrl;
+    config.security.allowedBaseUrls = {"https://updates.example.com/"};
+
+    auto envelope = autoupdater::fetchAndVerifyManifest(config, network, *hash, verifier, cancel);
+    LAU_REQUIRE(!envelope);
+    LAU_REQUIRE(envelope.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+}

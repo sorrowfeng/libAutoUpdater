@@ -7,6 +7,7 @@
 #include <chrono>
 #include <fstream>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -29,10 +30,24 @@ struct AppliedOperation {
 
 struct LockCleanup {
     std::filesystem::path path;
+    LockCleanup() = default;
+    explicit LockCleanup(std::filesystem::path value) : path(std::move(value)) {}
+    LockCleanup(const LockCleanup&) = delete;
+    LockCleanup& operator=(const LockCleanup&) = delete;
+    LockCleanup(LockCleanup&& other) noexcept : path(std::move(other.path)) {
+        other.path.clear();
+    }
+    LockCleanup& operator=(LockCleanup&& other) noexcept {
+        if (this != &other) {
+            path = std::move(other.path);
+            other.path.clear();
+        }
+        return *this;
+    }
     ~LockCleanup() {
         if (!path.empty()) {
             std::error_code ec;
-            std::filesystem::remove(path, ec);
+            std::filesystem::remove_all(path, ec);
         }
     }
 };
@@ -138,6 +153,27 @@ Result<void> restart(const ApplyPlan& plan) {
     return launcher->launch(request);
 }
 
+Result<LockCleanup> acquireUpdateLock(const std::filesystem::path& installDir) {
+    const auto stateDir = installDir / ".autoupdater";
+    auto dirs = createDirectories(stateDir);
+    if (!dirs) {
+        return Result<LockCleanup>::fail(dirs.error());
+    }
+
+    const auto lockPath = stateDir / "update.lock";
+    std::error_code ec;
+    if (!std::filesystem::create_directory(lockPath, ec)) {
+        return Result<LockCleanup>::fail({ErrorCode::ApplyFailed, "Another update appears to be running"});
+    }
+    if (ec) {
+        return Result<LockCleanup>::fail({ErrorCode::FileSystemError, ec.message()});
+    }
+
+    std::ofstream metadata(lockPath / "owner.txt", std::ios::binary | std::ios::trunc);
+    metadata << "autoupdater_apply\n";
+    return Result<LockCleanup>::ok(LockCleanup(lockPath));
+}
+
 } // namespace
 
 Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout) noexcept {
@@ -172,20 +208,11 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
     std::vector<AppliedOperation> applied;
     try {
-        auto lockDir = plan.installDir / ".autoupdater";
-        auto dirs = createDirectories(lockDir);
-        if (!dirs) {
-            return dirs;
+        auto lock = acquireUpdateLock(plan.installDir);
+        if (!lock) {
+            return Result<void>::fail(lock.error());
         }
-        auto lockPath = lockDir / "update.lock";
-        if (std::filesystem::exists(lockPath)) {
-            return Result<void>::fail({ErrorCode::ApplyFailed, "Another update appears to be running"});
-        }
-        {
-            std::ofstream lock(lockPath, std::ios::binary | std::ios::trunc);
-            lock << "locked\n";
-        }
-        LockCleanup lockCleanup{lockPath};
+        auto lockCleanup = std::move(lock.value());
 
         auto backupDirs = createDirectories(plan.backupDir);
         if (!backupDirs) {

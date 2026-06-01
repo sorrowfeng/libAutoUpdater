@@ -55,3 +55,23 @@ void testApplyExecutorRollsBackCurrentFailedOperation() {
     std::filesystem::remove_all(root, ec);
 }
 
+void testApplyExecutorRejectsExistingLock() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-lock-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto install = root / "install";
+    std::filesystem::create_directories(install / ".autoupdater" / "update.lock", ec);
+
+    autoupdater::ApplyPlan plan;
+    plan.installDir = install;
+    plan.stagingDir = root / "staging";
+    plan.backupDir = root / "backup";
+    plan.releaseId = "lock-test";
+
+    auto result = autoupdater::updater::executeApplyPlan(plan);
+    LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ApplyFailed);
+
+    std::filesystem::remove_all(root, ec);
+}

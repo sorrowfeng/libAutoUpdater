@@ -254,6 +254,8 @@ Without libcurl, the default network adapter supports local paths and `file://` 
 - Treat manifest signing as mandatory for public update channels.
 - Detached signatures may be raw binary or base64 text.
 - Resumable downloads persist partial `.download` file metadata in `.autoupdater/state.json`.
+- The external updater uses `.autoupdater/update.lock` as an atomic lock directory to prevent concurrent apply operations.
+- When `allowedBaseUrls` is set, index-selected release manifest URLs and release `baseUrl` values must match the allowlist.
 - Store the public key in the application binary or another trusted channel.
 - Do not include absolute paths or `..` segments in manifests; the parser rejects them.
 - Prefer staging under the install directory so replacements stay on the same filesystem.

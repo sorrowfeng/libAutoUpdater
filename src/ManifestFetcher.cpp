@@ -1,5 +1,7 @@
 #include "ManifestFetcher.h"
 
+#include "util/UrlUtil.h"
+
 namespace autoupdater {
 
 namespace {
@@ -80,6 +82,9 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config,
         auto target = selectIndexTarget(config, index.value());
         if (!target) {
             return Result<ManifestEnvelope>::fail(target.error());
+        }
+        if (!util::urlStartsWithAny(target.value(), config.security.allowedBaseUrls)) {
+            return Result<ManifestEnvelope>::fail({ErrorCode::SecurityPolicyViolation, "Release manifest URL is not allowed"});
         }
         raw = fetchTextAndVerify(
             target.value(),

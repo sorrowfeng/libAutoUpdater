@@ -708,6 +708,8 @@ std::vector<std::string> allowedBaseUrls;
 
 即使 manifest 签名通过，也只允许从受信任的 baseUrl 下载文件。
 
+如果客户端使用 index manifest，index 中选出的 release manifest URL 也会受 `allowedBaseUrls` 约束。
+
 ## 9. 平台策略
 
 ### 9.1 安装布局
@@ -779,9 +781,9 @@ updater 子程序侧：
 install/.autoupdater/update.lock
 ```
 
-Windows 可使用 named mutex 或 lock file。
+当前实现使用 `update.lock` 目录作为跨平台原子锁，目录创建成功即获得锁，失败则认为已有 updater 正在运行。
 
-POSIX 可使用 `flock` 或 lock file。
+Windows 后续也可扩展为 named mutex；POSIX 后续也可扩展为 `flock`。
 
 ## 11. CMake 目标
 
