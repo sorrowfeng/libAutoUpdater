@@ -121,9 +121,28 @@ docs/                         Architecture, manifest, and apply-plan docs
 }
 ```
 
+## Dependency Model
+
+The public API does not expose libcurl, OpenSSL, Qt, or JSON-library types.
+External integrations are isolated behind interfaces so applications can keep
+their own dependency policy.
+
+Network backend selection:
+
+- `file://` and plain local paths are always supported by the default adapter.
+- libcurl is used for HTTP/HTTPS when CMake finds `CURL::libcurl`.
+- On Windows, if libcurl is not available and `LIBAUTOUPDATER_WITH_WINHTTP=ON`,
+  the default adapter uses the native WinHTTP API.
+- Qt users can provide a `QNetworkAccessManager`-based adapter without changing
+  the core library API.
+
+Signature verification is also optional. If OpenSSL is found, the default
+OpenSSL verifier can be built. If not, applications can inject their own
+`ISignatureVerifier` implementation or leave manifest signing disabled.
+
 ## Build
 
-Configure and build:
+Default local build:
 
 ```sh
 cmake -S . -B build
@@ -151,6 +170,76 @@ LIBAUTOUPDATER_ENABLE_WARNINGS=ON
 LIBAUTOUPDATER_WARNINGS_AS_ERRORS=OFF
 LIBAUTOUPDATER_ENABLE_SANITIZERS=OFF
 ```
+
+Preset-based builds are available when using CMake 3.21 or newer:
+
+```sh
+cmake --list-presets
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+```
+
+Useful presets:
+
+- `dev`: default developer build with examples, tests, updater, and automatic optional dependency probing.
+- `no-optional-deps`: verifies the core library without libcurl, OpenSSL, or Qt.
+- `windows-winhttp`: Windows build that disables libcurl and uses native WinHTTP for HTTPS.
+- `vcpkg-debug`: uses vcpkg manifest mode to provide libcurl and OpenSSL.
+- `vcpkg-release`: release-oriented vcpkg build without examples or tests.
+
+### Using vcpkg
+
+The repository includes [vcpkg.json](vcpkg.json) with `curl`, `openssl`, and a
+pinned vcpkg registry baseline for developers who want a repeatable dependency
+setup.
+
+Install or clone vcpkg, bootstrap it, and set `VCPKG_ROOT`:
+
+```sh
+git clone https://github.com/microsoft/vcpkg.git
+./vcpkg/bootstrap-vcpkg.sh
+export VCPKG_ROOT=$PWD/vcpkg
+```
+
+On Windows PowerShell:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git C:\src\vcpkg
+C:\src\vcpkg\bootstrap-vcpkg.bat
+$env:VCPKG_ROOT = "C:\src\vcpkg"
+```
+
+Then build through the preset:
+
+```sh
+cmake --preset vcpkg-debug
+cmake --build --preset vcpkg-debug
+ctest --preset vcpkg-debug
+```
+
+vcpkg is optional. Linux and macOS users can also provide curl/OpenSSL through
+their system package manager and use the default CMake configure command. Windows
+users can skip libcurl entirely and use the WinHTTP preset:
+
+```powershell
+cmake --preset windows-winhttp
+cmake --build --preset windows-winhttp
+ctest --preset windows-winhttp
+```
+
+### Runtime Packaging
+
+Applications decide how runtime dependencies are shipped:
+
+- If libcurl/OpenSSL are linked dynamically, package the matching runtime
+  DLLs/dylibs/shared objects and their license notices with the application.
+- If static libraries are used, verify the resulting license obligations and
+  TLS backend configuration.
+- Windows WinHTTP builds do not require shipping libcurl because WinHTTP is a
+  system component.
+- Package-manager-owned Linux installs should usually delegate updates to the
+  package manager instead of self-replacing files.
 
 Use from another CMake project after installation:
 

@@ -30,6 +30,9 @@ jobs:
       - name: Validate Python Tools
         run: python -m py_compile tools/make_manifest.py tools/make_index.py tools/sign_manifest.py examples/github_update_demo.py tests/e2e_flow.py
 
+      - name: Validate CMake Presets
+        run: cmake --list-presets
+
       - name: Validate Packaging Tools
         run: |
           mkdir -p packaging-probe/release/bin

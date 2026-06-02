@@ -6,6 +6,7 @@ out/
 install-*/
 artifacts/
 demo-work/
+vcpkg_installed/
 
 # CMake generated files
 CMakeCache.txt

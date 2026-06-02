@@ -1,0 +1,166 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer Debug",
+      "description": "Build the library, updater, examples, and tests with default optional adapter probing.",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
+        "LIBAUTOUPDATER_BUILD_TESTS": "ON",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release Library",
+      "description": "Build release artifacts without examples or tests.",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "OFF",
+        "LIBAUTOUPDATER_BUILD_TESTS": "OFF",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "no-optional-deps",
+      "displayName": "No Optional Dependencies",
+      "description": "Exercise the core library without libcurl, OpenSSL, or Qt.",
+      "binaryDir": "${sourceDir}/build/no-optional-deps",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
+        "LIBAUTOUPDATER_BUILD_TESTS": "ON",
+        "LIBAUTOUPDATER_WITH_CURL": "OFF",
+        "LIBAUTOUPDATER_WITH_OPENSSL": "OFF",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "windows-winhttp",
+      "displayName": "Windows WinHTTP",
+      "description": "Build on Windows without libcurl and use the native WinHTTP HTTPS backend.",
+      "binaryDir": "${sourceDir}/build/windows-winhttp",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
+        "LIBAUTOUPDATER_BUILD_TESTS": "ON",
+        "LIBAUTOUPDATER_WITH_CURL": "OFF",
+        "LIBAUTOUPDATER_WITH_WINHTTP": "ON",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "vcpkg-debug",
+      "displayName": "vcpkg Debug",
+      "description": "Use vcpkg manifest mode for libcurl and OpenSSL. Requires VCPKG_ROOT.",
+      "binaryDir": "${sourceDir}/build/vcpkg-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
+        "LIBAUTOUPDATER_BUILD_TESTS": "ON",
+        "LIBAUTOUPDATER_WITH_CURL": "ON",
+        "LIBAUTOUPDATER_REQUIRE_CURL": "ON",
+        "LIBAUTOUPDATER_WITH_OPENSSL": "ON",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "vcpkg-release",
+      "displayName": "vcpkg Release",
+      "description": "Release build using vcpkg manifest mode. Requires VCPKG_ROOT.",
+      "binaryDir": "${sourceDir}/build/vcpkg-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "OFF",
+        "LIBAUTOUPDATER_BUILD_TESTS": "OFF",
+        "LIBAUTOUPDATER_WITH_CURL": "ON",
+        "LIBAUTOUPDATER_REQUIRE_CURL": "ON",
+        "LIBAUTOUPDATER_WITH_OPENSSL": "ON",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "no-optional-deps",
+      "configurePreset": "no-optional-deps",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-winhttp",
+      "configurePreset": "windows-winhttp",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vcpkg-debug",
+      "configurePreset": "vcpkg-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vcpkg-release",
+      "configurePreset": "vcpkg-release",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "no-optional-deps",
+      "configurePreset": "no-optional-deps",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-winhttp",
+      "configurePreset": "windows-winhttp",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vcpkg-debug",
+      "configurePreset": "vcpkg-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
