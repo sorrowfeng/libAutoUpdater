@@ -279,13 +279,45 @@ Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const Netw
     return Result<CfRef<CFReadStreamRef>>::ok(std::move(stream));
 }
 
-Result<CfRef<CFHTTPMessageRef>> responseHeaders(CFReadStreamRef stream) {
+CfRef<CFHTTPMessageRef> copyResponseHeaders(CFReadStreamRef stream) {
     const auto value = CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPResponseHeader);
     if (!value) {
-        return Result<CfRef<CFHTTPMessageRef>>::fail({ErrorCode::NetworkError, "No HTTP response headers received"});
+        return {};
     }
     auto response = static_cast<CFHTTPMessageRef>(const_cast<void*>(value));
-    return Result<CfRef<CFHTTPMessageRef>>::ok(CfRef<CFHTTPMessageRef>(response));
+    return CfRef<CFHTTPMessageRef>(response);
+}
+
+struct ResponseStart {
+    CfRef<CFHTTPMessageRef> headers;
+    std::vector<char> bufferedBody;
+};
+
+Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CancellationToken& cancel) {
+    ResponseStart start;
+    std::array<UInt8, 64 * 1024> buffer{};
+
+    for (;;) {
+        if (cancel.isCancelled()) {
+            return Result<ResponseStart>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        }
+
+        if (auto headers = copyResponseHeaders(stream)) {
+            start.headers = std::move(headers);
+            return Result<ResponseStart>::ok(std::move(start));
+        }
+
+        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(buffer.size()));
+        if (count < 0) {
+            return Result<ResponseStart>::fail({ErrorCode::NetworkError, streamError(stream, "CFReadStreamRead")});
+        }
+        if (count == 0) {
+            return Result<ResponseStart>::fail({ErrorCode::NetworkError, "No HTTP response headers received"});
+        }
+
+        const auto* begin = reinterpret_cast<const char*>(buffer.data());
+        start.bufferedBody.insert(start.bufferedBody.end(), begin, begin + count);
+    }
 }
 
 Result<std::vector<char>> readResponse(CFReadStreamRef stream,
@@ -294,11 +326,36 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream,
                                        const std::string& currentFile,
                                        std::uint64_t initialBytes,
                                        std::uint64_t expectedBytes,
-                                       std::ofstream* output) {
+                                       std::ofstream* output,
+                                       const std::vector<char>& initialBody = {}) {
     std::vector<char> bytes;
     std::array<UInt8, 64 * 1024> buffer{};
     std::uint64_t downloaded = initialBytes;
     const std::uint64_t total = expectedBytes > 0 ? initialBytes + expectedBytes : 0;
+
+    const auto consume = [&](const char* data, std::size_t count) -> Result<void> {
+        if (output) {
+            output->write(data, static_cast<std::streamsize>(count));
+            if (!*output) {
+                return Result<void>::fail({ErrorCode::DownloadFailed, "Failed to write target file"});
+            }
+        } else {
+            bytes.insert(bytes.end(), data, data + count);
+        }
+
+        downloaded += static_cast<std::uint64_t>(count);
+        if (progress) {
+            progress({downloaded, total, currentFile});
+        }
+        return Result<void>::ok();
+    };
+
+    if (!initialBody.empty()) {
+        auto consumed = consume(initialBody.data(), initialBody.size());
+        if (!consumed) {
+            return Result<std::vector<char>>::fail(consumed.error());
+        }
+    }
 
     for (;;) {
         if (cancel.isCancelled()) {
@@ -313,19 +370,9 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream,
             break;
         }
 
-        if (output) {
-            output->write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(count));
-            if (!*output) {
-                return Result<std::vector<char>>::fail({ErrorCode::DownloadFailed, "Failed to write target file"});
-            }
-        } else {
-            const auto* begin = reinterpret_cast<const char*>(buffer.data());
-            bytes.insert(bytes.end(), begin, begin + count);
-        }
-
-        downloaded += static_cast<std::uint64_t>(count);
-        if (progress) {
-            progress({downloaded, total, currentFile});
+        auto consumed = consume(reinterpret_cast<const char*>(buffer.data()), static_cast<std::size_t>(count));
+        if (!consumed) {
+            return Result<std::vector<char>>::fail(consumed.error());
         }
     }
 
@@ -365,17 +412,24 @@ public:
             if (!stream) {
                 return Result<std::string>::fail(stream.error());
             }
-            auto response = responseHeaders(stream.value().get());
+            auto response = waitForResponse(stream.value().get(), cancel);
             if (!response) {
                 return Result<std::string>::fail(response.error());
             }
-            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().get());
+            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().headers.get());
             if (status >= 400) {
                 return Result<std::string>::fail({ErrorCode::NetworkError, "HTTP error " + std::to_string(status)});
             }
 
             auto bytes = readResponse(
-                stream.value().get(), cancel, {}, {}, 0, contentLength(response.value().get()), nullptr);
+                stream.value().get(),
+                cancel,
+                {},
+                {},
+                0,
+                contentLength(response.value().headers.get()),
+                nullptr,
+                response.value().bufferedBody);
             if (!bytes) {
                 return Result<std::string>::fail(bytes.error());
             }
@@ -414,12 +468,12 @@ public:
             if (!stream) {
                 return Result<DownloadResult>::fail(stream.error());
             }
-            auto response = responseHeaders(stream.value().get());
+            auto response = waitForResponse(stream.value().get(), cancel);
             if (!response) {
                 return Result<DownloadResult>::fail(response.error());
             }
 
-            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().get());
+            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().headers.get());
             if (options.enableResume && resume && resume->offset > 0 && status == 200) {
                 std::filesystem::remove(target, ec);
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
@@ -443,8 +497,9 @@ public:
                 std::move(progress),
                 target.generic_string(),
                 initialBytes,
-                contentLength(response.value().get()),
-                &output);
+                contentLength(response.value().headers.get()),
+                &output,
+                response.value().bufferedBody);
             if (!bytes) {
                 const auto code = bytes.error().code == ErrorCode::NetworkError
                     ? ErrorCode::DownloadFailed
@@ -459,8 +514,8 @@ public:
             if (!sizeError) {
                 result.bytesWritten = finalSize;
             }
-            result.etag = queryHeader(response.value().get(), CFSTR("ETag"));
-            result.lastModified = queryHeader(response.value().get(), CFSTR("Last-Modified"));
+            result.etag = queryHeader(response.value().headers.get(), CFSTR("ETag"));
+            result.lastModified = queryHeader(response.value().headers.get(), CFSTR("Last-Modified"));
             return Result<DownloadResult>::ok(std::move(result));
         } catch (...) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Unexpected CFNetwork download failure"});

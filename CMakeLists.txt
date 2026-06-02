@@ -141,6 +141,7 @@ endif()
 
 if(APPLE AND LIBAUTOUPDATER_WITH_CFNETWORK AND NOT LIBAUTOUPDATER_HAS_HTTP_BACKEND)
     target_sources(libAutoUpdater PRIVATE src/default/CfNetworkClient.cpp)
+    set_source_files_properties(src/default/CfNetworkClient.cpp PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
     target_link_libraries(libAutoUpdater PRIVATE "-framework CFNetwork" "-framework CoreFoundation")
     target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CFNETWORK=1)
     set(LIBAUTOUPDATER_HAS_HTTP_BACKEND TRUE)
