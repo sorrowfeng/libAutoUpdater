@@ -50,9 +50,8 @@ Before changing update or apply behavior, verify:
 
 ## Documentation
 
-Prefer clear Chinese documentation for user-facing design docs in this repository. API names and code identifiers should remain English.
+Default Markdown documentation in this repository should be written in English. Localized documents may be added when they are explicit translations, such as `README.zh-CN.md`. API names and code identifiers should remain English.
 
 ## Current Status
 
-The repository currently contains architecture planning materials. Implementation should proceed according to the phases in `docs/architecture-plan.md`.
-
+The repository contains the core library, external updater executable, CLI and Qt examples, packaging tools, tests, CI workflows, and architecture documentation. Use `docs/architecture-plan.md` as the design reference when changing update behavior.

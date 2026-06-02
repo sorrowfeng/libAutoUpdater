@@ -1,65 +1,65 @@
 # Troubleshooting
 
-## No HTTP network adapter is available
+## No HTTP Network Adapter Is Available
 
-原因：当前构建没有可用 HTTP/HTTPS 后端。
+Cause: the current build has no usable HTTP/HTTPS backend.
 
-解决：
+Fix:
 
-- Linux/macOS：安装 libcurl development package，或 macOS 使用 CFNetwork。
-- Windows：开启 `LIBAUTOUPDATER_WITH_WINHTTP=ON`。
-- vcpkg：使用 `cmake --preset vcpkg-debug`。
+- Linux/macOS: install a libcurl development package, or use CFNetwork on macOS.
+- Windows: enable `LIBAUTOUPDATER_WITH_WINHTTP=ON`.
+- vcpkg: use `cmake --preset vcpkg-debug`.
 
-## Manifest baseUrl is not allowed
+## Manifest baseUrl Is Not Allowed
 
-原因：`SecurityOptions::allowedBaseUrls` 不包含 manifest 的 `baseUrl` 或 index 选出的 manifest URL。
+Cause: `SecurityOptions::allowedBaseUrls` does not include the manifest `baseUrl` or the manifest URL selected from an index manifest.
 
-解决：把完整可信前缀加入 allowlist，注意 host 边界。
+Fix: add the full trusted prefix to the allowlist and keep host-boundary matching in mind.
 
 ## PathTraversalRejected
 
-manifest 中存在非法路径：
+The manifest contains an invalid path:
 
-- 绝对路径。
-- `..`。
-- Windows drive prefix。
-- 空路径。
+- Absolute path.
+- `..`.
+- Windows drive prefix.
+- Empty path.
 
-修复 manifest 或打包脚本输入。
+Fix the manifest or the packaging script input.
 
-## Server ignored Range request
+## Server Ignored Range Request
 
-断点续传时服务器返回 200 而不是 206。库会拒绝把已有 partial 文件和完整响应混在一起。
+During resume, the server returned 200 instead of 206. The library refuses to combine an existing partial file with a full response.
 
-解决：
+Fix:
 
-- 配置服务器支持 Range。
-- 或关闭 `NetworkOptions::enableResume`。
+- Configure the server to support Range requests.
+- Or disable `NetworkOptions::enableResume`.
 
 ## HashMismatch
 
-下载文件 SHA-256 与 manifest 不一致。
+The downloaded file SHA-256 does not match the manifest.
 
-检查：
+Check:
 
-- manifest 是否与实际上传文件对应。
-- CDN 是否缓存了旧文件。
-- 是否手工修改了 object 文件。
-- manifest 签名是否覆盖了正确的 manifest。
+- The manifest matches the uploaded files.
+- The CDN is not serving stale files.
+- Object files were not edited manually.
+- The manifest signature covers the intended manifest.
 
-## External updater did not replace files
+## External Updater Did Not Replace Files
 
-检查：
+Check:
 
-- 主程序是否仍在运行。
-- `updaterExecutable` 是否指向 `autoupdater_apply`。
-- `apply-plan.json` 是否写入。
-- 安装目录权限是否允许替换。
-- 是否存在残留 `.autoupdater/update.lock`。
+- The main application is not still running.
+- `updaterExecutable` points to `autoupdater_apply`.
+- `apply-plan.json` was written.
+- The installation directory allows replacement.
+- No stale `.autoupdater/update.lock` remains.
 
-## Python command fails on Windows
+## Python Command Fails on Windows
 
-Windows 上 `python` 可能指向 Microsoft Store alias。可以使用：
+On Windows, `python` may point to the Microsoft Store alias. Use:
 
 ```powershell
 uv run python --version

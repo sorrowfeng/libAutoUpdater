@@ -1,25 +1,25 @@
 # Code of Conduct
 
-我们希望 `libAutoUpdater` 的讨论保持专业、友善和高信号。参与项目即表示你同意遵守以下准则。
+We want `libAutoUpdater` discussions to stay professional, kind, and high-signal. By participating in this project, you agree to follow these guidelines.
 
 ## Our Standards
 
-鼓励的行为：
+Encouraged behavior:
 
-- 尊重不同经验水平和使用场景。
-- 对技术观点给出事实、代码或测试依据。
-- 在安全、兼容性和用户数据风险上保持谨慎。
-- 接受维护者为了项目长期稳定而要求缩小改动范围或补充测试。
+- Respect different experience levels and integration contexts.
+- Support technical opinions with facts, code, or tests.
+- Be careful around security, compatibility, and user data risk.
+- Accept that maintainers may ask for a smaller change or additional tests to protect long-term project stability.
 
-不接受的行为：
+Unacceptable behavior:
 
-- 人身攻击、骚扰、歧视性表达。
-- 在公开 issue 中披露未修复安全漏洞的可利用细节。
-- 刻意破坏讨论、CI、release 或项目基础设施。
-- 反复无视维护者已经明确说明的边界。
+- Personal attacks, harassment, or discriminatory language.
+- Public disclosure of exploitable details for an unfixed security vulnerability.
+- Intentional disruption of discussions, CI, releases, or project infrastructure.
+- Repeatedly ignoring boundaries that maintainers have clearly stated.
 
 ## Enforcement
 
-维护者可以编辑、隐藏或删除不符合准则的内容，也可以限制持续破坏协作环境的账号参与项目。
+Maintainers may edit, hide, or delete content that violates these guidelines. Maintainers may also restrict accounts that repeatedly disrupt the collaboration environment.
 
-如果你遇到问题，请通过 issue、discussion 或私下安全渠道联系维护者。
+If you encounter a problem, contact maintainers through an issue, discussion, or private security channel as appropriate.

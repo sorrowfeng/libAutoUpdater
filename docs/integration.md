@@ -9,43 +9,43 @@ target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 
 ## CMake find_package
 
-安装后使用：
+After installation:
 
 ```cmake
 find_package(libAutoUpdater CONFIG REQUIRED)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
-## 网络后端
+## Network Backends
 
-默认选择顺序：
+Default selection order:
 
-- 本地路径和 `file://` 始终可用。
-- CMake 找到 `CURL::libcurl` 时使用 libcurl。
-- Windows 上没有 libcurl 且 `LIBAUTOUPDATER_WITH_WINHTTP=ON` 时使用 WinHTTP。
-- macOS 上没有 libcurl 且 `LIBAUTOUPDATER_WITH_CFNETWORK=ON` 时使用 CFNetwork。
-- Qt 用户可以注入 `QNetworkAccessManager` 适配器。
+- Local paths and `file://` are always available.
+- libcurl is used when CMake finds `CURL::libcurl`.
+- Windows uses WinHTTP when libcurl is unavailable and `LIBAUTOUPDATER_WITH_WINHTTP=ON`.
+- macOS uses CFNetwork when libcurl is unavailable and `LIBAUTOUPDATER_WITH_CFNETWORK=ON`.
+- Qt users can inject a `QNetworkAccessManager` adapter.
 
-## 回调线程
+## Callback Threading
 
-`Updater` 在后台线程执行检查和下载。回调通过 `IEventDispatcher` 投递：
+`Updater` performs checks and downloads on background threads. Callbacks are delivered through `IEventDispatcher`:
 
-- 默认 dispatcher 会直接执行回调。
-- GUI 应用应注入自己的 dispatcher，把回调投递回 UI 线程。
-- Qt 示例提供了 `QtDispatcher`。
+- The default dispatcher invokes callbacks directly.
+- GUI applications should inject a dispatcher that posts callbacks back to the UI thread.
+- The Qt example includes `QtDispatcher`.
 
-## 取消语义
+## Cancellation Semantics
 
-调用 `Updater::cancel()` 会请求取消当前检查或下载。取消是协作式的：
+`Updater::cancel()` requests cancellation of the current check or download. Cancellation is cooperative:
 
-- 网络后端会定期检查 token。
-- 下载中断后可能留下临时文件和 resume 状态。
-- 后续重试可以继续断点下载，具体取决于服务器是否支持 Range。
+- Network backends periodically observe the cancellation token.
+- Interrupted downloads may leave temporary files and resume metadata.
+- A later retry can resume the download if the server supports Range requests.
 
-## 强制更新
+## Mandatory Updates
 
-manifest 中 `mandatory=true` 时，`CheckResult::mandatory` 会为 true。库不直接禁用 UI 的“稍后”，由调用方根据产品策略处理。
+When `mandatory=true` appears in the manifest, `CheckResult::mandatory` is true. The library does not directly disable a "later" UI action; callers should apply their own product policy.
 
-## package-manager-owned 安装
+## Package-Manager-Owned Installs
 
-如果应用由系统包管理器管理，不建议自替换文件。可将 `Config::installLayout` 设为 `PackageManagerOwned`，库会拒绝自更新流程，调用方应引导用户使用系统包管理器。
+If an application is managed by the system package manager, self-replacement is usually the wrong model. Set `Config::installLayout` to `PackageManagerOwned`; the library rejects the self-update flow and the caller should direct users to the package manager.

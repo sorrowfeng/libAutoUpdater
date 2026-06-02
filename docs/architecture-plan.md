@@ -1,32 +1,35 @@
-# libAutoUpdater 架构与实施计划
+# libAutoUpdater Architecture and Implementation Plan
 
-本文档描述 `libAutoUpdater` 的目标架构、核心模块、关键设计取舍、实施阶段与验收标准。
+This document describes the target architecture, core modules, design tradeoffs, implementation phases, and acceptance criteria for `libAutoUpdater`.
 
-目标是实现一个通用的、生产可用的 C++17 桌面应用在线更新库，支持 Windows、macOS、Linux，后端使用静态文件与 HTTP/HTTPS 服务器，不强依赖自建服务端。
+The goal is a general-purpose, production-ready C++17 online update library for desktop applications on Windows, macOS, and Linux. Update files are hosted as static files over HTTP/HTTPS, without requiring a custom backend service.
 
-## 1. 设计目标
+## 1. Design Goals
 
-`libAutoUpdater` 面向桌面应用自更新场景，核心目标如下：
+`libAutoUpdater` targets desktop self-update scenarios.
 
-- 跨平台：支持 Windows、macOS、Linux。
-- 低耦合：库本身不绑定任何 GUI 框架。
-- 可替换：网络、哈希、文件系统、签名、进程启动、事件投递均通过接口抽象。
-- 可测试：核心决策逻辑尽量纯函数化，便于 mock 与单元测试。
-- 可恢复：更新失败时可回滚；新版本启动失败时可恢复上一版本。
-- 可审计：manifest、apply plan、事务日志均为清晰的结构化文件。
-- 后端简单：支持纯静态文件服务器发布更新。
-- 安全优先：支持 HTTPS 校验、SHA-256 校验、manifest 签名、防降级、防重放。
+Goals:
 
-非目标：
+- Cross-platform support for Windows, macOS, and Linux.
+- No GUI framework dependency in the core library.
+- Replaceable network, hash, filesystem, signature, process launch, event dispatch, and persistence layers.
+- Testable core decision logic with mocks and unit tests.
+- Rollback after failed apply operations.
+- Recovery path when a newly applied version is not confirmed healthy.
+- Auditable structured artifacts: manifests, apply plans, state files, and transaction journals.
+- Static-file release hosting.
+- Security-first behavior: TLS verification, SHA-256 verification, manifest signatures, anti-downgrade, and anti-replay.
 
-- 第一阶段不实现二进制 patch。
-- 第一阶段不内置服务端。
-- 第一阶段不直接绑定 Qt、MFC、wxWidgets、Electron 等 GUI 框架。
-- 对系统包管理器安装的软件，不默认绕过包管理器进行自更新。
+Non-goals for the first major implementation line:
 
-## 2. 总体架构
+- Binary patch generation.
+- Built-in server implementation.
+- Direct dependency on Qt, MFC, wxWidgets, Electron, or another GUI framework.
+- Bypassing system package managers for package-manager-owned installations.
 
-整体采用四层结构：
+## 2. High-Level Architecture
+
+The project uses four main layers:
 
 ```text
 Application
@@ -60,7 +63,7 @@ Infrastructure Interfaces
 Default Implementations
 ```
 
-文件替换不在主应用进程内执行，而由独立 updater 子程序完成：
+File replacement is not performed inside the main application process. It is delegated to an external updater executable:
 
 ```text
 Main App
@@ -84,7 +87,9 @@ autoupdater_apply
 Updated App
 ```
 
-## 3. 推荐目录结构
+This avoids self-overwrite problems, especially on Windows where running executables and DLLs cannot be replaced directly.
+
+## 3. Repository Structure
 
 ```text
 libAutoUpdater/
@@ -125,83 +130,51 @@ libAutoUpdater/
     ApplyLauncher.cpp
     util/
       PathUtil.cpp
-      JsonUtil.cpp
-      UrlUtil.cpp
+      Json.cpp
+      UrlUtil.h
     default/
       CurlNetworkClient.cpp
+      WinHttpNetworkClient.cpp
+      CfNetworkClient.cpp
       Sha256HashProvider.cpp
       StdFileSystem.cpp
       OpenSslSignatureVerifier.cpp
       NullSignatureVerifier.cpp
       DirectDispatcher.cpp
-      ThreadDispatcher.cpp
       ProcessLauncher.cpp
       JsonStateStore.cpp
 
   updater/
-    CMakeLists.txt
     main.cpp
     ApplyExecutor.h
     ApplyExecutor.cpp
-    TransactionJournal.h
-    TransactionJournal.cpp
-    platform/
-      FileReplace_win.cpp
-      FileReplace_posix.cpp
-      ProcessWait_win.cpp
-      ProcessWait_posix.cpp
-      Lock_win.cpp
-      Lock_posix.cpp
 
   examples/
     cli/
-      CMakeLists.txt
-      main.cpp
     qt/
-      CMakeLists.txt
-      QtNetworkClient.h
-      QtNetworkClient.cpp
-      QtDispatcher.h
-      QtDispatcher.cpp
-      main.cpp
+    update-server/
 
   tests/
-    CMakeLists.txt
-    VersionTests.cpp
-    ManifestTests.cpp
-    UpdatePlannerTests.cpp
-    DownloadExecutorTests.cpp
-    ApplyPlanTests.cpp
-    MockNetworkClient.h
-    MockFileSystem.h
-    MockHashProvider.h
-    MockStateStore.h
-
   tools/
-    make_manifest.py
-
   docs/
-    architecture-plan.md
-    manifest.example.json
-    apply-plan.example.json
 ```
 
-## 4. 核心对象
+## 4. Core Objects
 
 ### 4.1 Updater
 
-`Updater` 是应用侧唯一需要直接使用的门面类。
+`Updater` is the facade class normally used by applications.
 
-职责：
+Responsibilities:
 
-- 管理状态机。
-- 管理后台检查与下载线程。
-- 暴露取消能力。
-- 暴露检查结果、进度、错误、可应用更新等回调。
-- 调用 orchestrator 完成实际流程。
-- 通过 `IEventDispatcher` 投递回调。
+- Manage the public state machine.
+- Run background check and download tasks.
+- Expose cancellation.
+- Expose check results, progress, errors, and ready-to-apply callbacks.
+- Coordinate manifest fetching, planning, downloading, apply-plan writing, and updater launch.
+- Deliver callbacks through `IEventDispatcher`.
 
-典型使用：
+Typical usage:
 
 ```cpp
 autoupdater::Config config = ...;
@@ -210,7 +183,7 @@ updater.setCallbacks(callbacks);
 updater.checkAndDownloadAsync();
 ```
 
-状态机：
+State machine:
 
 ```text
 Idle
@@ -225,9 +198,9 @@ Idle
 
 ### 4.2 Version
 
-`Version` 负责 SemVer 解析与比较。
+`Version` parses and compares SemVer values.
 
-支持格式：
+Supported forms:
 
 - `1.2.3`
 - `1.2.3-alpha`
@@ -235,142 +208,136 @@ Idle
 - `1.2.3+build.5`
 - `1.2.3-alpha.1+build.5`
 
-比较规则遵循 SemVer：
+Comparison follows SemVer:
 
-- major、minor、patch 依次比较。
-- release 版本高于 prerelease 版本。
-- build metadata 不参与优先级比较。
+- `major`, `minor`, and `patch` are compared in order.
+- A release version has higher precedence than a prerelease version.
+- Build metadata does not affect precedence.
 
 ### 4.3 Manifest
 
-manifest 分两类：
+The project uses two manifest types:
 
 1. Index manifest
 2. Release manifest
 
-Index manifest 用于路由不同平台、架构、渠道。
+The index manifest routes by platform, architecture, and channel.
 
-Release manifest 描述某个具体版本的文件、删除项、安全信息和兼容范围。
+The release manifest describes a concrete release version, including files, removals, security metadata, and compatibility constraints.
 
-这样可以支持：
+This supports:
 
-- stable / beta / canary 渠道
-- Windows / macOS / Linux
-- x64 / arm64
-- 灰度发布
-- 平台暂停更新
-- 回滚发布
+- Stable / beta / canary channels.
+- Windows / macOS / Linux.
+- x64 / arm64.
+- Platform-specific pauses.
+- Rollback releases.
 
 ### 4.4 UpdatePlanner
 
-`UpdatePlanner` 只负责决策，不做 IO。
+`UpdatePlanner` is a pure decision module and does not perform IO.
 
-输入：
+Inputs:
 
-- 当前配置快照。
-- 当前版本。
-- 远端 manifest。
-- 本地文件快照。
-- 持久化状态。
+- Configuration snapshot.
+- Current version.
+- Remote manifest.
+- Local file snapshot.
+- Persisted state.
 
-输出：
+Outputs:
 
-- 是否有更新。
-- 是否需要完整重装。
-- 是否强制更新。
-- 需要下载的文件。
-- 需要替换的文件。
-- 需要删除的文件。
-- 是否拒绝降级。
-- 是否拒绝过期 manifest。
+- Whether an update is available.
+- Whether a full reinstall is required.
+- Whether the update is mandatory.
+- Files to download.
+- Files to replace.
+- Files to remove.
+- Whether a downgrade is rejected.
+- Whether an expired manifest is rejected.
 
-设计原则：
-
-```text
-UpdatePlanner = pure decision module
-```
-
-这样单元测试可以直接构造输入并断言输出，不需要真实文件系统或网络。
+Keeping the planner pure makes it easy to unit test without real networking or filesystem access.
 
 ### 4.5 DownloadExecutor
 
-职责：
+Responsibilities:
 
-- 根据 planner 输出下载缺失或 hash 不一致的文件。
-- 下载到 staging 目录。
-- staging 目录结构镜像安装目录。
-- 下载后逐文件 SHA-256 校验。
-- 失败后按配置重试。
-- 支持取消。
-- 支持断点续传。
-- 上报进度。
+- Download files that are missing or whose local hash differs.
+- Download into a staging directory.
+- Mirror the installation layout under staging.
+- Verify each downloaded file with SHA-256.
+- Retry failures according to configuration.
+- Support cancellation.
+- Support resumable downloads.
+- Report progress.
 
-断点续传需要保存：
+Resume metadata includes:
 
 - ETag
 - Last-Modified
 - Content-Length
-- 已下载字节数
+- Downloaded byte count
 
-续传时使用：
+Resume requests use:
 
 ```http
 Range: bytes=<offset>-
 If-Range: "<etag>"
 ```
 
-如果 ETag 或 Last-Modified 不匹配，则丢弃临时文件重新下载。
+If ETag or Last-Modified no longer match, the partial file is discarded and the download restarts.
 
 ### 4.6 ApplyPlan
 
-`ApplyPlan` 是 updater 子程序的唯一输入，不让 updater 重新理解 manifest。
+`ApplyPlan` is the only input consumed by the updater executable. The updater does not re-interpret the release manifest.
 
-它是事务描述，而不是简单文件列表。
+The apply plan is a transaction description, not just a file list.
 
-包含：
+It includes:
 
-- schemaVersion
-- appId
-- fromVersion
-- toVersion
-- manifestSha256
-- installDir
-- stagingDir
-- backupDir
-- restartCommand
-- operations
+- `schemaVersion`
+- `appId`
+- `fromVersion`
+- `toVersion`
+- `manifestSha256`
+- `installDir`
+- `stagingDir`
+- `backupDir`
+- `restartCommand`
+- `operations`
 
-operation 类型：
+Operation types:
 
 - `replace`
 - `remove`
-- 后续可扩展 `chmod`、`mkdir`、`rmdir`、`symlink`
+
+Future operation types may include `chmod`, `mkdir`, `rmdir`, and `symlink`.
 
 ### 4.7 StateStore
 
-`IStateStore` 负责持久化更新状态。
+`IStateStore` persists updater state.
 
-保存内容：
+Stored data includes:
 
-- 上次成功版本。
-- 上次接受的 releaseId。
-- 待健康确认的新版本。
-- 上次失败原因。
-- 回滚信息。
-- 断点续传元信息。
-- 防降级状态。
+- Last successful version.
+- Last accepted release ID.
+- Pending healthy-confirmation version.
+- Last failure reason.
+- Rollback metadata.
+- Download resume metadata.
+- Anti-downgrade state.
 
-建议默认实现使用 JSON 文件：
+The default implementation stores JSON under:
 
 ```text
 install/.autoupdater/state.json
 ```
 
-## 5. Manifest 设计
+## 5. Manifest Design
 
 ### 5.1 Index Manifest
 
-示例：
+Example:
 
 ```json
 {
@@ -393,13 +360,11 @@ install/.autoupdater/state.json
 }
 ```
 
-第一阶段可以允许 `Config.manifestUrl` 直接指向 release manifest，index manifest 作为可选增强。
-
-当前实现允许 `Config.manifestUrl` 指向 release manifest 或 index manifest。指向 index manifest 时，客户端会按 `platform` 与 `arch` 选择匹配的 `manifestUrl`，然后继续下载 release manifest。
+`Config::manifestUrl` may point directly to a release manifest or to an index manifest. When it points to an index manifest, the client selects a matching target by `platform` and `arch`, then downloads the release manifest.
 
 ### 5.2 Release Manifest
 
-示例：
+Example:
 
 ```json
 {
@@ -438,23 +403,23 @@ install/.autoupdater/state.json
 }
 ```
 
-### 5.3 Path 规则
+### 5.3 Path Rules
 
-manifest 中所有路径必须满足：
+All manifest paths must satisfy:
 
-- 使用正斜杠 `/`。
-- 必须是相对路径。
-- 不允许为空。
-- 不允许 `..`。
-- 不允许绝对路径。
-- 不允许 Windows drive prefix。
-- 解析后必须位于 installDir 或 stagingDir 内。
+- Use `/`.
+- Be relative.
+- Be non-empty.
+- Not contain `..`.
+- Not be absolute.
+- Not contain a Windows drive prefix.
+- Resolve inside `installDir` or `stagingDir`.
 
-这可以防止路径穿越和错误覆盖系统文件。
+These rules prevent path traversal and accidental replacement of system files.
 
-## 6. Apply Plan 设计
+## 6. Apply Plan Design
 
-示例：
+Example:
 
 ```json
 {
@@ -486,17 +451,17 @@ manifest 中所有路径必须满足：
 }
 ```
 
-updater 子程序执行 apply plan，并生成事务日志：
+The updater executable executes the apply plan and writes a transaction journal:
 
 ```text
 install/.autoupdater/journal/<transaction-id>.json
 ```
 
-事务日志记录每一步是否完成，便于中断后恢复或回滚。
+The journal records each completed step so interrupted operations can be inspected and future recovery logic can resume cleanup or rollback.
 
-## 7. 更新流程
+## 7. Update Flow
 
-### 7.1 检查更新
+### 7.1 Check
 
 ```text
 checkAsync()
@@ -531,7 +496,7 @@ plan update
   +-- rejected
 ```
 
-### 7.2 下载更新
+### 7.2 Download
 
 ```text
 checkAndDownloadAsync()
@@ -555,7 +520,7 @@ write apply-plan.json
 ReadyToApply
 ```
 
-### 7.3 应用更新
+### 7.3 Apply
 
 ```text
 applyAndRestartAsync()
@@ -585,15 +550,15 @@ verify installed files
   +-- failure -> rollback -> report failure
 ```
 
-### 7.4 健康确认
+### 7.4 Healthy Confirmation
 
-更新成功并不代表新版本可用。新版本启动后应主动调用：
+Successful apply does not prove the new version works. After the updated application starts, it should call:
 
 ```cpp
 updater.markCurrentVersionHealthy();
 ```
 
-流程：
+Flow:
 
 ```text
 updater applied update
@@ -611,31 +576,27 @@ markCurrentVersionHealthy()
 clear backup / clear pending state
 ```
 
-如果新版本未在约定时间内确认健康，则下一次启动时可以：
+If the new version does not confirm health within the configured window, the next startup can prompt the user, roll back automatically, or enter safe mode.
 
-- 提示用户。
-- 自动回滚。
-- 或进入安全模式。
-
-## 8. 安全策略
+## 8. Security Strategy
 
 ### 8.1 HTTPS
 
-默认开启 TLS 证书校验。
+TLS certificate verification is enabled by default.
 
-允许配置关闭：
+It can be disabled for tests:
 
 ```cpp
 network.verifyTls = false;
 ```
 
-仅建议测试环境使用。
+Do not disable it in production.
 
-### 8.2 文件完整性
+### 8.2 File Integrity
 
-manifest 中每个文件必须包含 SHA-256。
+Every file in the manifest must contain a SHA-256 digest.
 
-下载后必须校验：
+After download:
 
 ```text
 download file
@@ -648,18 +609,16 @@ sha256 downloaded file
   +-- retry exhausted -> fail
 ```
 
-### 8.3 Manifest 签名
+### 8.3 Manifest Signature
 
-生产环境推荐强制签名。
-
-采用 detached signature：
+Production channels should require detached manifest signatures:
 
 ```text
 manifest.json
-manifest.sig
+manifest.json.sig
 ```
 
-验签流程：
+Verification flow:
 
 ```text
 download manifest raw bytes
@@ -668,53 +627,47 @@ verify raw bytes with public key
 parse manifest only after signature passes
 ```
 
-签名文件可以是原始二进制，也可以是 base64 文本。发布侧可使用 `tools/sign_manifest.py` 生成 `manifest.json.sig`。
+The signature file may be raw binary or base64 text. The release side can use `tools/sign_manifest.py`.
 
-优点：
+Benefits:
 
-- 避免 JSON canonicalization 问题。
-- 静态服务器容易部署。
-- 服务器被篡改时无法伪造合法 manifest。
+- Avoids JSON canonicalization problems.
+- Works well on static servers.
+- Prevents a compromised static server from creating a valid manifest.
 
-### 8.4 防降级
+### 8.4 Anti-Downgrade
 
-本地持久化：
+Persist locally:
 
-- lastAcceptedVersion
-- lastAcceptedReleaseId
+- `lastAcceptedVersion`
+- `lastAcceptedReleaseId`
 
-默认拒绝低于已接受版本的 manifest。
+By default, manifests older than the accepted version are rejected. Downgrades should only be allowed when `allowDowngrade=true` and the manifest signature is valid.
 
-只有在 manifest 显式设置 `allowDowngrade=true` 且签名有效时，才允许降级。
+### 8.5 Anti-Replay
 
-### 8.5 防重放
+The manifest may include:
 
-manifest 包含：
+- `publishedAt`
+- `expiresAt`
 
-- publishedAt
-- expiresAt
+The client rejects expired manifests. If the local system clock is clearly invalid, return a diagnostic error.
 
-客户端拒绝过期 manifest。
+### 8.6 Download Source Restrictions
 
-如果本地系统时间明显异常，应返回可诊断错误。
-
-### 8.6 下载源限制
-
-`Config` 支持：
+`Config` supports:
 
 ```cpp
 std::vector<std::string> allowedBaseUrls;
 ```
 
-即使 manifest 签名通过，也只允许从受信任的 baseUrl 下载文件。
+Even after a signature passes, files may only be downloaded from trusted base URLs. If an index manifest is used, the selected release manifest URL is also checked.
 
-如果客户端使用 index manifest，index 中选出的 release manifest URL 也会受 `allowedBaseUrls` 约束。
+## 9. Platform Strategy
 
-## 9. 平台策略
+### 9.1 Install Layout
 
-### 9.1 安装布局
-
-引入安装布局枚举：
+Install layout enum:
 
 ```cpp
 enum class InstallLayout {
@@ -726,75 +679,73 @@ enum class InstallLayout {
 };
 ```
 
-第一阶段重点支持：
+Initial focus:
 
 - `PortableDirectory`
 - `WindowsDirectory`
-- `MacOSAppBundle` 的基础目录替换
+- Basic directory replacement for `MacOSAppBundle`
 
-对 `PackageManagerOwned` 默认返回不支持自更新，建议交给系统包管理器。
+For `PackageManagerOwned`, self-update is rejected by default and the caller should direct users to the system package manager.
 
 ### 9.2 Windows
 
-注意事项：
+Considerations:
 
-- 运行中的 `.exe` / `.dll` 不能直接覆盖。
-- 使用独立 updater 等待主进程退出。
-- 文件 API 使用宽字符路径。
-- 支持长路径。
-- 对短暂文件锁定做重试。
-- 需要考虑 UAC 权限不足。
+- Running `.exe` and `.dll` files cannot be overwritten directly.
+- Use the external updater after the main process exits.
+- Use wide-character filesystem APIs.
+- Support long paths.
+- Retry transient file locks.
+- Report insufficient UAC privileges clearly.
 
 ### 9.3 macOS
 
-注意事项：
+Considerations:
 
-- `.app` 是 bundle 目录。
-- 更新后 code signature 必须仍然有效。
-- 需要尽量保留权限和 extended attributes。
-- notarization 与 quarantine 属性需要谨慎处理。
+- `.app` is a bundle directory.
+- Code signature must remain valid after update.
+- Preserve permissions and extended attributes where possible.
+- Notarization and quarantine attributes require careful handling.
 
 ### 9.4 Linux
 
-注意事项：
+Considerations:
 
-- portable tarball / AppImage 更适合自更新。
-- deb/rpm 管理的软件不建议绕过包管理器。
-- 覆盖后需要保留可执行权限。
+- Portable tarball and AppImage layouts are better suited for self-update.
+- deb/rpm-managed software should not bypass the package manager.
+- Preserve executable permissions after replacement.
 
-## 10. 并发与锁
+## 10. Concurrency and Locking
 
-主库侧：
+Core library:
 
-- 单个 `Updater` 实例同一时间只允许一个任务。
-- 支持取消检查和下载。
-- 取消后状态回到 Idle 或 Failed，错误码为 Cancelled。
+- A single `Updater` instance allows only one task at a time.
+- Check and download can be cancelled.
+- After cancellation, state returns to `Idle` or `Failed` with `Cancelled`.
 
-updater 子程序侧：
+Updater executable:
 
-- 对安装目录加 single-instance lock。
-- 防止两个 updater 同时覆盖同一个安装目录。
+- Acquires a single-instance lock for the installation directory.
+- Prevents two updater processes from replacing the same install at the same time.
 
-锁位置：
+Lock location:
 
 ```text
 install/.autoupdater/update.lock
 ```
 
-当前实现使用 `update.lock` 目录作为跨平台原子锁，目录创建成功即获得锁，失败则认为已有 updater 正在运行。
+The current implementation uses an atomic lock directory. Future platform-specific implementations may use a Windows named mutex or POSIX `flock`.
 
-Windows 后续也可扩展为 named mutex；POSIX 后续也可扩展为 `flock`。
+## 11. CMake Targets
 
-## 11. CMake 目标
-
-建议导出目标：
+Exported targets:
 
 ```cmake
 libAutoUpdater::libAutoUpdater
 libAutoUpdater::autoupdater_apply
 ```
 
-构建选项：
+Build options:
 
 ```cmake
 LIBAUTOUPDATER_BUILD_UPDATER=ON
@@ -805,277 +756,273 @@ LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
 ```
 
-使用方式：
+Use after installation:
 
 ```cmake
 find_package(libAutoUpdater CONFIG REQUIRED)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
-也支持：
+Or as a subdirectory:
 
 ```cmake
 add_subdirectory(external/libAutoUpdater)
-target_link_libraries(MyApp PRIVATE libAutoUpdater)
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
-## 12. 测试计划
+## 12. Test Plan
 
-### 12.1 单元测试
+### 12.1 Unit Tests
 
-覆盖：
+Cover:
 
-- SemVer 解析与比较。
-- manifest 解析。
-- schemaVersion 校验。
-- platform / arch / channel 校验。
-- minVersion 判断。
-- mandatory 判断。
-- 防降级判断。
-- 过期 manifest 判断。
-- 文件级差量计划。
-- remove operation 生成。
-- path traversal 拒绝。
-- apply plan 序列化与反序列化。
+- SemVer parsing and comparison.
+- Manifest parsing.
+- Schema version validation.
+- Platform / architecture / channel validation.
+- `minVersion`.
+- Mandatory updates.
+- Anti-downgrade.
+- Expired manifests.
+- File-level diff planning.
+- Remove operation generation.
+- Path traversal rejection.
+- Apply-plan serialization and deserialization.
 
-### 12.2 Mock IO 测试
+### 12.2 Mock IO Tests
 
-使用 mock 实现：
+Use mock implementations of:
 
 - `INetworkClient`
 - `IFileSystem`
 - `IHashProvider`
 - `IStateStore`
 
-覆盖：
+Cover:
 
-- 下载成功。
-- 下载失败重试。
-- hash mismatch 重试。
-- 断点续传。
-- 取消下载。
-- manifest 签名失败。
+- Successful downloads.
+- Download failure and retry.
+- Hash mismatch and retry.
+- Resumable downloads.
+- Download cancellation.
+- Manifest signature failure.
 
-### 12.3 集成测试
+### 12.3 Integration Tests
 
-覆盖：
+Cover:
 
-- 本地 HTTP server 发布静态 manifest 和文件。
-- CLI 示例检查并下载。
-- updater 子程序在临时安装目录执行替换。
-- 替换失败后回滚。
-- 删除旧文件。
+- Static manifest and file hosting.
+- CLI example check and download.
+- Updater executable replacing files in a temporary install directory.
+- Rollback after apply failure.
+- Removal of old files.
 
-### 12.4 平台测试
+### 12.4 Platform Tests
 
-Windows：
+Windows:
 
-- exe 被占用时必须通过 updater 替换。
-- Unicode 路径。
-- 长路径。
+- Running executable replacement through updater.
+- Unicode paths.
+- Long paths.
 
-macOS：
+macOS:
 
-- `.app` bundle 目录替换。
-- 权限保留。
+- `.app` bundle directory replacement.
+- Permission preservation.
 
-Linux：
+Linux:
 
-- 可执行权限保留。
-- symlink 行为后续扩展验证。
+- Executable permission preservation.
+- Future symlink behavior.
 
-## 13. 实施阶段
+## 13. Implementation Phases
 
-### Phase 1: 基础骨架
+### Phase 1: Foundation
 
-交付：
+Deliver:
 
-- CMake 工程。
-- 公共头文件。
-- `Version`。
-- `Result` / `Error`。
-- 接口定义。
-- 基础测试框架。
+- CMake project.
+- Public headers.
+- `Version`.
+- `Result` / `Error`.
+- Interface definitions.
+- Basic test framework.
 
-验收：
+Acceptance:
 
-- 项目可配置、可编译。
-- `VersionTests` 通过。
+- Project configures and builds.
+- `VersionTests` pass.
 
-### Phase 2: Manifest 与 Planner
+### Phase 2: Manifest and Planner
 
-交付：
+Deliver:
 
-- Release manifest 解析。
-- schema 校验。
-- path 校验。
-- `LocalSnapshot` 数据结构。
-- 纯函数化 `UpdatePlanner`。
+- Release manifest parsing.
+- Schema validation.
+- Path validation.
+- `LocalSnapshot`.
+- Pure `UpdatePlanner`.
 
-验收：
+Acceptance:
 
-- 能判断 up-to-date、update available、reinstall required。
-- 能生成 replace / remove 操作计划。
-- path traversal 测试通过。
+- Detects up-to-date, update available, and reinstall required states.
+- Generates replace and remove operation plans.
+- Path traversal tests pass.
 
-### Phase 3: 下载与校验
+### Phase 3: Download and Verification
 
-交付：
+Deliver:
 
-- `INetworkClient`。
-- libcurl 默认实现，以及 Windows WinHTTP / macOS CFNetwork 原生后端。
-- `IHashProvider`。
-- SHA-256 默认实现。
-- `DownloadExecutor`。
-- staging 目录镜像。
-- 重试、取消、进度回调。
+- `INetworkClient`.
+- libcurl default implementation plus native WinHTTP and CFNetwork backends.
+- `IHashProvider`.
+- Default SHA-256 implementation.
+- `DownloadExecutor`.
+- Staging directory mirror.
+- Retry, cancellation, and progress callbacks.
 
-验收：
+Acceptance:
 
-- 能按文件 hash 差量下载。
-- hash mismatch 会重试。
-- 取消下载能终止流程。
+- Downloads only files whose hashes differ or are missing.
+- Retries on hash mismatch.
+- Cancellation stops the flow.
 
-### Phase 4: Apply Plan 与 updater 子程序
+### Phase 4: Apply Plan and Updater Executable
 
-交付：
+Deliver:
 
-- apply plan 生成。
-- updater 子程序。
-- 事务日志。
-- 备份、覆盖、删除、校验、回滚。
-- single-instance lock。
+- Apply plan generation.
+- External updater executable.
+- Transaction journal.
+- Backup, replace, remove, verify, and rollback.
+- Single-instance lock.
 
-验收：
+Acceptance:
 
-- 临时安装目录可以完成真实替换。
-- 替换失败能回滚。
-- remove operation 生效。
+- A temporary install directory can be updated.
+- Replacement failure rolls back.
+- Remove operations take effect.
 
-### Phase 5: 安全能力
+### Phase 5: Security
 
-交付：
+Deliver:
 
-- detached manifest signature。
-- OpenSSL 验签实现。
-- allowedBaseUrls。
-- 防降级。
-- 防重放。
+- Detached manifest signatures.
+- OpenSSL verifier.
+- `allowedBaseUrls`.
+- Anti-downgrade.
+- Anti-replay.
 
-验收：
+Acceptance:
 
-- 签名失败拒绝更新。
-- 过期 manifest 拒绝更新。
-- 降级 manifest 默认拒绝。
+- Invalid signatures reject updates.
+- Expired manifests reject updates.
+- Downgrade manifests are rejected by default.
 
-### Phase 6: 示例、打包工具与文档
+### Phase 6: Examples, Tools, and Documentation
 
-交付：
+Deliver:
 
-- CLI 示例。
-- Qt 示例。
-- `make_manifest.py`。
-- README。
-- manifest 示例。
-- apply plan 示例。
+- CLI example.
+- Qt example.
+- `make_manifest.py`.
+- README.
+- Manifest examples.
+- Apply plan examples.
 
-验收：
+Acceptance:
 
-- 从示例发布目录可以生成 manifest。
-- CLI 示例可完成检查、下载、应用调度。
-- README 覆盖接入和发布流程。
+- A sample release directory can generate a manifest.
+- CLI example can check, download, and schedule apply.
+- README covers integration and release flow.
 
-## 14. 第一版实现范围建议
+## 14. First Release Scope
 
-为了控制复杂度，第一版建议明确范围：
+Required:
 
-必须实现：
+- C++17 core library.
+- Release manifest.
+- SemVer.
+- File-level incremental updates.
+- SHA-256 verification.
+- libcurl network implementation, plus native WinHTTP and CFNetwork HTTPS backends.
+- External updater executable.
+- Apply plan.
+- Replace / remove operations.
+- Rollback.
+- CLI example.
+- Packaging script.
+- Unit tests.
 
-- C++17 核心库。
-- release manifest。
-- SemVer。
-- 文件级差量。
-- SHA-256 校验。
-- libcurl 网络实现，Windows/macOS 可使用系统原生 HTTPS 后端。
-- 独立 updater 子程序。
-- apply plan。
-- replace / remove。
-- 回滚。
-- CLI 示例。
-- 打包脚本。
-- 单元测试。
+Recommended:
 
-建议实现：
+- Detached manifest signatures.
+- Anti-downgrade.
+- Anti-replay.
+- `allowedBaseUrls`.
+- Healthy confirmation.
 
-- manifest detached signature。
-- 防降级。
-- 防重放。
-- allowedBaseUrls。
-- 健康确认。
+Deferred:
 
-可延后：
+- Binary patching.
+- Deep AppImage-specific flow.
+- Deep macOS extended attribute handling.
+- Gradual rollout policy.
 
-- index manifest。
-- Qt 网络实现。
-- AppImage 专用流程。
-- macOS extended attributes 深度处理。
-- 二进制 patch。
-- 灰度发布策略。
+## 15. Key Risks
 
-## 15. 关键风险
+### 15.1 Insufficient Permissions
 
-### 15.1 权限不足
+System install directories may not allow replacement by a normal user.
 
-安装目录位于系统目录时，普通用户可能无法覆盖文件。
+Mitigation:
 
-处理策略：
+- Return explicit error codes.
+- Document permission requirements.
+- Add elevated helper support later if needed.
 
-- 明确错误码。
-- 文档说明权限要求。
-- 后续可扩展提权 helper。
+### 15.2 Broken macOS Code Signature
 
-### 15.2 macOS 签名破坏
+Replacing files inside a bundle may invalidate code signing.
 
-替换 bundle 内文件可能导致 code signature 无效。
+Mitigation:
 
-处理策略：
+- Release artifacts should be signed as a whole.
+- Optionally run `codesign --verify` after update as an external check.
+- Document the constraint clearly.
 
-- 发布侧应整体签名。
-- 更新后可执行 `codesign --verify` 作为外部校验。
-- 文档明确约束。
+### 15.3 Updating the Updater Itself
 
-### 15.3 updater 自身更新
+The updater executable cannot directly replace itself while running.
 
-updater 子程序运行时不能直接覆盖自身。
+Mitigation:
 
-处理策略：
+- Do not update the running updater in the first version.
+- A newly downloaded updater can take effect on the next update cycle.
 
-- 第一版不更新正在运行的 updater。
-- 新 updater 可以随主应用下载，下一次更新再生效。
+### 15.4 Power Loss or Forced Termination
 
-### 15.4 断电或进程被杀
+The apply process may be interrupted.
 
-apply 过程中可能中断。
+Mitigation:
 
-处理策略：
+- Record each step in a transaction journal.
+- Detect incomplete transactions on the next start.
+- Support rollback or cleanup.
 
-- 事务日志记录每一步。
-- 下次启动检测未完成事务。
-- 支持继续回滚或清理。
+## 16. Acceptance Criteria
 
-## 16. 验收标准
+The library should satisfy:
 
-整体完成后，库应满足：
-
-- 应用接入检查更新不超过 5 行核心代码。
-- 无 GUI 依赖。
-- 支持 mock 网络和 mock 文件系统测试。
-- 支持静态文件服务器发布更新。
-- 下载只发生在缺失或 hash 不一致的文件上。
-- 所有下载文件必须通过 SHA-256。
-- manifest schema 不支持时能优雅失败。
-- 版本低于 `minVersion` 时返回完整重装要求。
-- updater 能安全覆盖运行中应用的文件。
-- 覆盖失败能回滚。
-- 新版本可通过健康确认清理备份。
-- CMake 支持 `find_package` 和 `add_subdirectory`。
+- A basic check integration requires no more than a few core lines of application code.
+- No GUI dependency in the core library.
+- Mock network and mock filesystem tests are possible.
+- Static file servers can host updates.
+- Downloads happen only for missing files or files whose hashes differ.
+- Every downloaded file is verified by SHA-256.
+- Unsupported manifest schemas fail gracefully.
+- Local versions below `minVersion` return a reinstall-required result.
+- The updater can safely replace files of a running application.
+- Apply failure can roll back.
+- Healthy confirmation can clear backups after a successful new-version start.
+- CMake supports both `find_package` and `add_subdirectory`.

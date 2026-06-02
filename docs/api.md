@@ -1,58 +1,56 @@
 # Public API Overview
 
-公共 API 位于 `include/libAutoUpdater/`。
+The public API lives under `include/libAutoUpdater/`.
 
-如果本机安装了 Doxygen，可以生成 HTML API 文档：
+If Doxygen is installed locally, generate HTML API documentation with:
 
 ```sh
 doxygen Doxyfile
 ```
 
-输出目录为 `build/docs/html`。
+The output directory is `build/docs/html`.
 
 ## Updater
 
-`Updater` 是门面类，负责：
+`Updater` is the facade class. It is responsible for:
 
-- 检查 manifest。
-- 规划更新。
-- 下载变更文件。
-- 写入 apply plan。
-- 启动外部 updater。
-- 周期检查、取消和回滚入口。
+- Checking manifests.
+- Planning updates.
+- Downloading changed files.
+- Writing apply plans.
+- Launching the external updater.
+- Periodic checks, cancellation, and rollback entry points.
 
-`Updater` 对调用方暴露异步方法。检查、下载和 apply 调度在后台执行；回调通过 `IEventDispatcher` 投递。
+`Updater` exposes asynchronous methods. Check, download, and apply scheduling run in the background. Callbacks are delivered through `IEventDispatcher`.
 
 ## Config
 
-`Config` 描述客户端环境和策略：
+`Config` describes the client environment and policy:
 
-- 应用身份：`appId`、`channel`、`platform`、`arch`。
-- 版本：`currentVersion`、`clientVersion`。
-- 路径：`installDir`、`tempDir`、`updaterExecutable`。
-- 网络策略：超时、TLS、断点续传。
-- 安全策略：签名、公钥、URL allowlist、防降级、防过期 manifest。
-- apply 策略：等待超时、健康确认超时。
+- Application identity: `appId`, `channel`, `platform`, `arch`.
+- Versions: `currentVersion`, `clientVersion`.
+- Paths: `installDir`, `tempDir`, `updaterExecutable`.
+- Network policy: timeouts, TLS, resumable downloads.
+- Security policy: signatures, public key, URL allowlist, anti-downgrade, expired manifest rejection.
+- Apply policy: process wait timeout and healthy-confirmation timeout.
 
 ## Manifest
 
-`Manifest` 表示服务端 release manifest。`files[]` 描述目标版本完整受管文件集合。下载时只下载本地缺失或 SHA-256 不一致的文件。
+`Manifest` represents a server release manifest. `files[]` describes the complete managed file set of the target version. The downloader only fetches files that are missing locally or whose SHA-256 differs.
 
-`ManifestFile::path` 是服务器路径，`ManifestFile::localPath` 是可选落地路径。内容寻址模式依赖这个分离。
+`ManifestFile::path` is the server path. `ManifestFile::localPath` is an optional installation path. Content-addressed storage relies on this separation.
 
 ## Result and Error
 
-公共 API 不向调用方穿透异常。失败通过：
+The public API does not leak exceptions to callers. Failures are represented through:
 
 - `Result<T>`
 - `ErrorCode`
 - `Error::message`
 
-表示。
-
 ## Interfaces
 
-可注入接口：
+Injectable interfaces:
 
 - `INetworkClient`
 - `IHashProvider`
@@ -62,16 +60,16 @@ doxygen Doxyfile
 - `IProcessLauncher`
 - `IStateStore`
 
-测试、Qt 集成、自定义网络栈和沙箱环境应通过这些接口接入。
+Use these interfaces for tests, Qt integration, custom network stacks, and sandboxed environments.
 
 ## Threading Contract
 
-- `Updater` 方法可从应用主线程调用。
-- 同一个 `Updater` 实例内部序列化状态转换。
-- 回调不保证天然在 UI 线程；由 dispatcher 决定。
-- 调用方应避免在回调中长时间阻塞。
-- `cancel()` 是协作式取消，可能不会立即中断底层系统调用。
+- `Updater` methods may be called from the application main thread.
+- A single `Updater` instance serializes its internal state transitions.
+- Callbacks are not guaranteed to run on the UI thread; the dispatcher decides.
+- Callers should avoid long blocking work inside callbacks.
+- `cancel()` is cooperative and may not immediately interrupt a low-level system call.
 
 ## ABI Note
 
-项目目前 `0.x` 阶段不承诺稳定 ABI。建议使用 CMake package 或源码方式集成，并在升级时重新编译。
+The project is currently in the `0.x` phase and does not promise a stable ABI. Prefer CMake package or source integration, and rebuild when upgrading.

@@ -11,28 +11,28 @@ ctest --preset dev
 
 ## CI
 
-GitHub Actions 覆盖：
+GitHub Actions covers:
 
-- Source hygiene。
-- clang-format。
-- clang-tidy。
-- GCC / Clang / AppleClang / MSVC。
-- Debug / Release。
-- no optional dependency build。
-- ASan / UBSan。
-- Coverage summary。
-- Install tree and `find_package` consumer probe。
-- GitHub Raw real update demo on libcurl, WinHTTP, and CFNetwork.
-- CodeQL C++ analysis。
+- Source hygiene.
+- clang-format.
+- clang-tidy.
+- GCC / Clang / AppleClang / MSVC.
+- Debug / Release.
+- No-optional-dependency build.
+- ASan / UBSan.
+- Coverage summary.
+- Install tree and `find_package` consumer probe.
+- Real GitHub Raw update demo on libcurl, WinHTTP, and CFNetwork.
+- CodeQL C++ analysis.
 
 ## Fuzz Smoke Tests
 
-`tests/FuzzSmokeTests.cpp` 使用确定性随机输入覆盖：
+`tests/FuzzSmokeTests.cpp` uses deterministic random inputs for:
 
-- SemVer parser。
-- release manifest parser。
-- index manifest parser。
-- apply-plan parser。
-- managed path validation。
+- SemVer parser.
+- Release manifest parser.
+- Index manifest parser.
+- Apply-plan parser.
+- Managed path validation.
 
-这不是替代 libFuzzer/AFL 的长期 fuzzing，而是用于 CI 的轻量防回归。
+This is not a replacement for long-running libFuzzer or AFL coverage. It is a lightweight CI regression guard.

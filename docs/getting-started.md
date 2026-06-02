@@ -1,8 +1,8 @@
 # Getting Started
 
-本文给出 `libAutoUpdater` 的最短接入路径。完整架构见 [architecture-plan.md](architecture-plan.md)。
+This guide shows the shortest path to build and integrate `libAutoUpdater`. See [architecture-plan.md](architecture-plan.md) for the full design.
 
-## 1. 构建库和 updater
+## 1. Build the Library and Updater
 
 ```sh
 cmake --preset dev
@@ -10,7 +10,7 @@ cmake --build --preset dev --parallel
 ctest --preset dev
 ```
 
-正式集成时可以安装到一个前缀目录：
+For application integration, install the release build into a prefix:
 
 ```sh
 cmake --preset release
@@ -18,7 +18,7 @@ cmake --build --preset release --parallel
 cmake --install build/release --config Release --prefix install-package
 ```
 
-## 2. 在应用中使用
+## 2. Use It in an Application
 
 ```cpp
 #include <libAutoUpdater/Updater.h>
@@ -42,15 +42,15 @@ updater.setCallbacks({
         // Update progress UI.
     },
     .onReadyToApply = [] {
-        // Ask user to restart now, or call applyAndRestartAsync().
+        // Ask the user to restart now, or call applyAndRestartAsync().
     },
 });
 updater.checkAndDownloadAsync();
 ```
 
-## 3. 生成 manifest
+## 3. Generate a Manifest
 
-版本目录模式：
+Version-directory layout:
 
 ```sh
 python tools/make_manifest.py dist/MyApp \
@@ -62,18 +62,18 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/releases/1.2.3/windows-x64/
 ```
 
-内容寻址模式见 [content-addressed-storage.md](content-addressed-storage.md)。
+For content-addressed storage, see [content-addressed-storage.md](content-addressed-storage.md).
 
-## 4. 上传服务器文件
+## 4. Upload Server Files
 
-将 `manifest.json` 和 manifest 中引用的文件上传到任意静态 HTTP/HTTPS 服务器。客户端只需要能访问 `Config::manifestUrl`。
+Upload `manifest.json` and every referenced file to any static HTTP/HTTPS server. The client only needs to access `Config::manifestUrl`.
 
-## 5. 执行更新
+## 5. Apply an Update
 
-推荐流程：
+Recommended flow:
 
-1. 应用启动后静默检查。
-2. 有更新时下载到 staging 目录。
-3. 用户确认后调用 `applyAndRestartAsync()`。
-4. 主程序退出。
-5. `autoupdater_apply` 等待主程序退出、备份、覆盖、校验、失败回滚、重启主程序。
+1. Check silently after application startup.
+2. Download the update into the staging directory.
+3. After user confirmation, call `applyAndRestartAsync()`.
+4. Exit the main application.
+5. `autoupdater_apply` waits for exit, backs up affected files, replaces files, verifies the result, rolls back on failure, and restarts the application.

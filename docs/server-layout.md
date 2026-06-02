@@ -1,10 +1,10 @@
 # Server Layout
 
-`libAutoUpdater` 只需要静态文件服务器，不需要自建后端 API。
+`libAutoUpdater` only needs a static file server. No custom backend API is required.
 
-## 版本目录模式
+## Version Directory Layout
 
-适合小项目，简单直观：
+This layout is simple and works well for small projects:
 
 ```text
 updates/
@@ -21,7 +21,7 @@ updates/
         config/default.json
 ```
 
-manifest:
+Manifest:
 
 ```json
 {
@@ -36,11 +36,11 @@ manifest:
 }
 ```
 
-优点是容易理解。缺点是多个版本之间相同文件会重复存储。
+The benefit is readability. The drawback is duplicated storage when unchanged files appear in many versions.
 
-## 内容寻址模式
+## Content-Addressed Layout
 
-适合中大型项目：
+This layout is better for medium and large projects:
 
 ```text
 updates/
@@ -54,7 +54,7 @@ updates/
         9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4
 ```
 
-manifest:
+Manifest:
 
 ```json
 {
@@ -70,11 +70,11 @@ manifest:
 }
 ```
 
-`path` 是服务器路径，`localPath` 是安装目录落地路径。多个版本可引用同一个 object。
+`path` is the server path. `localPath` is the installation path. Multiple versions can reference the same object.
 
 ## Index Manifest
 
-多平台发布可用 index manifest 路由：
+Use an index manifest to route multi-platform releases:
 
 ```json
 {
@@ -92,4 +92,4 @@ manifest:
 }
 ```
 
-客户端 `Config::manifestUrl` 可以指向 release manifest，也可以指向 index manifest。
+`Config::manifestUrl` may point directly to a release manifest or to an index manifest.

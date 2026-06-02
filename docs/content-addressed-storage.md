@@ -1,15 +1,15 @@
 # Content-Addressed Storage
 
-内容寻址存储用于解决“每个版本目录都复制完整文件导致服务器重复文件过多”的问题。
+Content-addressed storage avoids duplicating unchanged files in every release directory.
 
-## 核心思想
+## Core Idea
 
-- manifest 仍然描述目标版本的完整受管文件清单。
-- 服务器文件按 SHA-256 存储到 object store。
-- 相同内容只存一份。
-- manifest 使用 `path` 指向 object，使用 `localPath` 指向安装路径。
+- The manifest still describes the complete managed file set for the target version.
+- Server files are stored in an object store by SHA-256.
+- Identical content is stored only once.
+- Manifest `path` points to the server object, while `localPath` points to the installation path.
 
-## 生成内容寻址 manifest
+## Generate a Content-Addressed Manifest
 
 ```sh
 python tools/make_manifest.py dist/MyApp \
@@ -25,7 +25,7 @@ python tools/make_manifest.py dist/MyApp \
   --output publish/updates/releases/1.2.3/windows-x64/manifest.json
 ```
 
-输出结构示例：
+Example output:
 
 ```text
 publish/updates/
@@ -33,7 +33,7 @@ publish/updates/
   objects/sha256/9b/9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4
 ```
 
-manifest 条目示例：
+Example manifest entry:
 
 ```json
 {
@@ -44,16 +44,16 @@ manifest 条目示例：
 }
 ```
 
-## 清理未引用对象
+## Garbage-Collect Unreferenced Objects
 
-先 dry-run：
+Dry run:
 
 ```sh
 python tools/gc_objects.py publish/updates/objects/sha256 \
   --manifest publish/updates/releases/1.2.3/windows-x64/manifest.json
 ```
 
-确认后删除：
+Delete after review:
 
 ```sh
 python tools/gc_objects.py publish/updates/objects/sha256 \
@@ -61,11 +61,11 @@ python tools/gc_objects.py publish/updates/objects/sha256 \
   --delete
 ```
 
-保留最近 N 个版本时，把这些版本的 manifest 都传给 `--manifest`。
+To retain the latest N releases, pass every retained release manifest through `--manifest`.
 
-## 注意事项
+## Notes
 
-- object 文件名就是 SHA-256，上传时不要改名。
-- `baseUrl` 应指向 object prefix 的上层，例如 `https://example.com/updates/`。
-- `allowedBaseUrls` 也应允许这个上层 URL。
-- 删除旧安装文件仍然使用 manifest 的 `remove[]`。
+- The object filename is the SHA-256 digest. Do not rename object files after upload.
+- `baseUrl` should point above the object prefix, for example `https://example.com/updates/`.
+- `allowedBaseUrls` should allow the same parent URL.
+- Old installed files are still removed through manifest `remove[]`.
