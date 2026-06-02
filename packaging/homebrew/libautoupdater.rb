@@ -1,7 +1,7 @@
 class Libautoupdater < Formula
   desc "C++17 cross-platform desktop online update library"
   homepage "https://github.com/sorrowfeng/libAutoUpdater"
-  url "https://github.com/sorrowfeng/libAutoUpdater/archive/refs/tags/v0.1.2.tar.gz"
+  url "https://github.com/sorrowfeng/libAutoUpdater/archive/refs/tags/v0.1.3.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
   license "MIT"
 

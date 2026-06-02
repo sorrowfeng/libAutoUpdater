@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.1.3 - 2026-06-03
+
 ### Added
 
 - Added open-source governance files, issue and PR templates, API documentation, security model, integration guide, server layout guide, troubleshooting guide, quality gate documentation, and ecosystem packaging templates.
@@ -10,12 +14,14 @@
 - Added clang-format, clang-tidy, coverage, and content-addressed packaging validation to CI. The release workflow now emits SBOM files and CHANGELOG-based release notes.
 - Added lightweight fuzz smoke tests for version parsing, release manifest parsing, index manifest parsing, apply-plan parsing, and managed path validation.
 - Added `README.zh-CN.md` while keeping English as the default project documentation language.
+- Added README project status, support matrix, package manager status, one-minute demo result, security-at-a-glance table, and FAQ sections.
 
 ### Changed
 
 - `Config::clientVersion` now defaults to the current library version to avoid version metadata drift.
 - The `no-optional-deps` preset disables WinHTTP on Windows, matching the intent of a build without optional HTTP backends.
 - Default Markdown documentation is now English.
+- Reworked the default README into a more scannable open-source project landing page.
 
 ## v0.1.2 - 2026-06-02
 

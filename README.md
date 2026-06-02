@@ -2,31 +2,49 @@
 
 [![CI](https://github.com/sorrowfeng/libAutoUpdater/actions/workflows/ci.yml/badge.svg)](https://github.com/sorrowfeng/libAutoUpdater/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sorrowfeng/libAutoUpdater/actions/workflows/codeql.yml/badge.svg)](https://github.com/sorrowfeng/libAutoUpdater/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/sorrowfeng/libAutoUpdater?include_prereleases)](https://github.com/sorrowfeng/libAutoUpdater/releases)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)](CMakeLists.txt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 English | [Chinese](README.zh-CN.md)
 
-`libAutoUpdater` is a production-oriented C++17 online update library for desktop applications on Windows, macOS, and Linux.
+`libAutoUpdater` is a C++17 online update library for desktop applications on Windows, macOS, and Linux. It checks static manifests, downloads only changed files, verifies every file, delegates replacement to an external updater process, and can roll back failed apply operations.
 
-It is built for static-file update hosting: publish manifests and release files to any HTTP/HTTPS server, object storage bucket, CDN, or GitHub Raw endpoint. No custom backend service is required.
+No custom update server is required. Release manifests and files can be hosted on any HTTP/HTTPS static file server, object storage bucket, CDN, or GitHub Raw endpoint.
 
-## Why This Project
+## Highlights
 
-- Cross-platform desktop self-update flow.
-- GUI-independent core library for Qt, CLI, native UI, or custom shells.
-- File-level incremental updates based on SHA-256.
-- Safe self-replacement through an external updater process.
-- Rollback support for failed apply operations.
-- Optional manifest signature verification.
-- HTTP/HTTPS backend abstraction with libcurl, WinHTTP, CFNetwork, and custom adapters.
-- Testable architecture with injectable network, hash, filesystem, signature, process, dispatcher, and state-store interfaces.
+- Static-file release hosting: no backend service to run.
+- File-level incremental updates using SHA-256.
+- Safe self-replacement through `autoupdater_apply`.
+- Apply rollback after failed replacement or verification.
+- Optional detached manifest signatures.
+- Anti-downgrade, anti-replay, and trusted base URL checks.
+- Native HTTPS backends on Windows and macOS, with libcurl available everywhere.
+- GUI-independent core with Qt and CLI examples.
+- Testable interfaces for network, hashing, filesystem, signatures, process launch, dispatch, and state storage.
+
+## Project Status
+
+`libAutoUpdater` is currently in the `0.x` phase. The core architecture, updater executable, manifest tooling, examples, CI, and real update-flow tests are in place, but the public API and manifest schema should still be treated as pre-1.0 and may change between minor versions.
+
+| Area | Status |
+| --- | --- |
+| Core check / plan / download / apply flow | Implemented |
+| External updater process | Implemented |
+| Rollback and update lock | Implemented |
+| Manifest signatures | Optional, OpenSSL-backed |
+| Native HTTPS on Windows/macOS | WinHTTP / CFNetwork |
+| Linux HTTPS | libcurl |
+| Qt integration | Optional example adapter |
+| Binary patching | Not implemented |
 
 ## How It Works
 
 ```text
 Application
   -> libAutoUpdater checks the manifest
-  -> changed files are downloaded into a staging directory
+  -> changed files are downloaded into staging
   -> every downloaded file is verified by SHA-256
   -> libAutoUpdater writes apply-plan.json
   -> autoupdater_apply waits for the app to exit
@@ -44,17 +62,13 @@ cmake --build --preset dev --parallel
 ctest --preset dev
 ```
 
-Run the CLI example against a local or remote manifest:
+Run the real static update demo:
 
 ```sh
-build/examples/cli/Debug/libAutoUpdater_cli.exe \
-  --manifest file:///C:/path/to/release/manifest.json \
-  --version 1.3.0 \
-  --install C:/path/to/install \
-  --updater build/updater/Debug/autoupdater_apply.exe
+python examples/github_update_demo.py
 ```
 
-On Linux and macOS, executable paths usually live directly under `build/examples/cli/` and `build/updater/` unless you use a multi-config generator.
+The demo creates a local `1.0.0` install tree, fetches a `2.0.0` manifest from this repository through GitHub Raw, applies the update with `autoupdater_apply`, and prints the before/after file tree.
 
 ## Minimal Client Usage
 
@@ -80,9 +94,60 @@ When an update is ready, call `applyAndRestartAsync()` from your UI or command f
 updater.markCurrentVersionHealthy();
 ```
 
-## Build Options
+## Install and Integration
 
-Important CMake options:
+After installation:
+
+```cmake
+find_package(libAutoUpdater CONFIG REQUIRED)
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+As a subdirectory:
+
+```cmake
+add_subdirectory(external/libAutoUpdater)
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+With FetchContent:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    libAutoUpdater
+    GIT_REPOSITORY https://github.com/sorrowfeng/libAutoUpdater.git
+    GIT_TAG v0.1.3)
+FetchContent_MakeAvailable(libAutoUpdater)
+
+target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
+```
+
+Package manager status:
+
+| Ecosystem | Status |
+| --- | --- |
+| CMake package | Supported |
+| vcpkg manifest mode | Supported for this source tree |
+| vcpkg port | Template under `packaging/vcpkg/` |
+| Conan 2 | Starter recipe |
+| Homebrew | Formula template |
+
+See [docs/ecosystem.md](docs/ecosystem.md).
+
+## Supported Platforms and Backends
+
+| Platform | Compiler Coverage | HTTPS Backends | Notes |
+| --- | --- | --- | --- |
+| Windows | MSVC | WinHTTP, libcurl | WinHTTP avoids shipping libcurl |
+| macOS | AppleClang | CFNetwork, libcurl | CFNetwork uses system frameworks |
+| Linux | GCC, Clang | libcurl | Package-manager-owned installs should usually use the package manager |
+
+Signature verification is optional. The default verifier uses OpenSSL when available, and applications can inject their own `ISignatureVerifier`.
+
+## CMake Options
+
+Common options:
 
 ```text
 LIBAUTOUPDATER_BUILD_UPDATER=ON
@@ -102,42 +167,12 @@ LIBAUTOUPDATER_ENABLE_COVERAGE=OFF
 
 Useful presets:
 
-- `dev`: default developer build with examples, tests, updater, and optional dependency probing.
+- `dev`: developer build with examples, tests, updater, and optional dependency probing.
 - `no-optional-deps`: verifies the core library without optional HTTP or crypto backends.
-- `windows-winhttp`: Windows HTTPS support through the native WinHTTP backend.
-- `macos-cfnetwork`: macOS HTTPS support through CFNetwork/CoreFoundation.
-- `vcpkg-debug`: uses vcpkg manifest mode for libcurl and OpenSSL.
+- `windows-winhttp`: Windows HTTPS through the native WinHTTP backend.
+- `macos-cfnetwork`: macOS HTTPS through CFNetwork/CoreFoundation.
+- `vcpkg-debug`: vcpkg manifest mode for libcurl and OpenSSL.
 - `release`: release-oriented local build.
-
-## Dependency Model
-
-The public API does not expose libcurl, OpenSSL, Qt, or JSON-library types.
-
-Network backend selection:
-
-- Local paths and `file://` URLs are always supported.
-- libcurl is used for HTTP/HTTPS when CMake finds `CURL::libcurl`.
-- Windows can use the native WinHTTP backend without libcurl.
-- macOS can use the native CFNetwork/CoreFoundation backend without libcurl.
-- Qt users can inject a `QNetworkAccessManager` adapter.
-
-Applications decide how runtime dependencies are shipped. If libcurl or OpenSSL are linked dynamically, package the matching runtime libraries and license notices with the application.
-
-## CMake Integration
-
-After installation:
-
-```cmake
-find_package(libAutoUpdater CONFIG REQUIRED)
-target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
-```
-
-Or embed directly:
-
-```cmake
-add_subdirectory(external/libAutoUpdater)
-target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
-```
 
 ## Release Feed Generation
 
@@ -169,9 +204,9 @@ python tools/make_manifest.py dist/MyApp \
   --output publish/updates/releases/1.4.0/windows-x64/manifest.json
 ```
 
-See [docs/content-addressed-storage.md](docs/content-addressed-storage.md).
+See [docs/server-layout.md](docs/server-layout.md) and [docs/content-addressed-storage.md](docs/content-addressed-storage.md).
 
-## Example Manifest
+## Manifest Example
 
 ```json
 {
@@ -204,17 +239,65 @@ See [docs/content-addressed-storage.md](docs/content-addressed-storage.md).
 }
 ```
 
-## Real Update Demo
+## One-Minute Demo Result
 
-This repository contains a real static update feed under `examples/update-server`. GitHub serves it through `raw.githubusercontent.com`, so the repository itself acts as the update server.
+The GitHub-hosted demo updates a local install tree using this repository as the HTTPS update server:
 
-```sh
-python examples/github_update_demo.py
+```text
+Before update
+  bin/demo_app.txt          version=1.0.0
+  config/settings.json      unchanged
+  legacy/remove-me.txt      present
+
+After update
+  bin/demo_app.txt          version=2.0.0
+  config/settings.json      unchanged
+  resources/feature.txt     added
+  legacy/remove-me.txt      removed
 ```
 
-The demo creates a local `1.0.0` install tree, downloads a `2.0.0` manifest from GitHub Raw, applies the update with `autoupdater_apply`, and prints the before/after file tree.
-
 The same flow runs in CI on Ubuntu/libcurl, Windows/WinHTTP, and macOS/CFNetwork.
+
+## Security at a Glance
+
+| Capability | Default / Support | Production Guidance |
+| --- | --- | --- |
+| TLS verification | Enabled by default | Keep enabled |
+| File SHA-256 | Required per managed file | Required |
+| Manifest signatures | Optional | Require for public channels |
+| Trusted base URLs | Optional | Use for public channels |
+| External apply process | Required | Always use it |
+| Rollback | Implemented | Keep backups until healthy confirmation |
+| Path traversal protection | Enforced | Do not bypass manifest validation |
+| Package-manager-owned installs | Rejected by layout policy | Use the package manager |
+
+See [SECURITY.md](SECURITY.md) and [docs/security-model.md](docs/security-model.md).
+
+## FAQ
+
+### Is libcurl required?
+
+No. Local paths and `file://` URLs always work. Windows can use WinHTTP, macOS can use CFNetwork, and Linux typically uses libcurl for HTTP/HTTPS.
+
+### Does this require Qt?
+
+No. The core library has no GUI dependency. The Qt example is an optional adapter showing how to post callbacks to the Qt UI thread and how to use `QNetworkAccessManager`.
+
+### Can different releases contain different files?
+
+Yes. Each manifest describes the complete managed file set for that target version. The client downloads only missing or hash-mismatched files, and `remove[]` deletes files that should no longer exist.
+
+### How do I avoid duplicated files on the server?
+
+Use content-addressed storage. Store objects by SHA-256 and let each release manifest map server `path` values to installation `localPath` values.
+
+### Can the application update itself while running?
+
+The library can check, download, and prepare an update while the app is running. Actual replacement happens after the main app exits, through `autoupdater_apply`.
+
+### Should Linux distro packages or Homebrew apps self-update?
+
+Usually no. If the installation is owned by a package manager, let that package manager update the application.
 
 ## Documentation
 
@@ -248,17 +331,6 @@ docs/                         Design and integration documentation
 GitHub Actions covers source hygiene, clang-format, clang-tidy, GCC/Clang/AppleClang/MSVC builds, optional-dependency-off builds, ASan/UBSan, coverage, install-tree packaging, consumer `find_package` probes, CodeQL, and the real GitHub-hosted update demo.
 
 The release workflow publishes Windows, macOS, and Linux install-tree ZIPs, SHA-256 files, SPDX SBOM files, and release notes extracted from `CHANGELOG.md`.
-
-## Security
-
-- Keep TLS verification enabled in production.
-- Treat manifest signing as mandatory for public update channels.
-- Keep update private keys outside the static file server.
-- Use `allowedBaseUrls` for public channels.
-- Do not include absolute paths or `..` segments in manifests.
-- Prefer package managers over self-update for package-manager-owned installs.
-
-See [SECURITY.md](SECURITY.md) and [docs/security-model.md](docs/security-model.md).
 
 ## Community
 

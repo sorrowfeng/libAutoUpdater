@@ -1,6 +1,6 @@
 {
   "name": "libautoupdater",
-  "version-string": "0.1.2",
+  "version-string": "0.1.3",
   "description": "C++17 cross-platform desktop online update library.",
   "homepage": "https://github.com/sorrowfeng/libAutoUpdater",
   "license": "MIT",

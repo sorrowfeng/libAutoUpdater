@@ -23,7 +23,7 @@ include(FetchContent)
 FetchContent_Declare(
     libAutoUpdater
     GIT_REPOSITORY https://github.com/sorrowfeng/libAutoUpdater.git
-    GIT_TAG v0.1.2)
+    GIT_TAG v0.1.3)
 FetchContent_MakeAvailable(libAutoUpdater)
 
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
