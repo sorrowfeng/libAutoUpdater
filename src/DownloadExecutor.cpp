@@ -15,14 +15,9 @@ std::filesystem::path temporaryDownloadPath(const std::filesystem::path& target)
 
 } // namespace
 
-Result<void> executeDownloads(const Config& config,
-                              const UpdateDecision& decision,
-                              INetworkClient& network,
-                              IFileSystem& fileSystem,
-                              IHashProvider& hashProvider,
-                              IStateStore* stateStore,
-                              ProgressCallback progress,
-                              CancellationToken& cancel) {
+Result<void> executeDownloads(const Config& config, const UpdateDecision& decision, INetworkClient& network,
+                              IFileSystem& fileSystem, IHashProvider& hashProvider, IStateStore* stateStore,
+                              ProgressCallback progress, CancellationToken& cancel) {
     std::uint64_t totalBytes = 0;
     for (const auto& download : decision.downloads) {
         totalBytes += download.file.size;
@@ -82,10 +77,7 @@ Result<void> executeDownloads(const Config& config,
             }
 
             auto result = network.downloadToFile(
-                download.url,
-                tempPath,
-                config.network,
-                resume,
+                download.url, tempPath, config.network, resume,
                 [&](const Progress& current) {
                     if (progress) {
                         Progress aggregate;

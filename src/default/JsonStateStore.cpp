@@ -10,11 +10,10 @@ namespace autoupdater {
 namespace {
 
 class JsonStateStore final : public IStateStore {
-public:
+  public:
     explicit JsonStateStore(std::filesystem::path path) : path_(std::move(path)) {}
 
-    Result<void> saveLastAcceptedVersion(const Version& version,
-                                         const std::string& releaseId) noexcept override {
+    Result<void> saveLastAcceptedVersion(const Version& version, const std::string& releaseId) noexcept override {
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -181,7 +180,7 @@ public:
         return saveRoot(root.value());
     }
 
-private:
+  private:
     Result<util::Json::Object> loadRoot() noexcept {
         try {
             if (!std::filesystem::exists(path_)) {

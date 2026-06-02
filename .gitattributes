@@ -7,6 +7,10 @@
 *.json text eol=lf
 *.md text eol=lf
 *.py text eol=lf
+*.rb text eol=lf
 *.txt text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+.clang-format text eol=lf
+.clang-tidy text eol=lf
+Doxyfile text eol=lf

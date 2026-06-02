@@ -17,8 +17,13 @@
 
 namespace autoupdater {
 
+/// Facade for checking, downloading, staging, and applying application updates.
+///
+/// Operations run asynchronously. User callbacks are delivered through the
+/// configured IEventDispatcher; GUI applications should inject a dispatcher that
+/// posts back to the UI thread.
 class Updater {
-public:
+  public:
     explicit Updater(Config config);
     ~Updater();
 
@@ -34,22 +39,30 @@ public:
     void setProcessLauncher(std::shared_ptr<IProcessLauncher> launcher);
     void setStateStore(std::shared_ptr<IStateStore> store);
 
+    /// Check the configured manifest URL without downloading files.
     void checkAsync() noexcept;
+    /// Run a startup check and optionally download when an update is available.
     void checkOnStartupAsync(bool downloadWhenAvailable = false) noexcept;
+    /// Check and immediately download changed or missing files.
     void checkAndDownloadAsync() noexcept;
+    /// Download the update selected by the latest successful check.
     void downloadAsync() noexcept;
+    /// Launch the external updater with the prepared apply plan.
     void applyAndRestartAsync() noexcept;
-    void startPeriodicCheck(std::chrono::milliseconds interval,
-                            bool downloadWhenAvailable = false,
+    /// Start periodic background checks until stopPeriodicCheck() is called.
+    void startPeriodicCheck(std::chrono::milliseconds interval, bool downloadWhenAvailable = false,
                             bool runImmediately = false) noexcept;
     void stopPeriodicCheck() noexcept;
+    /// Mark the currently running version as healthy after a successful restart.
     Result<void> markCurrentVersionHealthy() noexcept;
+    /// Roll back the last pending update when backup data is still available.
     Result<void> rollbackLastUpdate() noexcept;
 
+    /// Request cooperative cancellation of the active check or download.
     void cancel() noexcept;
     State state() const noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

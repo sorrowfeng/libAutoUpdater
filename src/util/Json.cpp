@@ -13,7 +13,7 @@ const Json::Object kEmptyObject;
 const Json::Array kEmptyArray;
 
 class Parser {
-public:
+  public:
     explicit Parser(const std::string& input) : input_(input) {}
 
     Result<Json> parse() {
@@ -29,7 +29,7 @@ public:
         return value;
     }
 
-private:
+  private:
     Result<Json> parseValue() {
         skipWhitespace();
         if (pos_ >= input_.size()) {
@@ -192,14 +192,30 @@ private:
                 }
                 const char esc = input_[pos_++];
                 switch (esc) {
-                case '"': out.push_back('"'); break;
-                case '\\': out.push_back('\\'); break;
-                case '/': out.push_back('/'); break;
-                case 'b': out.push_back('\b'); break;
-                case 'f': out.push_back('\f'); break;
-                case 'n': out.push_back('\n'); break;
-                case 'r': out.push_back('\r'); break;
-                case 't': out.push_back('\t'); break;
+                case '"':
+                    out.push_back('"');
+                    break;
+                case '\\':
+                    out.push_back('\\');
+                    break;
+                case '/':
+                    out.push_back('/');
+                    break;
+                case 'b':
+                    out.push_back('\b');
+                    break;
+                case 'f':
+                    out.push_back('\f');
+                    break;
+                case 'n':
+                    out.push_back('\n');
+                    break;
+                case 'r':
+                    out.push_back('\r');
+                    break;
+                case 't':
+                    out.push_back('\t');
+                    break;
                 case 'u':
                     if (pos_ + 4 > input_.size()) {
                         return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Invalid unicode escape"});
@@ -325,12 +341,24 @@ Result<Json> Json::parse(const std::string& text) noexcept {
     }
 }
 
-bool Json::isNull() const noexcept { return std::holds_alternative<std::nullptr_t>(storage_); }
-bool Json::isBool() const noexcept { return std::holds_alternative<bool>(storage_); }
-bool Json::isNumber() const noexcept { return std::holds_alternative<double>(storage_); }
-bool Json::isString() const noexcept { return std::holds_alternative<std::string>(storage_); }
-bool Json::isObject() const noexcept { return std::holds_alternative<Object>(storage_); }
-bool Json::isArray() const noexcept { return std::holds_alternative<Array>(storage_); }
+bool Json::isNull() const noexcept {
+    return std::holds_alternative<std::nullptr_t>(storage_);
+}
+bool Json::isBool() const noexcept {
+    return std::holds_alternative<bool>(storage_);
+}
+bool Json::isNumber() const noexcept {
+    return std::holds_alternative<double>(storage_);
+}
+bool Json::isString() const noexcept {
+    return std::holds_alternative<std::string>(storage_);
+}
+bool Json::isObject() const noexcept {
+    return std::holds_alternative<Object>(storage_);
+}
+bool Json::isArray() const noexcept {
+    return std::holds_alternative<Array>(storage_);
+}
 
 bool Json::asBool(bool fallback) const noexcept {
     return isBool() ? std::get<bool>(storage_) : fallback;
@@ -379,19 +407,31 @@ std::string jsonEscape(const std::string& text) {
     std::ostringstream stream;
     for (const char c : text) {
         switch (c) {
-        case '"': stream << "\\\""; break;
-        case '\\': stream << "\\\\"; break;
-        case '\b': stream << "\\b"; break;
-        case '\f': stream << "\\f"; break;
-        case '\n': stream << "\\n"; break;
-        case '\r': stream << "\\r"; break;
-        case '\t': stream << "\\t"; break;
+        case '"':
+            stream << "\\\"";
+            break;
+        case '\\':
+            stream << "\\\\";
+            break;
+        case '\b':
+            stream << "\\b";
+            break;
+        case '\f':
+            stream << "\\f";
+            break;
+        case '\n':
+            stream << "\\n";
+            break;
+        case '\r':
+            stream << "\\r";
+            break;
+        case '\t':
+            stream << "\\t";
+            break;
         default:
             if (static_cast<unsigned char>(c) < 0x20) {
-                stream << "\\u"
-                       << std::hex << std::setw(4) << std::setfill('0')
-                       << static_cast<int>(static_cast<unsigned char>(c))
-                       << std::dec << std::setfill(' ');
+                stream << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                       << static_cast<int>(static_cast<unsigned char>(c)) << std::dec << std::setfill(' ');
             } else {
                 stream << c;
             }
@@ -402,4 +442,3 @@ std::string jsonEscape(const std::string& text) {
 }
 
 } // namespace autoupdater::util
-

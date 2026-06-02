@@ -23,9 +23,8 @@ namespace autoupdater {
 
 namespace {
 
-template <class T>
-class CfRef {
-public:
+template <class T> class CfRef {
+  public:
     CfRef() = default;
     explicit CfRef(T value) : value_(value) {}
     ~CfRef() {
@@ -48,10 +47,14 @@ public:
         return *this;
     }
 
-    T get() const noexcept { return value_; }
-    explicit operator bool() const noexcept { return value_ != nullptr; }
+    T get() const noexcept {
+        return value_;
+    }
+    explicit operator bool() const noexcept {
+        return value_ != nullptr;
+    }
 
-private:
+  private:
     T value_ = nullptr;
 };
 
@@ -79,8 +82,8 @@ CfRef<CFStringRef> makeCfString(const std::string& value) {
 
 std::string streamError(CFReadStreamRef stream, const char* action) {
     const CFStreamError error = CFReadStreamGetError(stream);
-    return std::string(action) + " failed (domain " + std::to_string(error.domain) +
-        ", error " + std::to_string(error.error) + ")";
+    return std::string(action) + " failed (domain " + std::to_string(error.domain) + ", error " +
+           std::to_string(error.error) + ")";
 }
 
 bool isHttpUrl(const std::string& url) {
@@ -89,9 +92,8 @@ bool isHttpUrl(const std::string& url) {
         return false;
     }
     auto scheme = url.substr(0, separator);
-    std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return scheme == "http" || scheme == "https";
 }
 
@@ -102,7 +104,8 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
     if (url.find("://") == std::string::npos) {
         return Result<std::filesystem::path>::ok(url);
     }
-    return Result<std::filesystem::path>::fail({ErrorCode::NetworkError, "CFNetwork supports only HTTP and HTTPS URLs"});
+    return Result<std::filesystem::path>::fail(
+        {ErrorCode::NetworkError, "CFNetwork supports only HTTP and HTTPS URLs"});
 }
 
 Result<std::string> readLocalText(const std::string& url, CancellationToken& cancel) {
@@ -128,10 +131,8 @@ Result<std::string> readLocalText(const std::string& url, CancellationToken& can
     }
 }
 
-Result<DownloadResult> copyLocalToFile(const std::string& url,
-                                       const std::filesystem::path& target,
-                                       const std::optional<DownloadResumeInfo>& resume,
-                                       ProgressCallback progress,
+Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesystem::path& target,
+                                       const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                        CancellationToken& cancel) {
     auto source = localPathFromUrl(url);
     if (!source) {
@@ -155,9 +156,8 @@ Result<DownloadResult> copyLocalToFile(const std::string& url,
         if (resume && resume->offset > 0) {
             input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
         }
-        const auto outputMode = (resume && resume->offset > 0)
-            ? (std::ios::binary | std::ios::app)
-            : (std::ios::binary | std::ios::trunc);
+        const auto outputMode =
+            (resume && resume->offset > 0) ? (std::ios::binary | std::ios::app) : (std::ios::binary | std::ios::trunc);
         std::ofstream output(target, outputMode);
         if (!input || !output) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local download streams"});
@@ -194,12 +194,9 @@ struct HttpRequest {
 };
 
 Result<HttpRequest> makeRequest(const std::string& url) {
-    auto cfUrl = CfRef<CFURLRef>(CFURLCreateWithBytes(
-        kCFAllocatorDefault,
-        reinterpret_cast<const UInt8*>(url.data()),
-        static_cast<CFIndex>(url.size()),
-        kCFStringEncodingUTF8,
-        nullptr));
+    auto cfUrl =
+        CfRef<CFURLRef>(CFURLCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(url.data()),
+                                             static_cast<CFIndex>(url.size()), kCFStringEncodingUTF8, nullptr));
     if (!cfUrl) {
         return Result<HttpRequest>::fail({ErrorCode::NetworkError, "Invalid URL"});
     }
@@ -212,9 +209,8 @@ Result<HttpRequest> makeRequest(const std::string& url) {
 
     const auto lowerUrl = [&] {
         std::string lower = url;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         return lower;
     }();
 
@@ -250,8 +246,7 @@ std::uint64_t contentLength(CFHTTPMessageRef response) {
 }
 
 Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const NetworkOptions& options) {
-    auto stream = CfRef<CFReadStreamRef>(
-        CFReadStreamCreateForHTTPRequest(kCFAllocatorDefault, request.message.get()));
+    auto stream = CfRef<CFReadStreamRef>(CFReadStreamCreateForHTTPRequest(kCFAllocatorDefault, request.message.get()));
     if (!stream) {
         return Result<CfRef<CFReadStreamRef>>::fail({ErrorCode::NetworkError, "Failed to create CFNetwork stream"});
     }
@@ -262,19 +257,15 @@ Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const Netw
         const void* keys[] = {kCFStreamSSLValidatesCertificateChain};
         const void* values[] = {kCFBooleanFalse};
         auto sslSettings = CfRef<CFDictionaryRef>(CFDictionaryCreate(
-            kCFAllocatorDefault,
-            keys,
-            values,
-            1,
-            &kCFTypeDictionaryKeyCallBacks,
-            &kCFTypeDictionaryValueCallBacks));
+            kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
         if (sslSettings) {
             CFReadStreamSetProperty(stream.get(), kCFStreamPropertySSLSettings, sslSettings.get());
         }
     }
 
     if (!CFReadStreamOpen(stream.get())) {
-        return Result<CfRef<CFReadStreamRef>>::fail({ErrorCode::NetworkError, streamError(stream.get(), "CFReadStreamOpen")});
+        return Result<CfRef<CFReadStreamRef>>::fail(
+            {ErrorCode::NetworkError, streamError(stream.get(), "CFReadStreamOpen")});
     }
     return Result<CfRef<CFReadStreamRef>>::ok(std::move(stream));
 }
@@ -320,13 +311,9 @@ Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CancellationToken&
     }
 }
 
-Result<std::vector<char>> readResponse(CFReadStreamRef stream,
-                                       CancellationToken& cancel,
-                                       ProgressCallback progress,
-                                       const std::string& currentFile,
-                                       std::uint64_t initialBytes,
-                                       std::uint64_t expectedBytes,
-                                       std::ofstream* output,
+Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken& cancel, ProgressCallback progress,
+                                       const std::string& currentFile, std::uint64_t initialBytes,
+                                       std::uint64_t expectedBytes, std::ofstream* output,
                                        const std::vector<char>& initialBody = {}) {
     std::vector<char> bytes;
     std::array<UInt8, 64 * 1024> buffer{};
@@ -379,8 +366,7 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream,
     return Result<std::vector<char>>::ok(std::move(bytes));
 }
 
-void setResumeHeaders(CFHTTPMessageRef request,
-                      const NetworkOptions& options,
+void setResumeHeaders(CFHTTPMessageRef request, const NetworkOptions& options,
                       const std::optional<DownloadResumeInfo>& resume) {
     if (!options.enableResume || !resume || resume->offset == 0) {
         return;
@@ -395,9 +381,8 @@ void setResumeHeaders(CFHTTPMessageRef request,
 }
 
 class CfNetworkClient final : public INetworkClient {
-public:
-    Result<std::string> getText(const std::string& url,
-                                const NetworkOptions& options,
+  public:
+    Result<std::string> getText(const std::string& url, const NetworkOptions& options,
                                 CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return readLocalText(url, cancel);
@@ -421,15 +406,9 @@ public:
                 return Result<std::string>::fail({ErrorCode::NetworkError, "HTTP error " + std::to_string(status)});
             }
 
-            auto bytes = readResponse(
-                stream.value().get(),
-                cancel,
-                {},
-                {},
-                0,
-                contentLength(response.value().headers.get()),
-                nullptr,
-                response.value().bufferedBody);
+            auto bytes =
+                readResponse(stream.value().get(), cancel, {}, {}, 0, contentLength(response.value().headers.get()),
+                             nullptr, response.value().bufferedBody);
             if (!bytes) {
                 return Result<std::string>::fail(bytes.error());
             }
@@ -439,11 +418,9 @@ public:
         }
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url,
-                                          const std::filesystem::path& target,
+    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
                                           const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume,
-                                          ProgressCallback progress,
+                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return copyLocalToFile(url, target, resume, std::move(progress), cancel);
@@ -479,31 +456,25 @@ public:
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
             }
             if (status >= 400) {
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "HTTP error " + std::to_string(status)});
+                return Result<DownloadResult>::fail(
+                    {ErrorCode::DownloadFailed, "HTTP error " + std::to_string(status)});
             }
 
             const auto outputMode = (options.enableResume && resume && resume->offset > 0)
-                ? (std::ios::binary | std::ios::app)
-                : (std::ios::binary | std::ios::trunc);
+                                        ? (std::ios::binary | std::ios::app)
+                                        : (std::ios::binary | std::ios::trunc);
             std::ofstream output(target, outputMode);
             if (!output) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
             }
 
             const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes = readResponse(
-                stream.value().get(),
-                cancel,
-                std::move(progress),
-                target.generic_string(),
-                initialBytes,
-                contentLength(response.value().headers.get()),
-                &output,
-                response.value().bufferedBody);
+            auto bytes =
+                readResponse(stream.value().get(), cancel, std::move(progress), target.generic_string(), initialBytes,
+                             contentLength(response.value().headers.get()), &output, response.value().bufferedBody);
             if (!bytes) {
-                const auto code = bytes.error().code == ErrorCode::NetworkError
-                    ? ErrorCode::DownloadFailed
-                    : bytes.error().code;
+                const auto code =
+                    bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;
                 return Result<DownloadResult>::fail({code, bytes.error().message});
             }
 

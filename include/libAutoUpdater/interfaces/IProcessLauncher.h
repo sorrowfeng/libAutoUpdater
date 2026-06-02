@@ -9,6 +9,7 @@
 
 namespace autoupdater {
 
+/// Process launch request used to start the external updater.
 struct ProcessLaunchRequest {
     std::filesystem::path executable;
     std::vector<std::string> arguments;
@@ -16,8 +17,9 @@ struct ProcessLaunchRequest {
     bool detached = true;
 };
 
+/// Process launcher abstraction for platform-specific process creation.
 class IProcessLauncher {
-public:
+  public:
     virtual ~IProcessLauncher() = default;
 
     virtual Result<void> launch(const ProcessLaunchRequest& request) noexcept = 0;
@@ -26,4 +28,3 @@ public:
 std::shared_ptr<IProcessLauncher> createDefaultProcessLauncher();
 
 } // namespace autoupdater
-

@@ -5,10 +5,8 @@ namespace autoupdater {
 namespace {
 
 class NullSignatureVerifier final : public ISignatureVerifier {
-public:
-    Result<void> verify(std::string_view,
-                        std::string_view,
-                        std::string_view) noexcept override {
+  public:
+    Result<void> verify(std::string_view, std::string_view, std::string_view) noexcept override {
         return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "No signature verifier is available"});
     }
 };
@@ -26,4 +24,3 @@ std::shared_ptr<ISignatureVerifier> createDefaultSignatureVerifier() {
 #endif
 
 } // namespace autoupdater
-

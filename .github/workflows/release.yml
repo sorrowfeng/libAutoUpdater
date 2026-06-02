@@ -37,6 +37,14 @@ jobs:
       - name: Install
         run: cmake --install build --config Release --prefix install-package
 
+      - name: Generate SBOM
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          python tools/make_sbom.py install-package \
+            --version "$GITHUB_REF_NAME" \
+            --output "artifacts/libAutoUpdater-${GITHUB_REF_NAME}-${RUNNER_OS}.spdx.json"
+
       - name: Archive
         shell: bash
         run: |
@@ -68,6 +76,15 @@ jobs:
     needs: [package]
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate Release Metadata
+        run: python tools/check_release_ready.py --tag "$GITHUB_REF_NAME"
+
+      - name: Generate Release Notes
+        run: python tools/extract_changelog.py "$GITHUB_REF_NAME" --output release-notes.md
+
       - name: Download Artifacts
         uses: actions/download-artifact@v8
         with:
@@ -82,6 +99,7 @@ jobs:
           mapfile -t files < <(find release-artifacts -type f | sort)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-notes.md
           fi

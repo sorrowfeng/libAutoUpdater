@@ -24,7 +24,7 @@ namespace autoupdater {
 namespace {
 
 class WinHttpHandle {
-public:
+  public:
     WinHttpHandle() = default;
     explicit WinHttpHandle(HINTERNET handle) : handle_(handle) {}
     ~WinHttpHandle() {
@@ -47,10 +47,14 @@ public:
         return *this;
     }
 
-    HINTERNET get() const noexcept { return handle_; }
-    explicit operator bool() const noexcept { return handle_ != nullptr; }
+    HINTERNET get() const noexcept {
+        return handle_;
+    }
+    explicit operator bool() const noexcept {
+        return handle_ != nullptr;
+    }
 
-private:
+  private:
     HINTERNET handle_ = nullptr;
 };
 
@@ -59,7 +63,9 @@ struct WinHttpRequest {
     WinHttpHandle connection;
     WinHttpHandle request;
 
-    HINTERNET get() const noexcept { return request.get(); }
+    HINTERNET get() const noexcept {
+        return request.get();
+    }
 };
 
 std::wstring widen(const std::string& text) {
@@ -79,8 +85,8 @@ std::string narrow(const std::wstring& text) {
     if (text.empty()) {
         return {};
     }
-    const int count = WideCharToMultiByte(
-        CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    const int count =
+        WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
     if (count <= 0) {
         return {};
     }
@@ -93,13 +99,8 @@ std::string lastWindowsError(const char* action) {
     const DWORD code = GetLastError();
     wchar_t* buffer = nullptr;
     const DWORD size = FormatMessageW(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr,
-        code,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        reinterpret_cast<LPWSTR>(&buffer),
-        0,
-        nullptr);
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
 
     std::wstring message;
     if (size > 0 && buffer) {
@@ -121,8 +122,7 @@ std::string lastWindowsError(const char* action) {
     return output;
 }
 
-template <class T>
-Result<T> failLast(ErrorCode code, const char* action) {
+template <class T> Result<T> failLast(ErrorCode code, const char* action) {
     return Result<T>::fail({code, lastWindowsError(action)});
 }
 
@@ -160,9 +160,8 @@ Result<ParsedUrl> parseUrl(const std::string& url) {
     }
 
     std::wstring scheme(parts.lpszScheme, parts.dwSchemeLength);
-    std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](wchar_t ch) {
-        return static_cast<wchar_t>(towlower(ch));
-    });
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(towlower(ch)); });
     if (scheme != L"http" && scheme != L"https") {
         return Result<ParsedUrl>::fail({ErrorCode::NetworkError, "WinHTTP supports only HTTP and HTTPS URLs"});
     }
@@ -185,30 +184,21 @@ Result<ParsedUrl> parseUrl(const std::string& url) {
     return Result<ParsedUrl>::ok(std::move(parsed));
 }
 
-Result<WinHttpRequest> openRequest(const std::string& url,
-                                   const NetworkOptions& options,
+Result<WinHttpRequest> openRequest(const std::string& url, const NetworkOptions& options,
                                    const std::wstring& extraHeaders) {
     auto parsed = parseUrl(url);
     if (!parsed) {
         return Result<WinHttpRequest>::fail(parsed.error());
     }
 
-    WinHttpHandle session(WinHttpOpen(
-        L"libAutoUpdater/0.1",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        0));
+    WinHttpHandle session(WinHttpOpen(L"libAutoUpdater/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                      WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) {
         return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpOpen");
     }
 
-    WinHttpSetTimeouts(
-        session.get(),
-        timeoutMillis(options.connectTimeout),
-        timeoutMillis(options.connectTimeout),
-        timeoutMillis(options.transferTimeout),
-        timeoutMillis(options.transferTimeout));
+    WinHttpSetTimeouts(session.get(), timeoutMillis(options.connectTimeout), timeoutMillis(options.connectTimeout),
+                       timeoutMillis(options.transferTimeout), timeoutMillis(options.transferTimeout));
 
     WinHttpHandle connection(WinHttpConnect(session.get(), parsed.value().host.c_str(), parsed.value().port, 0));
     if (!connection) {
@@ -216,14 +206,8 @@ Result<WinHttpRequest> openRequest(const std::string& url,
     }
 
     const DWORD flags = parsed.value().secure ? WINHTTP_FLAG_SECURE : 0;
-    WinHttpHandle requestHandle(WinHttpOpenRequest(
-        connection.get(),
-        L"GET",
-        parsed.value().path.c_str(),
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        flags));
+    WinHttpHandle requestHandle(WinHttpOpenRequest(connection.get(), L"GET", parsed.value().path.c_str(), nullptr,
+                                                   WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
     if (!requestHandle) {
         return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpOpenRequest");
     }
@@ -232,10 +216,8 @@ Result<WinHttpRequest> openRequest(const std::string& url,
     WinHttpSetOption(requestHandle.get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
     if (!options.verifyTls && parsed.value().secure) {
-        DWORD securityFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-            SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        DWORD securityFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                              SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(requestHandle.get(), WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
 
@@ -258,13 +240,8 @@ Result<WinHttpRequest> openRequest(const std::string& url,
 Result<DWORD> statusCode(HINTERNET request) {
     DWORD status = 0;
     DWORD size = sizeof(status);
-    if (!WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX,
-            &status,
-            &size,
-            WINHTTP_NO_HEADER_INDEX)) {
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)) {
         return failLast<DWORD>(ErrorCode::NetworkError, "WinHttpQueryHeaders");
     }
     return Result<DWORD>::ok(status);
@@ -272,13 +249,7 @@ Result<DWORD> statusCode(HINTERNET request) {
 
 std::string queryHeader(HINTERNET request, const wchar_t* name) {
     DWORD size = 0;
-    WinHttpQueryHeaders(
-        request,
-        WINHTTP_QUERY_CUSTOM,
-        name,
-        WINHTTP_NO_OUTPUT_BUFFER,
-        &size,
-        WINHTTP_NO_HEADER_INDEX);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name, WINHTTP_NO_OUTPUT_BUFFER, &size, WINHTTP_NO_HEADER_INDEX);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
         return {};
     }
@@ -297,23 +268,15 @@ std::string queryHeader(HINTERNET request, const wchar_t* name) {
 std::uint64_t queryContentLength(HINTERNET request) {
     DWORD value = 0;
     DWORD size = sizeof(value);
-    if (!WinHttpQueryHeaders(
-            request,
-            WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX,
-            &value,
-            &size,
-            WINHTTP_NO_HEADER_INDEX)) {
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &value, &size, WINHTTP_NO_HEADER_INDEX)) {
         return 0;
     }
     return value;
 }
 
-Result<std::vector<char>> readResponseBytes(HINTERNET request,
-                                            CancellationToken& cancel,
-                                            ProgressCallback progress,
-                                            const std::string& currentFile,
-                                            std::uint64_t initialBytes,
+Result<std::vector<char>> readResponseBytes(HINTERNET request, CancellationToken& cancel, ProgressCallback progress,
+                                            const std::string& currentFile, std::uint64_t initialBytes,
                                             std::ofstream* output) {
     std::vector<char> bytes;
     std::uint64_t downloaded = initialBytes;
@@ -364,9 +327,8 @@ bool isHttpUrl(const std::string& url) {
         return false;
     }
     auto scheme = url.substr(0, separator);
-    std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return scheme == "http" || scheme == "https";
 }
 
@@ -401,10 +363,8 @@ Result<std::string> readLocalText(const std::string& url, CancellationToken& can
     }
 }
 
-Result<DownloadResult> copyLocalToFile(const std::string& url,
-                                       const std::filesystem::path& target,
-                                       const std::optional<DownloadResumeInfo>& resume,
-                                       ProgressCallback progress,
+Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesystem::path& target,
+                                       const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                        CancellationToken& cancel) {
     auto source = localPathFromUrl(url);
     if (!source) {
@@ -427,9 +387,8 @@ Result<DownloadResult> copyLocalToFile(const std::string& url,
         if (resume && resume->offset > 0) {
             input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
         }
-        const auto outputMode = (resume && resume->offset > 0)
-            ? (std::ios::binary | std::ios::app)
-            : (std::ios::binary | std::ios::trunc);
+        const auto outputMode =
+            (resume && resume->offset > 0) ? (std::ios::binary | std::ios::app) : (std::ios::binary | std::ios::trunc);
         std::ofstream output(target, outputMode);
         if (!input || !output) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local download streams"});
@@ -475,9 +434,8 @@ std::wstring resumeHeaders(const NetworkOptions& options, const std::optional<Do
 }
 
 class WinHttpNetworkClient final : public INetworkClient {
-public:
-    Result<std::string> getText(const std::string& url,
-                                const NetworkOptions& options,
+  public:
+    Result<std::string> getText(const std::string& url, const NetworkOptions& options,
                                 CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return readLocalText(url, cancel);
@@ -507,11 +465,9 @@ public:
         }
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url,
-                                          const std::filesystem::path& target,
+    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
                                           const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume,
-                                          ProgressCallback progress,
+                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return copyLocalToFile(url, target, resume, std::move(progress), cancel);
@@ -546,16 +502,16 @@ public:
             }
 
             const auto outputMode = (options.enableResume && resume && resume->offset > 0)
-                ? (std::ios::binary | std::ios::app)
-                : (std::ios::binary | std::ios::trunc);
+                                        ? (std::ios::binary | std::ios::app)
+                                        : (std::ios::binary | std::ios::trunc);
             std::ofstream output(target, outputMode);
             if (!output) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
             }
 
             const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes = readResponseBytes(
-                request.value().get(), cancel, std::move(progress), target.generic_string(), initialBytes, &output);
+            auto bytes = readResponseBytes(request.value().get(), cancel, std::move(progress), target.generic_string(),
+                                           initialBytes, &output);
             if (!bytes) {
                 return Result<DownloadResult>::fail(
                     {bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code,

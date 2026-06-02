@@ -7,8 +7,9 @@
 
 namespace autoupdater {
 
+/// Semantic version with prerelease and build metadata parsing.
 class Version {
-public:
+  public:
     Version() = default;
     Version(int major, int minor, int patch, std::string prerelease = {}, std::string buildMetadata = {});
 
@@ -16,11 +17,21 @@ public:
 
     std::string toString() const;
 
-    int major() const noexcept { return major_; }
-    int minor() const noexcept { return minor_; }
-    int patch() const noexcept { return patch_; }
-    const std::string& prerelease() const noexcept { return prerelease_; }
-    const std::string& buildMetadata() const noexcept { return buildMetadata_; }
+    int major() const noexcept {
+        return major_;
+    }
+    int minor() const noexcept {
+        return minor_;
+    }
+    int patch() const noexcept {
+        return patch_;
+    }
+    const std::string& prerelease() const noexcept {
+        return prerelease_;
+    }
+    const std::string& buildMetadata() const noexcept {
+        return buildMetadata_;
+    }
 
     friend bool operator==(const Version& lhs, const Version& rhs) noexcept;
     friend bool operator!=(const Version& lhs, const Version& rhs) noexcept;
@@ -29,7 +40,7 @@ public:
     friend bool operator<=(const Version& lhs, const Version& rhs) noexcept;
     friend bool operator>=(const Version& lhs, const Version& rhs) noexcept;
 
-private:
+  private:
     int major_ = 0;
     int minor_ = 0;
     int patch_ = 0;
@@ -37,5 +48,7 @@ private:
     std::string buildMetadata_;
 };
 
-} // namespace autoupdater
+/// Version compiled into the libAutoUpdater target.
+Version libraryVersion() noexcept;
 
+} // namespace autoupdater

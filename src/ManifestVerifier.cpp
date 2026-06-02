@@ -8,4 +8,3 @@ namespace autoupdater {
 // architecture plan.
 
 } // namespace autoupdater
-

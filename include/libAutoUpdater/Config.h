@@ -10,11 +10,13 @@
 
 namespace autoupdater {
 
+/// Retry policy for transient downloads or integrity failures.
 struct RetryOptions {
     int maxRetries = 3;
     std::chrono::milliseconds retryDelay{500};
 };
 
+/// Network timeout, TLS, and resume behavior shared by network adapters.
 struct NetworkOptions {
     std::chrono::milliseconds connectTimeout{10000};
     std::chrono::milliseconds transferTimeout{60000};
@@ -22,6 +24,7 @@ struct NetworkOptions {
     bool enableResume = true;
 };
 
+/// Security policy for manifest verification, URL allowlists, and replay checks.
 struct SecurityOptions {
     bool requireManifestSignature = false;
     std::string manifestSignatureUrl;
@@ -31,6 +34,7 @@ struct SecurityOptions {
     bool rejectDowngrade = true;
 };
 
+/// Main configuration passed to Updater.
 struct Config {
     std::string appId;
     std::string channel = "stable";
@@ -38,7 +42,8 @@ struct Config {
     std::string arch;
     std::string manifestUrl;
     Version currentVersion;
-    Version clientVersion{0, 1, 0};
+    /// Version of the updater client protocol/library used for minClientVersion checks.
+    Version clientVersion = libraryVersion();
 
     std::filesystem::path installDir;
     std::filesystem::path tempDir;
@@ -57,4 +62,3 @@ struct Config {
 };
 
 } // namespace autoupdater
-

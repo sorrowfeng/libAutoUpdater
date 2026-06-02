@@ -48,6 +48,7 @@ def main() -> int:
         "generatedAt": args.generated_at,
         "targets": args.target,
     }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Wrote {args.output}")
     return 0
@@ -55,4 +56,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

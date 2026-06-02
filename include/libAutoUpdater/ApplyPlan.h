@@ -9,11 +9,10 @@
 
 namespace autoupdater {
 
-enum class ApplyOperationType {
-    Replace,
-    Remove
-};
+/// Operation type executed by the external updater.
+enum class ApplyOperationType { Replace, Remove };
 
+/// One file replacement or removal operation in an apply plan.
 struct ApplyOperation {
     ApplyOperationType type = ApplyOperationType::Replace;
     std::string source;
@@ -22,6 +21,7 @@ struct ApplyOperation {
     std::uint64_t size = 0;
 };
 
+/// Contract file written by the library and consumed by autoupdater_apply.
 struct ApplyPlan {
     int schemaVersion = 1;
     std::string appId;
@@ -40,4 +40,3 @@ struct ApplyPlan {
 };
 
 } // namespace autoupdater
-

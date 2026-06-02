@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## Unreleased
+
+### 新增
+
+- 补齐开源治理文件、issue/PR 模板、API 文档、安全模型、集成文档、服务器布局、排障文档、质量门禁文档和生态打包模板。
+- `tools/make_manifest.py` 支持内容寻址对象存储模式，可用 `path` 指向服务器 object、`localPath` 指向安装路径。
+- 新增 `tools/gc_objects.py`、`tools/check_release_ready.py`、`tools/extract_changelog.py` 和 `tools/make_sbom.py`。
+- CI 新增 clang-format、clang-tidy、coverage 和内容寻址打包工具校验；release workflow 新增 SBOM 和 CHANGELOG release notes。
+- 新增轻量 fuzz smoke 测试，覆盖版本、manifest、index、apply plan 和路径校验解析入口。
+
+### 变更
+
+- `Config::clientVersion` 默认值改为当前库版本，避免版本元数据漂移。
+- `no-optional-deps` preset 在 Windows 上也关闭 WinHTTP，更符合“无可选 HTTP 后端”的语义。
+
 ## v0.1.2 - 2026-06-02
 
 ### 修复

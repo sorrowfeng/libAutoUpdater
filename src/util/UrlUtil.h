@@ -11,4 +11,3 @@ bool isFileUrl(const std::string& url);
 std::string fileUrlToPath(const std::string& url);
 
 } // namespace autoupdater::util
-

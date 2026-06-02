@@ -13,32 +13,25 @@
 
 namespace autoupdater {
 
-enum class State {
-    Idle,
-    Checking,
-    UpToDate,
-    UpdateAvailable,
-    Downloading,
-    ReadyToApply,
-    Applying,
-    Failed
-};
+/// Public lifecycle state exposed by Updater.
+enum class State { Idle, Checking, UpToDate, UpdateAvailable, Downloading, ReadyToApply, Applying, Failed };
 
-enum class InstallLayout {
-    PortableDirectory,
-    WindowsDirectory,
-    MacOSAppBundle,
-    LinuxAppImage,
-    PackageManagerOwned
-};
+/// Installation layout used to decide whether self-replacement is supported.
+enum class InstallLayout { PortableDirectory, WindowsDirectory, MacOSAppBundle, LinuxAppImage, PackageManagerOwned };
 
+/// Cooperative cancellation token passed into adapters.
 struct CancellationToken {
     std::atomic_bool cancelled{false};
 
-    void cancel() noexcept { cancelled.store(true, std::memory_order_relaxed); }
-    bool isCancelled() const noexcept { return cancelled.load(std::memory_order_relaxed); }
+    void cancel() noexcept {
+        cancelled.store(true, std::memory_order_relaxed);
+    }
+    bool isCancelled() const noexcept {
+        return cancelled.load(std::memory_order_relaxed);
+    }
 };
 
+/// Result of a manifest check.
 struct CheckResult {
     bool updateAvailable = false;
     bool reinstallRequired = false;
@@ -50,6 +43,7 @@ struct CheckResult {
     std::string notes;
 };
 
+/// Byte progress for downloads.
 struct Progress {
     std::uint64_t downloadedBytes = 0;
     std::uint64_t totalBytes = 0;
@@ -58,6 +52,7 @@ struct Progress {
 
 using ProgressCallback = std::function<void(const Progress&)>;
 
+/// Callback bundle used by Updater.
 struct Callbacks {
     std::function<void(const CheckResult&)> onCheckResult;
     std::function<void(const Progress&)> onProgress;
@@ -67,4 +62,3 @@ struct Callbacks {
 };
 
 } // namespace autoupdater
-

@@ -44,8 +44,7 @@ Result<void> validateManagedPath(const std::string& path) noexcept {
     return Result<void>::ok();
 }
 
-Result<std::filesystem::path> safeJoin(const std::filesystem::path& root,
-                                       const std::string& relativePath) noexcept {
+Result<std::filesystem::path> safeJoin(const std::filesystem::path& root, const std::string& relativePath) noexcept {
     const auto valid = validateManagedPath(relativePath);
     if (!valid) {
         return Result<std::filesystem::path>::fail(valid.error());
@@ -56,8 +55,7 @@ Result<std::filesystem::path> safeJoin(const std::filesystem::path& root,
         std::size_t start = 0;
         while (start <= relativePath.size()) {
             const auto end = relativePath.find('/', start);
-            const auto segment = relativePath.substr(
-                start, end == std::string::npos ? std::string::npos : end - start);
+            const auto segment = relativePath.substr(start, end == std::string::npos ? std::string::npos : end - start);
             // relativePath is UTF-8; on Windows operator/=(std::string) would
             // decode it with the active code page (e.g. GBK), which throws for
             // non-ASCII bytes. u8path interprets the bytes as UTF-8 explicitly.

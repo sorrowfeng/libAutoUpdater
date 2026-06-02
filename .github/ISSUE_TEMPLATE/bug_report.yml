@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem in libAutoUpdater.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve libAutoUpdater. For security issues, please use GitHub Security Advisory instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: libAutoUpdater version
+      placeholder: v0.1.2 or commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Cross-platform
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Configure with ...
+        2. Run ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or manifest snippets
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Build environment
+      placeholder: Compiler, CMake version, optional dependencies, network backend.

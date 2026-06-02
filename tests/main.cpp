@@ -16,6 +16,7 @@ void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 void testUpdaterQueuedCallbacksOutliveUpdater();
+void testFuzzSmokeParsersAndPaths();
 
 int main() {
     const std::vector<TestCase> tests = {
@@ -33,6 +34,7 @@ int main() {
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
         {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
+        {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},
     };
 
     int failed = 0;

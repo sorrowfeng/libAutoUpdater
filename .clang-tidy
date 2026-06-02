@@ -1,0 +1,11 @@
+---
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  modernize-use-nullptr
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(include|src|updater)/.*'
+FormatStyle: file

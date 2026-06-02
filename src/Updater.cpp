@@ -54,13 +54,9 @@ std::string detectArch() {
 
 struct Updater::Impl {
     explicit Impl(Config cfg)
-        : config(std::move(cfg)),
-          network(createDefaultNetworkClient()),
-          hashProvider(createDefaultHashProvider()),
-          fileSystem(createDefaultFileSystem()),
-          signatureVerifier(createDefaultSignatureVerifier()),
-          dispatcher(createDirectDispatcher()),
-          processLauncher(createDefaultProcessLauncher()) {
+        : config(std::move(cfg)), network(createDefaultNetworkClient()), hashProvider(createDefaultHashProvider()),
+          fileSystem(createDefaultFileSystem()), signatureVerifier(createDefaultSignatureVerifier()),
+          dispatcher(createDirectDispatcher()), processLauncher(createDefaultProcessLauncher()) {
         if (config.platform.empty()) {
             config.platform = detectPlatform();
         }
@@ -99,13 +95,7 @@ struct Updater::Impl {
     Dependencies dependenciesCopy() {
         std::lock_guard<std::mutex> lock(mutex);
         return Dependencies{
-            network,
-            hashProvider,
-            fileSystem,
-            signatureVerifier,
-            dispatcher,
-            processLauncher,
-            stateStore,
+            network, hashProvider, fileSystem, signatureVerifier, dispatcher, processLauncher, stateStore,
         };
     }
 
@@ -175,15 +165,14 @@ struct Updater::Impl {
         if (config.installDir.empty()) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "installDir is required"});
         }
-        if (!deps.network || !deps.hashProvider || !deps.fileSystem || !deps.signatureVerifier ||
-            !deps.dispatcher || !deps.processLauncher) {
+        if (!deps.network || !deps.hashProvider || !deps.fileSystem || !deps.signatureVerifier || !deps.dispatcher ||
+            !deps.processLauncher) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "Updater dependencies are incomplete"});
         }
         return Result<void>::ok();
     }
 
-    Result<UpdateDecision> checkInternal(Config& effectiveConfig,
-                                         ManifestEnvelope& envelopeOut,
+    Result<UpdateDecision> checkInternal(Config& effectiveConfig, ManifestEnvelope& envelopeOut,
                                          const Dependencies& deps) {
         auto valid = validateConfig(deps);
         if (!valid) {
@@ -191,17 +180,19 @@ struct Updater::Impl {
         }
 
         setState(State::Checking);
-        auto envelope = fetchAndVerifyManifest(effectiveConfig, *deps.network, *deps.hashProvider, *deps.signatureVerifier, *tokenCopy());
+        auto envelope = fetchAndVerifyManifest(effectiveConfig, *deps.network, *deps.hashProvider,
+                                               *deps.signatureVerifier, *tokenCopy());
         if (!envelope) {
             return Result<UpdateDecision>::fail(envelope.error());
         }
 
         if (effectiveConfig.tempDir == util::defaultStagingRoot(effectiveConfig.installDir) / "staging") {
-            effectiveConfig.tempDir = util::defaultStagingRoot(effectiveConfig.installDir) /
-                "staging" / safeVersionForPath(envelope.value().manifest.version);
+            effectiveConfig.tempDir = util::defaultStagingRoot(effectiveConfig.installDir) / "staging" /
+                                      safeVersionForPath(envelope.value().manifest.version);
         }
 
-        auto snapshot = buildLocalSnapshot(effectiveConfig, envelope.value().manifest, *deps.fileSystem, *deps.hashProvider);
+        auto snapshot =
+            buildLocalSnapshot(effectiveConfig, envelope.value().manifest, *deps.fileSystem, *deps.hashProvider);
         if (!snapshot) {
             return Result<UpdateDecision>::fail(snapshot.error());
         }
@@ -300,12 +291,7 @@ struct Updater::Impl {
 
             setState(State::Downloading);
             auto downloaded = executeDownloads(
-                effective,
-                decision.value(),
-                *deps.network,
-                *deps.fileSystem,
-                *deps.hashProvider,
-                deps.stateStore.get(),
+                effective, decision.value(), *deps.network, *deps.fileSystem, *deps.hashProvider, deps.stateStore.get(),
                 [this](const Progress& progress) {
                     auto callback = callbacksCopy().onProgress;
                     post([callback = std::move(callback), progress] {
@@ -361,8 +347,7 @@ struct Updater::Impl {
         }
     }
 
-    void startPeriodicCheck(std::chrono::milliseconds interval,
-                            bool downloadWhenAvailable,
+    void startPeriodicCheck(std::chrono::milliseconds interval, bool downloadWhenAvailable,
                             bool runImmediately) noexcept {
         if (interval.count() <= 0) {
             reportError({ErrorCode::InvalidConfig, "Periodic check interval must be positive"});
@@ -458,12 +443,7 @@ struct Updater::Impl {
 
             setState(State::Downloading);
             auto downloaded = executeDownloads(
-                effective,
-                decision,
-                *deps.network,
-                *deps.fileSystem,
-                *deps.hashProvider,
-                deps.stateStore.get(),
+                effective, decision, *deps.network, *deps.fileSystem, *deps.hashProvider, deps.stateStore.get(),
                 [this](const Progress& progress) {
                     auto callback = callbacksCopy().onProgress;
                     post([callback = std::move(callback), progress] {
@@ -684,8 +664,7 @@ void Updater::applyAndRestartAsync() noexcept {
     impl_->applyAndRestartAsync();
 }
 
-void Updater::startPeriodicCheck(std::chrono::milliseconds interval,
-                                 bool downloadWhenAvailable,
+void Updater::startPeriodicCheck(std::chrono::milliseconds interval, bool downloadWhenAvailable,
                                  bool runImmediately) noexcept {
     impl_->startPeriodicCheck(interval, downloadWhenAvailable, runImmediately);
 }

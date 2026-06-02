@@ -10,6 +10,7 @@
 
 namespace autoupdater {
 
+/// Pending update metadata persisted between download and apply/rollback.
 struct PendingUpdate {
     Version version;
     std::string releaseId;
@@ -17,6 +18,7 @@ struct PendingUpdate {
     std::filesystem::path applyPlanPath;
 };
 
+/// Resume metadata for one partially downloaded file.
 struct DownloadResumeState {
     std::string key;
     std::uint64_t offset = 0;
@@ -25,12 +27,12 @@ struct DownloadResumeState {
     std::string sha256;
 };
 
+/// Persistent state abstraction for anti-replay, pending update, and resume data.
 class IStateStore {
-public:
+  public:
     virtual ~IStateStore() = default;
 
-    virtual Result<void> saveLastAcceptedVersion(const Version& version,
-                                                 const std::string& releaseId) noexcept = 0;
+    virtual Result<void> saveLastAcceptedVersion(const Version& version, const std::string& releaseId) noexcept = 0;
     virtual Result<std::optional<Version>> loadLastAcceptedVersion() noexcept = 0;
     virtual Result<std::string> loadLastAcceptedReleaseId() noexcept = 0;
 

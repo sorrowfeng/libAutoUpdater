@@ -22,4 +22,3 @@ void testApplyPlanRoundTrip() {
     LAU_REQUIRE(parsed.value().operations[0].type == autoupdater::ApplyOperationType::Replace);
     LAU_REQUIRE(parsed.value().operations[1].type == autoupdater::ApplyOperationType::Remove);
 }
-

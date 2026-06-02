@@ -7,11 +7,8 @@
 
 namespace autoupdater {
 
-Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config,
-                                                INetworkClient& network,
-                                                IHashProvider& hashProvider,
-                                                ISignatureVerifier& signatureVerifier,
+Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkClient& network,
+                                                IHashProvider& hashProvider, ISignatureVerifier& signatureVerifier,
                                                 CancellationToken& cancel);
 
 } // namespace autoupdater
-

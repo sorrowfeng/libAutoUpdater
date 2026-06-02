@@ -1,5 +1,5 @@
 add_executable(libAutoUpdater_tests
-    ${CMAKE_SOURCE_DIR}/updater/ApplyExecutor.cpp
+    ${libAutoUpdater_SOURCE_DIR}/updater/ApplyExecutor.cpp
     main.cpp
     VersionTests.cpp
     ManifestTests.cpp
@@ -10,12 +10,13 @@ add_executable(libAutoUpdater_tests
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp
     StateStoreTests.cpp
-    UpdaterTests.cpp)
+    UpdaterTests.cpp
+    FuzzSmokeTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)
-target_include_directories(libAutoUpdater_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_include_directories(libAutoUpdater_tests PRIVATE ${CMAKE_SOURCE_DIR}/updater)
+target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/src)
+target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/updater)
 libautoupdater_apply_project_warnings(libAutoUpdater_tests)
 
 if(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL)
@@ -33,6 +34,6 @@ if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdate
             ${CMAKE_CURRENT_SOURCE_DIR}/e2e_flow.py
             --cli $<TARGET_FILE:libAutoUpdater_cli>
             --updater $<TARGET_FILE:autoupdater_apply>
-            --make-manifest ${CMAKE_SOURCE_DIR}/tools/make_manifest.py
+            --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/e2e-flow)
 endif()

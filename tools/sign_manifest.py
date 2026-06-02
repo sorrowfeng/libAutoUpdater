@@ -56,6 +56,7 @@ def main() -> int:
         signature = sign_rsa_sha256(args.manifest, args.private_key)
 
     output = args.output or args.manifest.with_suffix(args.manifest.suffix + ".sig")
+    output.parent.mkdir(parents=True, exist_ok=True)
     if args.raw:
         output.write_bytes(signature)
     else:
@@ -67,4 +68,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

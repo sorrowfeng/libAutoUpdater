@@ -34,4 +34,3 @@ void testUpdatePlannerCreatesOperations() {
     LAU_REQUIRE(decision.value().operations[0].type == autoupdater::ApplyOperationType::Replace);
     LAU_REQUIRE(decision.value().operations[1].type == autoupdater::ApplyOperationType::Remove);
 }
-

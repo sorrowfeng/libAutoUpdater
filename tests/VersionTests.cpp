@@ -17,4 +17,3 @@ void testVersionParsingAndOrdering() {
     LAU_REQUIRE(stable.value() == build.value());
     LAU_REQUIRE(stable.value().toString() == "1.2.3");
 }
-

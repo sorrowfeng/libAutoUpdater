@@ -11,4 +11,3 @@ int main() {
     config.currentVersion = version.value();
     return config.currentVersion.toString() == "1.0.0" ? 0 : 2;
 }
-

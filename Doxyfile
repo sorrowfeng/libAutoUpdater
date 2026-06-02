@@ -1,0 +1,12 @@
+PROJECT_NAME           = libAutoUpdater
+PROJECT_BRIEF          = C++17 cross-platform desktop online update library
+OUTPUT_DIRECTORY       = build/docs
+INPUT                  = include/libAutoUpdater README.md docs/api.md
+RECURSIVE              = YES
+EXTRACT_ALL            = NO
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+MARKDOWN_SUPPORT       = YES
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_AS_ERROR          = NO

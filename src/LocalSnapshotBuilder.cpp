@@ -6,9 +6,7 @@
 
 namespace autoupdater {
 
-Result<LocalSnapshot> buildLocalSnapshot(const Config& config,
-                                         const Manifest& manifest,
-                                         IFileSystem& fileSystem,
+Result<LocalSnapshot> buildLocalSnapshot(const Config& config, const Manifest& manifest, IFileSystem& fileSystem,
                                          IHashProvider& hashProvider) {
     LocalSnapshot snapshot;
     std::set<std::string> seen;
@@ -46,4 +44,3 @@ Result<LocalSnapshot> buildLocalSnapshot(const Config& config,
 }
 
 } // namespace autoupdater
-

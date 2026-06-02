@@ -55,7 +55,8 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
         ApplyPlan plan;
         const auto* schema = json.value().get("schemaVersion");
         if (!schema || !schema->isNumber() || schema->asInt() != 1) {
-            return Result<ApplyPlan>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
+            return Result<ApplyPlan>::fail(
+                {ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
         }
         plan.schemaVersion = 1;
         plan.appId = optionalString(json.value(), "appId");

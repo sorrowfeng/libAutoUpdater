@@ -11,7 +11,7 @@
 namespace autoupdater::util {
 
 class Json {
-public:
+  public:
     using Object = std::map<std::string, Json>;
     using Array = std::vector<Json>;
 
@@ -45,7 +45,7 @@ public:
 
     std::string stringify(int indent = 0) const;
 
-private:
+  private:
     using Storage = std::variant<std::nullptr_t, bool, double, std::string, Object, Array>;
     Storage storage_ = nullptr;
 };
@@ -53,4 +53,3 @@ private:
 std::string jsonEscape(const std::string& text);
 
 } // namespace autoupdater::util
-

@@ -20,6 +20,7 @@ option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" 
 option(LIBAUTOUPDATER_ENABLE_WARNINGS "Enable common compiler warnings for project targets" ON)
 option(LIBAUTOUPDATER_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
 option(LIBAUTOUPDATER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer on supported compilers" OFF)
+option(LIBAUTOUPDATER_ENABLE_COVERAGE "Enable coverage instrumentation on GCC/Clang-style compilers" OFF)
 
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
@@ -35,6 +36,15 @@ if(LIBAUTOUPDATER_ENABLE_SANITIZERS)
     else()
         add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address,undefined)
+    endif()
+endif()
+
+if(LIBAUTOUPDATER_ENABLE_COVERAGE)
+    if(MSVC)
+        message(FATAL_ERROR "LIBAUTOUPDATER_ENABLE_COVERAGE is supported only on GCC/Clang-style compilers")
+    else()
+        add_compile_options(--coverage -O0 -g)
+        add_link_options(--coverage)
     endif()
 endif()
 

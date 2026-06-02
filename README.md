@@ -4,7 +4,8 @@
 
 The project is designed around static-file release hosting: an application can publish manifests and release files to any HTTP/HTTPS server without running a custom backend.
 
-The detailed architecture lives in [docs/architecture-plan.md](docs/architecture-plan.md).
+Start with [docs/getting-started.md](docs/getting-started.md). The detailed
+architecture lives in [docs/architecture-plan.md](docs/architecture-plan.md).
 
 ## Goals
 
@@ -87,6 +88,19 @@ tests/                        Unit tests
 tools/                        Release manifest generation script
 docs/                         Architecture, manifest, and apply-plan docs
 ```
+
+Useful documentation:
+
+- [Getting started](docs/getting-started.md)
+- [Integration guide](docs/integration.md)
+- [API overview](docs/api.md)
+- [Server layout](docs/server-layout.md)
+- [Content-addressed storage](docs/content-addressed-storage.md)
+- [Security model](docs/security-model.md)
+- [Release process](docs/release-process.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Quality gates](docs/quality.md)
+- [Ecosystem packaging](docs/ecosystem.md)
 
 ## Example Manifest Shape
 
@@ -274,13 +288,20 @@ target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 GitHub Actions is configured as a C++ library quality gate:
 
 - `source-hygiene`: whitespace checks plus Python tool and manifest generation validation.
+- `format`: clang-format checks for public headers and C++ sources.
+- `static-analysis`: clang-tidy analyzer pass.
 - `build-test`: GCC, Clang, AppleClang, and MSVC builds across Debug/Release and optional-dependency-off variants.
 - `library-only-config`: verifies the library can be configured without updater, examples, tests, curl, or OpenSSL.
 - `sanitizers`: runs ASan/UBSan on Ubuntu with Clang.
+- `coverage`: GCC coverage summary through gcovr.
 - `package-install-tree`: installs the Release build and uploads install-tree artifacts on pushes.
 - `github-hosted-demo`: runs the real GitHub Raw update flow on Ubuntu/libcurl, Windows/WinHTTP, and macOS/CFNetwork.
 - `CodeQL`: builds the C++ project and runs GitHub code scanning on pushes, pull requests, and a weekly schedule.
-- `release`: when a `v*` tag is pushed, builds release ZIPs for Windows, macOS, and Linux, writes SHA-256 files, and publishes them to GitHub Releases.
+- `release`: when a `v*` tag is pushed, builds release ZIPs for Windows, macOS, and Linux, writes SHA-256/SBOM files, and publishes them to GitHub Releases.
+
+Community and security process files are available in
+[CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 The normal test command also includes the end-to-end update flow:
 
@@ -352,6 +373,25 @@ python tools/make_index.py \
 ```
 
 `Config::manifestUrl` may point directly to a release manifest or to an index manifest.
+
+For larger projects, avoid duplicating unchanged files in each release
+directory by using content-addressed storage:
+
+```sh
+python tools/make_manifest.py dist/MyApp \
+  --content-addressed \
+  --object-root publish/updates/objects/sha256 \
+  --object-prefix objects/sha256 \
+  --app-id com.example.myapp \
+  --platform windows \
+  --arch x64 \
+  --version 1.4.0 \
+  --release-date 2026-06-01T10:00:00Z \
+  --base-url https://example.com/updates/ \
+  --output publish/updates/releases/1.4.0/windows-x64/manifest.json
+```
+
+See [docs/content-addressed-storage.md](docs/content-addressed-storage.md).
 
 Optionally sign the manifest with a detached signature:
 

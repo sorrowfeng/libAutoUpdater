@@ -40,4 +40,3 @@ void testManifestRejectsPathTraversal() {
     LAU_REQUIRE(!manifest);
     LAU_REQUIRE(manifest.error().code == autoupdater::ErrorCode::PathTraversalRejected);
 }
-

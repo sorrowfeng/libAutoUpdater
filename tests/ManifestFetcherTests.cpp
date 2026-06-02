@@ -9,38 +9,33 @@
 namespace {
 
 class FakeNetworkClient final : public autoupdater::INetworkClient {
-public:
+  public:
     std::map<std::string, std::string> texts;
 
-    autoupdater::Result<std::string> getText(
-        const std::string& url,
-        const autoupdater::NetworkOptions&,
-        autoupdater::CancellationToken&) noexcept override {
+    autoupdater::Result<std::string> getText(const std::string& url, const autoupdater::NetworkOptions&,
+                                             autoupdater::CancellationToken&) noexcept override {
         const auto it = texts.find(url);
         if (it == texts.end()) {
-            return autoupdater::Result<std::string>::fail({autoupdater::ErrorCode::NetworkError, "missing url: " + url});
+            return autoupdater::Result<std::string>::fail(
+                {autoupdater::ErrorCode::NetworkError, "missing url: " + url});
         }
         return autoupdater::Result<std::string>::ok(it->second);
     }
 
-    autoupdater::Result<autoupdater::DownloadResult> downloadToFile(
-        const std::string&,
-        const std::filesystem::path&,
-        const autoupdater::NetworkOptions&,
-        const std::optional<autoupdater::DownloadResumeInfo>&,
-        autoupdater::ProgressCallback,
-        autoupdater::CancellationToken&) noexcept override {
-        return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::DownloadFailed, "not used"});
+    autoupdater::Result<autoupdater::DownloadResult>
+    downloadToFile(const std::string&, const std::filesystem::path&, const autoupdater::NetworkOptions&,
+                   const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
+                   autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::DownloadResult>::fail(
+            {autoupdater::ErrorCode::DownloadFailed, "not used"});
     }
 };
 
 class CountingSignatureVerifier final : public autoupdater::ISignatureVerifier {
-public:
+  public:
     int calls = 0;
 
-    autoupdater::Result<void> verify(std::string_view,
-                                     std::string_view,
-                                     std::string_view) noexcept override {
+    autoupdater::Result<void> verify(std::string_view, std::string_view, std::string_view) noexcept override {
         ++calls;
         return autoupdater::Result<void>::ok();
     }

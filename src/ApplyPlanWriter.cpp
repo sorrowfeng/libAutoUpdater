@@ -20,12 +20,11 @@ std::string safeVersionForPath(const Version& version) {
 
 } // namespace
 
-Result<WrittenApplyPlan> writeApplyPlan(const Config& config,
-                                        const ManifestEnvelope& envelope,
-                                        const UpdateDecision& decision,
-                                        IFileSystem& fileSystem) {
+Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnvelope& envelope,
+                                        const UpdateDecision& decision, IFileSystem& fileSystem) {
     const auto stateRoot = util::defaultStagingRoot(config.installDir);
-    const auto backupDir = stateRoot / "backup" /
+    const auto backupDir =
+        stateRoot / "backup" /
         (safeVersionForPath(config.currentVersion) + "-to-" + safeVersionForPath(envelope.manifest.version));
 
     ApplyPlan plan;
@@ -54,4 +53,3 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config,
 }
 
 } // namespace autoupdater
-

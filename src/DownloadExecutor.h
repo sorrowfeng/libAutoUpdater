@@ -8,13 +8,8 @@
 
 namespace autoupdater {
 
-Result<void> executeDownloads(const Config& config,
-                              const UpdateDecision& decision,
-                              INetworkClient& network,
-                              IFileSystem& fileSystem,
-                              IHashProvider& hashProvider,
-                              IStateStore* stateStore,
-                              ProgressCallback progress,
-                              CancellationToken& cancel);
+Result<void> executeDownloads(const Config& config, const UpdateDecision& decision, INetworkClient& network,
+                              IFileSystem& fileSystem, IHashProvider& hashProvider, IStateStore* stateStore,
+                              ProgressCallback progress, CancellationToken& cancel);
 
 } // namespace autoupdater

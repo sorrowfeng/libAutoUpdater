@@ -26,7 +26,8 @@ std::string currentUtcIsoLike() {
 
 Result<void> validateManifestAgainstConfig(const Config& config, const Manifest& manifest) {
     if (config.installLayout == InstallLayout::PackageManagerOwned) {
-        return Result<void>::fail({ErrorCode::UnsupportedInstallLayout, "Package-manager-owned installs are not self-updated"});
+        return Result<void>::fail(
+            {ErrorCode::UnsupportedInstallLayout, "Package-manager-owned installs are not self-updated"});
     }
     if (!config.appId.empty() && !manifest.appId.empty() && config.appId != manifest.appId) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest appId does not match config"});
@@ -55,9 +56,7 @@ Result<void> validateManifestAgainstConfig(const Config& config, const Manifest&
 
 } // namespace
 
-Result<UpdateDecision> planUpdate(const Config& config,
-                                  const ManifestEnvelope& envelope,
-                                  const LocalSnapshot& snapshot,
+Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& envelope, const LocalSnapshot& snapshot,
                                   const std::optional<Version>& lastAcceptedVersion) {
     const auto& manifest = envelope.manifest;
     auto validation = validateManifestAgainstConfig(config, manifest);
@@ -81,11 +80,13 @@ Result<UpdateDecision> planUpdate(const Config& config,
         const auto baseline = lastAcceptedVersion ? *lastAcceptedVersion : config.currentVersion;
         if (manifest.version < baseline) {
             decision.checkResult.downgradeRejected = true;
-            return Result<UpdateDecision>::fail({ErrorCode::SecurityPolicyViolation, "Manifest version is lower than accepted version"});
+            return Result<UpdateDecision>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Manifest version is lower than accepted version"});
         }
     }
 
-    if (!(config.currentVersion < manifest.version) && !(manifest.allowDowngrade && manifest.version != config.currentVersion)) {
+    if (!(config.currentVersion < manifest.version) &&
+        !(manifest.allowDowngrade && manifest.version != config.currentVersion)) {
         return Result<UpdateDecision>::ok(std::move(decision));
     }
 
@@ -94,7 +95,8 @@ Result<UpdateDecision> planUpdate(const Config& config,
     for (const auto& file : manifest.files) {
         const auto localPath = file.localPath.empty() ? file.path : file.localPath;
         if (!util::pathAllowedByWhitelist(localPath, config.managedPathWhitelist)) {
-            return Result<UpdateDecision>::fail({ErrorCode::SecurityPolicyViolation, "Manifest file is outside managed whitelist"});
+            return Result<UpdateDecision>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Manifest file is outside managed whitelist"});
         }
 
         const auto* local = snapshot.find(localPath);
@@ -122,7 +124,8 @@ Result<UpdateDecision> planUpdate(const Config& config,
 
     for (const auto& path : manifest.remove) {
         if (!util::pathAllowedByWhitelist(path, config.managedPathWhitelist)) {
-            return Result<UpdateDecision>::fail({ErrorCode::SecurityPolicyViolation, "Remove path is outside managed whitelist"});
+            return Result<UpdateDecision>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Remove path is outside managed whitelist"});
         }
         ApplyOperation operation;
         operation.type = ApplyOperationType::Remove;

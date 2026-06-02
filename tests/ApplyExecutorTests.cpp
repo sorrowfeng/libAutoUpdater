@@ -45,7 +45,8 @@ void testApplyExecutorRollsBackCurrentFailedOperation() {
     plan.backupDir = backup;
     plan.releaseId = "test";
     plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/a.txt", "bin/a.txt", hashA.value(), 5});
-    plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/b.txt", "bin/b.txt", "not-the-real-hash", 5});
+    plan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "bin/b.txt", "bin/b.txt", "not-the-real-hash", 5});
 
     auto result = autoupdater::updater::executeApplyPlan(plan);
     LAU_REQUIRE(!result);

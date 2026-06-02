@@ -12,7 +12,8 @@ namespace {
 
 void usage() {
     std::cout << "Usage:\n"
-              << "  libAutoUpdater_cli --manifest <url-or-file> --version <x.y.z> --install <dir> [--updater <path>] [--apply]\n";
+              << "  libAutoUpdater_cli --manifest <url-or-file> --version <x.y.z> --install <dir> [--updater <path>] "
+                 "[--apply]\n";
 }
 
 const char* stateName(autoupdater::State state) noexcept {
@@ -114,8 +115,7 @@ int main(int argc, char** argv) {
         } else if (state == autoupdater::State::UpToDate) {
             std::cout << "No update is required.\n";
         }
-        if (state == autoupdater::State::UpToDate ||
-            state == autoupdater::State::UpdateAvailable ||
+        if (state == autoupdater::State::UpToDate || state == autoupdater::State::UpdateAvailable ||
             state == autoupdater::State::Applying) {
             std::lock_guard<std::mutex> lock(mutex);
             done = true;
@@ -149,13 +149,11 @@ int main(int argc, char** argv) {
         }
         double percent = 0.0;
         if (progress.totalBytes > 0) {
-            percent = static_cast<double>(progress.downloadedBytes) * 100.0 /
-                static_cast<double>(progress.totalBytes);
+            percent = static_cast<double>(progress.downloadedBytes) * 100.0 / static_cast<double>(progress.totalBytes);
         }
-        std::cout << "download " << progress.downloadedBytes << "/" << progress.totalBytes
-                  << " " << progress.currentFile << "\n";
-        std::cout << "  [" << std::fixed << std::setprecision(1) << percent << "%] "
-                  << progress.currentFile << " ("
+        std::cout << "download " << progress.downloadedBytes << "/" << progress.totalBytes << " "
+                  << progress.currentFile << "\n";
+        std::cout << "  [" << std::fixed << std::setprecision(1) << percent << "%] " << progress.currentFile << " ("
                   << progress.downloadedBytes << "/" << progress.totalBytes << " bytes)\n";
     };
     callbacks.onReadyToApply = [&] {
@@ -163,7 +161,8 @@ int main(int argc, char** argv) {
         std::cout << "\nReady to apply\n";
         std::cout << "readyToApply=true\n";
         if (!remoteVersionText.empty()) {
-            std::cout << "  stagedDir: " << (config.installDir / ".autoupdater" / "staging" / remoteVersionText).string() << "\n";
+            std::cout << "  stagedDir: "
+                      << (config.installDir / ".autoupdater" / "staging" / remoteVersionText).string() << "\n";
         }
         if (applyWhenReady) {
             std::cout << "  action: launching external updater\n";

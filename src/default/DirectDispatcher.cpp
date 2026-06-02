@@ -5,7 +5,7 @@ namespace autoupdater {
 namespace {
 
 class DirectDispatcher final : public IEventDispatcher {
-public:
+  public:
     void post(std::function<void()> fn) noexcept override {
         if (fn) {
             fn();
@@ -20,4 +20,3 @@ std::shared_ptr<IEventDispatcher> createDirectDispatcher() {
 }
 
 } // namespace autoupdater
-

@@ -19,28 +19,25 @@ struct DownloadResumeInfo {
     std::string lastModified;
 };
 
+/// Download result metadata used for future resume requests.
 struct DownloadResult {
     std::string etag;
     std::string lastModified;
     std::uint64_t bytesWritten = 0;
 };
 
+/// Network abstraction for manifest fetches and file downloads.
 class INetworkClient {
-public:
+  public:
     virtual ~INetworkClient() = default;
 
-    virtual Result<std::string> getText(
-        const std::string& url,
-        const NetworkOptions& options,
-        CancellationToken& cancel) noexcept = 0;
+    virtual Result<std::string> getText(const std::string& url, const NetworkOptions& options,
+                                        CancellationToken& cancel) noexcept = 0;
 
-    virtual Result<DownloadResult> downloadToFile(
-        const std::string& url,
-        const std::filesystem::path& target,
-        const NetworkOptions& options,
-        const std::optional<DownloadResumeInfo>& resume,
-        ProgressCallback progress,
-        CancellationToken& cancel) noexcept = 0;
+    virtual Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
+                                                  const NetworkOptions& options,
+                                                  const std::optional<DownloadResumeInfo>& resume,
+                                                  ProgressCallback progress, CancellationToken& cancel) noexcept = 0;
 };
 
 std::shared_ptr<INetworkClient> createDefaultNetworkClient();

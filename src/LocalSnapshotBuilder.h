@@ -6,10 +6,7 @@
 
 namespace autoupdater {
 
-Result<LocalSnapshot> buildLocalSnapshot(const Config& config,
-                                         const Manifest& manifest,
-                                         IFileSystem& fileSystem,
+Result<LocalSnapshot> buildLocalSnapshot(const Config& config, const Manifest& manifest, IFileSystem& fileSystem,
                                          IHashProvider& hashProvider);
 
 } // namespace autoupdater
-

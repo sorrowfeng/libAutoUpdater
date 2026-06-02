@@ -10,6 +10,11 @@
 
 namespace autoupdater {
 
+/// A single managed file in a release manifest.
+///
+/// path is the server-side path relative to Manifest::baseUrl. localPath, when
+/// set, is the install-root-relative destination path. This split supports
+/// content-addressed object storage.
 struct ManifestFile {
     std::string path;
     std::string localPath;
@@ -17,6 +22,7 @@ struct ManifestFile {
     std::uint64_t size = 0;
 };
 
+/// Release manifest describing the complete target state for one platform.
 struct Manifest {
     int schemaVersion = 1;
     std::string appId;
@@ -41,12 +47,14 @@ struct Manifest {
     std::string toJson() const;
 };
 
+/// One platform/architecture routing entry in an index manifest.
 struct IndexTarget {
     std::string platform;
     std::string arch;
     std::string manifestUrl;
 };
 
+/// Lightweight routing manifest that points clients to platform-specific releases.
 struct IndexManifest {
     int schemaVersion = 1;
     std::string appId;
@@ -58,4 +66,3 @@ struct IndexManifest {
 };
 
 } // namespace autoupdater
-

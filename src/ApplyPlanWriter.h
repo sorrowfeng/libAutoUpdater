@@ -11,10 +11,7 @@ struct WrittenApplyPlan {
     std::filesystem::path path;
 };
 
-Result<WrittenApplyPlan> writeApplyPlan(const Config& config,
-                                        const ManifestEnvelope& envelope,
-                                        const UpdateDecision& decision,
-                                        IFileSystem& fileSystem);
+Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnvelope& envelope,
+                                        const UpdateDecision& decision, IFileSystem& fileSystem);
 
 } // namespace autoupdater
-

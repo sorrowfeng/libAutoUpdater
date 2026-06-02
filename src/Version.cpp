@@ -4,6 +4,10 @@
 #include <cctype>
 #include <sstream>
 
+#ifndef LIBAUTOUPDATER_VERSION
+#define LIBAUTOUPDATER_VERSION "0.0.0"
+#endif
+
 namespace autoupdater {
 
 namespace {
@@ -13,9 +17,8 @@ bool isIdentifierChar(char c) {
 }
 
 bool isNumericIdentifier(const std::string& text) {
-    return !text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
-        return std::isdigit(static_cast<unsigned char>(c));
-    });
+    return !text.empty() &&
+           std::all_of(text.begin(), text.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
 }
 
 std::vector<std::string> split(const std::string& text, char delimiter) {
@@ -128,10 +131,7 @@ int comparePrerelease(const std::string& lhs, const std::string& rhs) noexcept {
 } // namespace
 
 Version::Version(int major, int minor, int patch, std::string prerelease, std::string buildMetadata)
-    : major_(major),
-      minor_(minor),
-      patch_(patch),
-      prerelease_(std::move(prerelease)),
+    : major_(major), minor_(minor), patch_(patch), prerelease_(std::move(prerelease)),
       buildMetadata_(std::move(buildMetadata)) {}
 
 Result<Version> Version::parse(const std::string& text) noexcept {
@@ -199,9 +199,7 @@ std::string Version::toString() const {
 }
 
 bool operator==(const Version& lhs, const Version& rhs) noexcept {
-    return lhs.major_ == rhs.major_ &&
-           lhs.minor_ == rhs.minor_ &&
-           lhs.patch_ == rhs.patch_ &&
+    return lhs.major_ == rhs.major_ && lhs.minor_ == rhs.minor_ && lhs.patch_ == rhs.patch_ &&
            lhs.prerelease_ == rhs.prerelease_;
 }
 
@@ -232,6 +230,14 @@ bool operator<=(const Version& lhs, const Version& rhs) noexcept {
 
 bool operator>=(const Version& lhs, const Version& rhs) noexcept {
     return !(lhs < rhs);
+}
+
+Version libraryVersion() noexcept {
+    auto parsed = Version::parse(LIBAUTOUPDATER_VERSION);
+    if (parsed) {
+        return parsed.value();
+    }
+    return Version{};
 }
 
 } // namespace autoupdater

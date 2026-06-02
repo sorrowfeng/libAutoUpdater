@@ -13,4 +13,3 @@ std::string sha256Bytes(std::string_view data);
 Result<std::string> sha256File(const std::filesystem::path& path) noexcept;
 
 } // namespace autoupdater::util
-

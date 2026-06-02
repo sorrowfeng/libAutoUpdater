@@ -4,6 +4,7 @@
 
 namespace autoupdater {
 
+/// Stable error categories returned through Result<T> and callbacks.
 enum class ErrorCode {
     None = 0,
     InvalidConfig,
@@ -27,14 +28,16 @@ enum class ErrorCode {
     InternalError
 };
 
+/// Error object containing a stable code and human-readable message.
 struct Error {
     ErrorCode code = ErrorCode::None;
     std::string message;
 
-    bool ok() const noexcept { return code == ErrorCode::None; }
+    bool ok() const noexcept {
+        return code == ErrorCode::None;
+    }
 };
 
 const char* toString(ErrorCode code) noexcept;
 
 } // namespace autoupdater
-

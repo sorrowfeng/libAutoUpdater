@@ -9,8 +9,9 @@
 
 namespace autoupdater {
 
+/// Hash abstraction for file and byte SHA-256 calculations.
 class IHashProvider {
-public:
+  public:
     virtual ~IHashProvider() = default;
 
     virtual Result<std::string> sha256File(const std::filesystem::path& path) noexcept = 0;

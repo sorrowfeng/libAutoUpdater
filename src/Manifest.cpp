@@ -35,7 +35,8 @@ Result<std::optional<Version>> optionalVersion(const util::Json& object, const s
         return Result<std::optional<Version>>::ok(std::nullopt);
     }
     if (!value->isString()) {
-        return Result<std::optional<Version>>::fail({ErrorCode::ManifestParseFailed, "Version field must be string: " + key});
+        return Result<std::optional<Version>>::fail(
+            {ErrorCode::ManifestParseFailed, "Version field must be string: " + key});
     }
     auto parsed = Version::parse(value->asString());
     if (!parsed) {
@@ -233,7 +234,8 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText) noexcept
         }
         manifest.schemaVersion = static_cast<int>(schema->asInt());
         if (manifest.schemaVersion != kSupportedManifestSchema) {
-            return Result<IndexManifest>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported index manifest schemaVersion"});
+            return Result<IndexManifest>::fail(
+                {ErrorCode::UnsupportedManifestSchema, "Unsupported index manifest schemaVersion"});
         }
         manifest.appId = optionalString(json.value(), "appId");
         manifest.channel = optionalString(json.value(), "channel");
@@ -264,4 +266,3 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText) noexcept
 }
 
 } // namespace autoupdater
-

@@ -8,7 +8,7 @@ namespace autoupdater {
 namespace {
 
 class StdFileSystem final : public IFileSystem {
-public:
+  public:
     bool exists(const std::filesystem::path& path) noexcept override {
         std::error_code ec;
         return std::filesystem::exists(path, ec);
@@ -41,8 +41,7 @@ public:
         }
     }
 
-    Result<void> copyFile(const std::filesystem::path& from,
-                          const std::filesystem::path& to,
+    Result<void> copyFile(const std::filesystem::path& from, const std::filesystem::path& to,
                           bool overwrite) noexcept override {
         try {
             std::error_code ec;
@@ -52,8 +51,8 @@ public:
                     return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
                 }
             }
-            const auto options = overwrite ? std::filesystem::copy_options::overwrite_existing
-                                           : std::filesystem::copy_options::none;
+            const auto options =
+                overwrite ? std::filesystem::copy_options::overwrite_existing : std::filesystem::copy_options::none;
             std::filesystem::copy_file(from, to, options, ec);
             if (ec) {
                 return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
@@ -64,8 +63,7 @@ public:
         }
     }
 
-    Result<void> renameOrReplace(const std::filesystem::path& from,
-                                 const std::filesystem::path& to) noexcept override {
+    Result<void> renameOrReplace(const std::filesystem::path& from, const std::filesystem::path& to) noexcept override {
         try {
             std::error_code ec;
             if (!to.parent_path().empty()) {
@@ -130,8 +128,7 @@ public:
         }
     }
 
-    Result<void> writeText(const std::filesystem::path& path,
-                           const std::string& text) noexcept override {
+    Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept override {
         try {
             std::error_code ec;
             if (!path.parent_path().empty()) {

@@ -5,8 +5,9 @@
 
 namespace autoupdater {
 
+/// Dispatches callbacks onto the caller's preferred execution context.
 class IEventDispatcher {
-public:
+  public:
     virtual ~IEventDispatcher() = default;
     virtual void post(std::function<void()> fn) noexcept = 0;
 };
@@ -14,4 +15,3 @@ public:
 std::shared_ptr<IEventDispatcher> createDirectDispatcher();
 
 } // namespace autoupdater
-

@@ -28,7 +28,17 @@ jobs:
           fi
 
       - name: Validate Python Tools
-        run: python -m py_compile tools/make_manifest.py tools/make_index.py tools/sign_manifest.py examples/github_update_demo.py tests/e2e_flow.py
+        run: >
+          python -m py_compile
+          tools/make_manifest.py
+          tools/make_index.py
+          tools/sign_manifest.py
+          tools/gc_objects.py
+          tools/check_release_ready.py
+          tools/extract_changelog.py
+          tools/make_sbom.py
+          examples/github_update_demo.py
+          tests/e2e_flow.py
 
       - name: Validate CMake Presets
         run: cmake --list-presets
@@ -50,6 +60,82 @@ jobs:
             --generated-at 2026-06-01T10:00:00Z \
             --target linux/x64=https://example.com/releases/1.2.3/manifest.json \
             --output packaging-probe/index.json
+          python tools/make_manifest.py packaging-probe/release \
+            --content-addressed \
+            --object-root packaging-probe/objects/sha256 \
+            --object-prefix objects/sha256 \
+            --app-id com.example.probe \
+            --platform linux \
+            --arch x64 \
+            --version 1.2.3 \
+            --release-date 2026-06-01T10:00:00Z \
+            --base-url https://example.com/updates/ \
+            --output packaging-probe/content-addressed-manifest.json
+          python tools/gc_objects.py packaging-probe/objects/sha256 \
+            --manifest packaging-probe/content-addressed-manifest.json
+          python tools/make_sbom.py packaging-probe/release \
+            --version 1.2.3 \
+            --output packaging-probe/sbom.spdx.json
+          python tools/check_release_ready.py --version-only
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check format
+        run: |
+          mapfile -t files < <(git ls-files '*.cpp' '*.h')
+          clang-format --dry-run --Werror "${files[@]}"
+
+  static-analysis:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy
+
+      - name: Configure
+        run: >
+          cmake -S . -B tidy-build
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=OFF
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Run clang-tidy
+        run: |
+          mapfile -t files < <(git ls-files \
+            'src/*.cpp' \
+            'src/default/BasicNetworkClient.cpp' \
+            'src/default/DirectDispatcher.cpp' \
+            'src/default/JsonStateStore.cpp' \
+            'src/default/NullSignatureVerifier.cpp' \
+            'src/default/ProcessLauncher.cpp' \
+            'src/default/Sha256HashProvider.cpp' \
+            'src/default/StdFileSystem.cpp' \
+            'src/util/*.cpp' \
+            'updater/*.cpp')
+          clang-tidy -p tidy-build --warnings-as-errors='clang-analyzer-*' "${files[@]}"
 
   build-test:
     name: ${{ matrix.name }}
@@ -194,6 +280,53 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build -C Debug --output-on-failure
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install gcovr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcovr
+
+      - name: Configure
+        run: >
+          cmake -S . -B coverage-build
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=OFF
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DLIBAUTOUPDATER_ENABLE_COVERAGE=ON
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build coverage-build --config Debug --parallel
+
+      - name: Test
+        run: ctest --test-dir coverage-build -C Debug --output-on-failure
+
+      - name: Report
+        run: >
+          gcovr --root .
+          --filter src
+          --exclude 'src/default/CfNetworkClient.cpp'
+          --exclude 'src/default/WinHttpNetworkClient.cpp'
+          --print-summary
+          --xml-pretty
+          --output coverage.xml
+
+      - name: Upload Coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
 
   package-install-tree:
     name: Package install tree (${{ matrix.os }})

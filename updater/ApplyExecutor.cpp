@@ -85,7 +85,8 @@ std::filesystem::path joinChecked(const std::filesystem::path& root, const std::
     return joined.value();
 }
 
-Result<void> writeJournal(const ApplyPlan& plan, const std::vector<AppliedOperation>& applied, const std::string& state) {
+Result<void> writeJournal(const ApplyPlan& plan, const std::vector<AppliedOperation>& applied,
+                          const std::string& state) {
     try {
         const auto journalDir = plan.installDir / ".autoupdater" / "journal";
         std::error_code ec;

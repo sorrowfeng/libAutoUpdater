@@ -12,4 +12,3 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept;
 
 } // namespace autoupdater::updater
-

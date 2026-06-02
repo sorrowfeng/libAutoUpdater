@@ -36,4 +36,3 @@ void testStateStoreDownloadResume() {
 
     std::filesystem::remove_all(root, ec);
 }
-

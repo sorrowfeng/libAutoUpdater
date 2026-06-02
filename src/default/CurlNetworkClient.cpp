@@ -16,9 +16,7 @@ namespace {
 std::once_flag curlInitFlag;
 
 void ensureCurlGlobalInit() {
-    std::call_once(curlInitFlag, [] {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-    });
+    std::call_once(curlInitFlag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
 struct TextContext {
@@ -75,9 +73,8 @@ std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* us
         while (!value.empty() && value.front() == ' ') {
             value.erase(value.begin());
         }
-        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (key == "etag") {
             context->etag = value;
         } else if (key == "last-modified") {
@@ -97,9 +94,8 @@ void applyCommonOptions(CURL* curl, const NetworkOptions& options) {
 }
 
 class CurlNetworkClient final : public INetworkClient {
-public:
-    Result<std::string> getText(const std::string& url,
-                                const NetworkOptions& options,
+  public:
+    Result<std::string> getText(const std::string& url, const NetworkOptions& options,
                                 CancellationToken& cancel) noexcept override {
         ensureCurlGlobalInit();
         CURL* curl = curl_easy_init();
@@ -130,11 +126,9 @@ public:
         return Result<std::string>::ok(std::move(context.data));
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url,
-                                          const std::filesystem::path& target,
+    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
                                           const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume,
-                                          ProgressCallback progress,
+                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         ensureCurlGlobalInit();
         try {
@@ -147,8 +141,8 @@ public:
             }
 
             const auto outputMode = (options.enableResume && resume && resume->offset > 0)
-                ? (std::ios::binary | std::ios::app)
-                : (std::ios::binary | std::ios::trunc);
+                                        ? (std::ios::binary | std::ios::app)
+                                        : (std::ios::binary | std::ios::trunc);
             std::ofstream output(target, outputMode);
             if (!output) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
@@ -214,7 +208,8 @@ public:
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
             }
             if (response >= 400) {
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "HTTP error " + std::to_string(response)});
+                return Result<DownloadResult>::fail(
+                    {ErrorCode::DownloadFailed, "HTTP error " + std::to_string(response)});
             }
 
             DownloadResult result;

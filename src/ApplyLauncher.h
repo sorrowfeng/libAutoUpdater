@@ -5,9 +5,7 @@
 
 namespace autoupdater {
 
-Result<void> launchApplyProcess(const Config& config,
-                                const std::filesystem::path& applyPlanPath,
+Result<void> launchApplyProcess(const Config& config, const std::filesystem::path& applyPlanPath,
                                 IProcessLauncher& processLauncher);
 
 } // namespace autoupdater
-

@@ -18,7 +18,7 @@
 namespace {
 
 class QueuedDispatcher final : public autoupdater::IEventDispatcher {
-public:
+  public:
     void post(std::function<void()> fn) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(std::move(fn));
@@ -37,17 +37,15 @@ public:
         }
     }
 
-private:
+  private:
     std::mutex mutex_;
     std::vector<std::function<void()>> queue_;
 };
 
 class StaticManifestNetwork final : public autoupdater::INetworkClient {
-public:
-    autoupdater::Result<std::string> getText(
-        const std::string&,
-        const autoupdater::NetworkOptions&,
-        autoupdater::CancellationToken&) noexcept override {
+  public:
+    autoupdater::Result<std::string> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                             autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<std::string>::ok(R"json({
           "schemaVersion": 1,
           "version": "1.0.0",
@@ -56,14 +54,12 @@ public:
         })json");
     }
 
-    autoupdater::Result<autoupdater::DownloadResult> downloadToFile(
-        const std::string&,
-        const std::filesystem::path&,
-        const autoupdater::NetworkOptions&,
-        const std::optional<autoupdater::DownloadResumeInfo>&,
-        autoupdater::ProgressCallback,
-        autoupdater::CancellationToken&) noexcept override {
-        return autoupdater::Result<autoupdater::DownloadResult>::fail({autoupdater::ErrorCode::DownloadFailed, "not used"});
+    autoupdater::Result<autoupdater::DownloadResult>
+    downloadToFile(const std::string&, const std::filesystem::path&, const autoupdater::NetworkOptions&,
+                   const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
+                   autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::DownloadResult>::fail(
+            {autoupdater::ErrorCode::DownloadFailed, "not used"});
     }
 };
 

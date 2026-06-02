@@ -8,6 +8,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Iterable
 
@@ -35,10 +36,31 @@ def excluded(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("/") + "/") for pattern in patterns)
 
 
+def object_manifest_path(sha256: str, object_prefix: str) -> str:
+    return f"{object_prefix.strip('/')}/{sha256[:2]}/{sha256}"
+
+
+def copy_object(source: Path, sha256: str, object_root: Path) -> Path:
+    target = object_root / sha256[:2] / sha256
+    if target.exists():
+        if sha256_file(target) != sha256:
+            raise SystemExit(f"Object hash collision or corrupted object: {target}")
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
+
+
 def build_manifest(args: argparse.Namespace) -> dict:
     release_dir = args.release_dir.resolve()
     if not release_dir.is_dir():
         raise SystemExit(f"Release directory does not exist: {release_dir}")
+
+    object_root = args.object_root
+    if args.content_addressed:
+        object_root = (object_root or (release_dir.parent / "objects" / "sha256")).resolve()
+        object_root.mkdir(parents=True, exist_ok=True)
 
     files = []
     for root, _, names in os.walk(release_dir):
@@ -51,11 +73,25 @@ def build_manifest(args: argparse.Namespace) -> dict:
                 continue
             if excluded(rel, args.exclude):
                 continue
+            digest = sha256_file(path)
+            size = path.stat().st_size
+            if args.content_addressed:
+                object_path = copy_object(path, digest, object_root)
+                files.append(
+                    {
+                        "path": object_manifest_path(digest, args.object_prefix),
+                        "localPath": rel,
+                        "sha256": digest,
+                        "size": size,
+                    }
+                )
+                continue
+
             files.append(
                 {
                     "path": rel,
-                    "sha256": sha256_file(path),
-                    "size": path.stat().st_size,
+                    "sha256": digest,
+                    "size": size,
                 }
             )
 
@@ -103,6 +139,22 @@ def main() -> int:
     parser.add_argument("--allow-downgrade", action="store_true")
     parser.add_argument("--notes", default="")
     parser.add_argument("--base-url", required=True)
+    parser.add_argument(
+        "--content-addressed",
+        action="store_true",
+        help="Copy files into an object store and emit manifest path/localPath pairs",
+    )
+    parser.add_argument(
+        "--object-root",
+        type=Path,
+        default=None,
+        help="Object store root for --content-addressed; defaults to <release_dir>/../objects/sha256",
+    )
+    parser.add_argument(
+        "--object-prefix",
+        default="objects/sha256",
+        help="URL path prefix for object files in generated manifest entries",
+    )
     parser.add_argument("--include", action="append", default=[], help="Glob or directory prefix to include")
     parser.add_argument("--exclude", action="append", default=[], help="Glob or directory prefix to exclude")
     parser.add_argument("--remove", action="append", default=[], help="Managed path to remove during apply")
@@ -110,6 +162,7 @@ def main() -> int:
 
     manifest = build_manifest(args)
     output = args.output or (args.release_dir / "manifest.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print(f"Wrote {output}")
@@ -117,9 +170,11 @@ def main() -> int:
     print(f"  {args.base_url}")
     print("Client manifest URL should point to:")
     print(f"  {args.base_url.rstrip('/')}/manifest.json")
+    if args.content_addressed:
+        print("Object store root:")
+        print(f"  {(args.object_root or (args.release_dir.resolve().parent / 'objects' / 'sha256')).resolve()}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

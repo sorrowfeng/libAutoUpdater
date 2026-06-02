@@ -59,7 +59,7 @@ void detachStandardStreams() noexcept {
 #endif
 
 class ProcessLauncher final : public IProcessLauncher {
-public:
+  public:
     Result<void> launch(const ProcessLaunchRequest& request) noexcept override {
         if (request.executable.empty()) {
             return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "Executable path is empty"});
@@ -76,19 +76,12 @@ public:
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
         std::wstring mutableCommand = command;
-        std::wstring workingDirectory = request.workingDirectory.empty() ? std::wstring() : widenPath(request.workingDirectory);
+        std::wstring workingDirectory =
+            request.workingDirectory.empty() ? std::wstring() : widenPath(request.workingDirectory);
 
         const BOOL ok = CreateProcessW(
-            nullptr,
-            mutableCommand.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            request.detached ? CREATE_NEW_PROCESS_GROUP : 0,
-            nullptr,
-            workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
-            &startup,
-            &process);
+            nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, request.detached ? CREATE_NEW_PROCESS_GROUP : 0,
+            nullptr, workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process);
         if (!ok) {
             return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "CreateProcessW failed"});
         }
