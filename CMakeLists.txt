@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(libAutoUpdater
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "C++17 cross-platform desktop online update library"
     LANGUAGES CXX)
 

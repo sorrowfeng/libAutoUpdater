@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.1.2 - 2026-06-02
+
+### 修复
+
+- 修复 Windows 上 `autoupdater_apply` 使用控制台子系统构建时可能弹出控制台窗口的问题，现在 updater 子程序以 GUI subsystem 构建，减少桌面应用自更新时的界面干扰。
+
 ## v0.1.1 - 2026-06-02
 
 ### 修复
