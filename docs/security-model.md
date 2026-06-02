@@ -37,7 +37,7 @@ config.security.publicKeyPem = "... built-in public key ...";
 
 ## HTTPS and TLS
 
-默认 `NetworkOptions::verifyTls=true`。生产环境不要关闭 TLS 校验。  
+默认 `NetworkOptions::verifyTls=true`。生产环境不要关闭 TLS 校验。
 签名和 HTTPS 是互补关系：
 
 - HTTPS 保护传输链路和隐私。
