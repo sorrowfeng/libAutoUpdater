@@ -165,7 +165,8 @@ def main() -> int:
         if "No HTTP network adapter is available" in combined_output:
             print("This build does not include an HTTP/HTTPS network adapter.")
             print("On Windows, rebuild with LIBAUTOUPDATER_WITH_WINHTTP=ON.")
-            print("On other platforms, install libcurl development files and rebuild with LIBAUTOUPDATER_WITH_CURL=ON.")
+            print("On macOS, rebuild with LIBAUTOUPDATER_WITH_CFNETWORK=ON.")
+            print("On Linux, install libcurl development files and rebuild with LIBAUTOUPDATER_WITH_CURL=ON.")
         return result.returncode if result.returncode != 0 else 1
 
     deadline = time.time() + 20

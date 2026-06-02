@@ -43,6 +43,7 @@
         "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
         "LIBAUTOUPDATER_BUILD_TESTS": "ON",
         "LIBAUTOUPDATER_WITH_CURL": "OFF",
+        "LIBAUTOUPDATER_WITH_CFNETWORK": "OFF",
         "LIBAUTOUPDATER_WITH_OPENSSL": "OFF",
         "LIBAUTOUPDATER_WITH_QT": "OFF"
       }
@@ -59,6 +60,21 @@
         "LIBAUTOUPDATER_BUILD_TESTS": "ON",
         "LIBAUTOUPDATER_WITH_CURL": "OFF",
         "LIBAUTOUPDATER_WITH_WINHTTP": "ON",
+        "LIBAUTOUPDATER_WITH_QT": "OFF"
+      }
+    },
+    {
+      "name": "macos-cfnetwork",
+      "displayName": "macOS CFNetwork",
+      "description": "Build on macOS without libcurl and use the native CFNetwork HTTPS backend.",
+      "binaryDir": "${sourceDir}/build/macos-cfnetwork",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LIBAUTOUPDATER_BUILD_UPDATER": "ON",
+        "LIBAUTOUPDATER_BUILD_EXAMPLES": "ON",
+        "LIBAUTOUPDATER_BUILD_TESTS": "ON",
+        "LIBAUTOUPDATER_WITH_CURL": "OFF",
+        "LIBAUTOUPDATER_WITH_CFNETWORK": "ON",
         "LIBAUTOUPDATER_WITH_QT": "OFF"
       }
     },
@@ -119,6 +135,11 @@
       "configuration": "Debug"
     },
     {
+      "name": "macos-cfnetwork",
+      "configurePreset": "macos-cfnetwork",
+      "configuration": "Debug"
+    },
+    {
       "name": "vcpkg-debug",
       "configurePreset": "vcpkg-debug",
       "configuration": "Debug"
@@ -149,6 +170,14 @@
     {
       "name": "windows-winhttp",
       "configurePreset": "windows-winhttp",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-cfnetwork",
+      "configurePreset": "macos-cfnetwork",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true

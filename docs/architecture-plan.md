@@ -923,7 +923,7 @@ Linux：
 交付：
 
 - `INetworkClient`。
-- libcurl 默认实现。
+- libcurl 默认实现，以及 Windows WinHTTP / macOS CFNetwork 原生后端。
 - `IHashProvider`。
 - SHA-256 默认实现。
 - `DownloadExecutor`。
@@ -996,7 +996,7 @@ Linux：
 - SemVer。
 - 文件级差量。
 - SHA-256 校验。
-- libcurl 网络实现。
+- libcurl 网络实现，Windows/macOS 可使用系统原生 HTTPS 后端。
 - 独立 updater 子程序。
 - apply plan。
 - replace / remove。

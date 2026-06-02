@@ -133,6 +133,8 @@ Network backend selection:
 - libcurl is used for HTTP/HTTPS when CMake finds `CURL::libcurl`.
 - On Windows, if libcurl is not available and `LIBAUTOUPDATER_WITH_WINHTTP=ON`,
   the default adapter uses the native WinHTTP API.
+- On macOS, if libcurl is not available and `LIBAUTOUPDATER_WITH_CFNETWORK=ON`,
+  the default adapter uses the native CFNetwork/CoreFoundation APIs.
 - Qt users can provide a `QNetworkAccessManager`-based adapter without changing
   the core library API.
 
@@ -164,6 +166,7 @@ LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
 LIBAUTOUPDATER_REQUIRE_CURL=OFF
 LIBAUTOUPDATER_WITH_WINHTTP=ON
+LIBAUTOUPDATER_WITH_CFNETWORK=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_WITH_QT=OFF
 LIBAUTOUPDATER_ENABLE_WARNINGS=ON
@@ -183,8 +186,9 @@ ctest --preset dev
 Useful presets:
 
 - `dev`: default developer build with examples, tests, updater, and automatic optional dependency probing.
-- `no-optional-deps`: verifies the core library without libcurl, OpenSSL, or Qt.
+- `no-optional-deps`: verifies the core library without libcurl, CFNetwork, OpenSSL, or Qt.
 - `windows-winhttp`: Windows build that disables libcurl and uses native WinHTTP for HTTPS.
+- `macos-cfnetwork`: macOS build that disables libcurl and uses native CFNetwork for HTTPS.
 - `vcpkg-debug`: uses vcpkg manifest mode to provide libcurl and OpenSSL.
 - `vcpkg-release`: release-oriented vcpkg build without examples or tests.
 
@@ -228,6 +232,14 @@ cmake --build --preset windows-winhttp
 ctest --preset windows-winhttp
 ```
 
+macOS users can also skip libcurl and use the native CFNetwork preset:
+
+```sh
+cmake --preset macos-cfnetwork
+cmake --build --preset macos-cfnetwork
+ctest --preset macos-cfnetwork
+```
+
 ### Runtime Packaging
 
 Applications decide how runtime dependencies are shipped:
@@ -238,6 +250,8 @@ Applications decide how runtime dependencies are shipped:
   TLS backend configuration.
 - Windows WinHTTP builds do not require shipping libcurl because WinHTTP is a
   system component.
+- macOS CFNetwork builds do not require shipping libcurl because CFNetwork and
+  CoreFoundation are system frameworks.
 - Package-manager-owned Linux installs should usually delegate updates to the
   package manager instead of self-replacing files.
 
@@ -264,7 +278,7 @@ GitHub Actions is configured as a C++ library quality gate:
 - `library-only-config`: verifies the library can be configured without updater, examples, tests, curl, or OpenSSL.
 - `sanitizers`: runs ASan/UBSan on Ubuntu with Clang.
 - `package-install-tree`: installs the Release build and uploads install-tree artifacts on pushes.
-- `github-hosted-demo`: runs the real GitHub Raw update flow on Ubuntu/libcurl and Windows/WinHTTP.
+- `github-hosted-demo`: runs the real GitHub Raw update flow on Ubuntu/libcurl, Windows/WinHTTP, and macOS/CFNetwork.
 - `CodeQL`: builds the C++ project and runs GitHub code scanning on pushes, pull requests, and a weekly schedule.
 - `release`: when a `v*` tag is pushed, builds release ZIPs for Windows, macOS, and Linux, writes SHA-256 files, and publishes them to GitHub Releases.
 
@@ -365,7 +379,8 @@ downloaded and the apply plan is ready.
 The default network adapter always supports local paths and `file://` URLs.
 HTTP/HTTPS is provided by libcurl when available. On Windows, if libcurl is not
 available and `LIBAUTOUPDATER_WITH_WINHTTP=ON`, the default adapter uses the
-native WinHTTP API instead.
+native WinHTTP API instead. On macOS, if libcurl is not available and
+`LIBAUTOUPDATER_WITH_CFNETWORK=ON`, it uses CFNetwork/CoreFoundation instead.
 
 ## GitHub-Hosted Demo
 
@@ -373,15 +388,16 @@ This repository also contains a real static update feed under
 `examples/update-server`. GitHub serves it over HTTPS through
 `raw.githubusercontent.com`, so the repository itself acts as the update server.
 
-Build the project with an HTTP/HTTPS backend, then run. On Windows this works
-without libcurl because WinHTTP is enabled by default:
+Build the project with an HTTP/HTTPS backend, then run. On Windows and macOS
+this works without libcurl because native system backends are enabled by
+default:
 
 ```sh
-cmake -S . -B build -DLIBAUTOUPDATER_WITH_WINHTTP=ON
+cmake -S . -B build
 cmake --build build --config Debug --parallel
 ```
 
-On Linux/macOS, install libcurl development files and configure with:
+On Linux, install libcurl development files and configure with:
 
 ```sh
 cmake -S . -B build -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON

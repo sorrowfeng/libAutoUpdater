@@ -259,6 +259,11 @@ jobs:
             install_deps: ""
             cmake_args: -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_WINHTTP=ON
 
+          - name: macos-cfnetwork
+            os: macos-latest
+            install_deps: ""
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_CFNETWORK=ON
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
