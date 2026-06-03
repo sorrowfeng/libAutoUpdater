@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v0.1.4 - 2026-06-03
+
+### Added
+
+- Added a generated architecture diagram image and referenced it from the English README, Chinese README, and architecture plan.
+
 ### Changed
 
 - Release workflow no longer publishes separate `.sha256` assets; release ZIPs and SPDX SBOM files remain published.
