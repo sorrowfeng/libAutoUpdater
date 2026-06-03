@@ -41,16 +41,7 @@
 
 ## 工作流程
 
-```text
-Application
-  -> libAutoUpdater 检查 manifest
-  -> 变化文件下载到 staging
-  -> 每个下载文件都做 SHA-256 校验
-  -> 写入 apply-plan.json
-  -> autoupdater_apply 等待主程序退出
-  -> 备份、替换、校验，失败则回滚
-  -> 重启应用
-```
+![libAutoUpdater architecture](docs/assets/libautoupdater-architecture.png)
 
 主程序不会直接覆盖正在运行的自身文件。所有替换动作都交给 `autoupdater_apply` 完成。
 

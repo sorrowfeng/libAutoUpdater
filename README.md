@@ -41,16 +41,7 @@ No custom update server is required. Release manifests and files can be hosted o
 
 ## How It Works
 
-```text
-Application
-  -> libAutoUpdater checks the manifest
-  -> changed files are downloaded into staging
-  -> every downloaded file is verified by SHA-256
-  -> libAutoUpdater writes apply-plan.json
-  -> autoupdater_apply waits for the app to exit
-  -> files are backed up, replaced, verified, rolled back on failure
-  -> the application is restarted
-```
+![libAutoUpdater architecture](docs/assets/libautoupdater-architecture.png)
 
 The main application never overwrites its own running executable. All file replacement is delegated to `autoupdater_apply`.
 

@@ -29,63 +29,9 @@ Non-goals for the first major implementation line:
 
 ## 2. High-Level Architecture
 
-The project uses four main layers:
+![libAutoUpdater architecture](assets/libautoupdater-architecture.png)
 
-```text
-Application
-  |
-  v
-Updater Facade
-  |
-  v
-Update Orchestrator
-  |
-  +-- ManifestFetcher
-  +-- ManifestVerifier
-  +-- LocalSnapshotBuilder
-  +-- UpdatePlanner
-  +-- DownloadExecutor
-  +-- ApplyPlanWriter
-  +-- ApplyLauncher
-  |
-  v
-Infrastructure Interfaces
-  |
-  +-- INetworkClient
-  +-- IHashProvider
-  +-- IFileSystem
-  +-- ISignatureVerifier
-  +-- IEventDispatcher
-  +-- IProcessLauncher
-  +-- IStateStore
-  |
-  v
-Default Implementations
-```
-
-File replacement is not performed inside the main application process. It is delegated to an external updater executable:
-
-```text
-Main App
-  |
-  | check / download / verify
-  v
-libAutoUpdater
-  |
-  | write apply-plan.json
-  | launch updater process
-  v
-autoupdater_apply
-  |
-  | wait main process exit
-  | backup old files
-  | replace / remove files
-  | verify result
-  | rollback on failure
-  | restart app
-  v
-Updated App
-```
+The project is organized around the application-facing `Updater` facade, the update core, replaceable infrastructure interfaces, static update hosting, and the external updater process. File replacement is not performed inside the main application process. It is delegated to `autoupdater_apply`.
 
 This avoids self-overwrite problems, especially on Windows where running executables and DLLs cannot be replaced directly.
 
