@@ -51,18 +51,6 @@ jobs:
           mkdir -p artifacts
           archive="artifacts/libAutoUpdater-${GITHUB_REF_NAME}-${RUNNER_OS}.zip"
           cmake -E tar cfv "$archive" --format=zip install-package
-          python - "$archive" <<'PY'
-          import hashlib
-          import pathlib
-          import sys
-
-          path = pathlib.Path(sys.argv[1])
-          digest = hashlib.sha256(path.read_bytes()).hexdigest()
-          path.with_suffix(path.suffix + ".sha256").write_text(
-              f"{digest}  {path.name}\n",
-              encoding="ascii",
-          )
-          PY
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7

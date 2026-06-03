@@ -321,7 +321,7 @@ docs/                         设计与集成文档
 
 GitHub Actions 覆盖 source hygiene、clang-format、clang-tidy、GCC/Clang/AppleClang/MSVC 构建、无可选依赖构建、ASan/UBSan、coverage、安装树打包、`find_package` 消费者验证、CodeQL，以及真实 GitHub 更新演示。
 
-Release workflow 会发布 Windows、macOS、Linux 三个平台的安装树 ZIP、SHA-256 文件、SPDX SBOM 文件，并从 `CHANGELOG.md` 提取 release notes。
+Release workflow 会发布 Windows、macOS、Linux 三个平台的安装树 ZIP、SPDX SBOM 文件，并从 `CHANGELOG.md` 提取 release notes。
 
 ## 社区
 

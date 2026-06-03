@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-No unreleased changes yet.
+### Changed
+
+- Release workflow no longer publishes separate `.sha256` assets; release ZIPs and SPDX SBOM files remain published.
 
 ## v0.1.3 - 2026-06-03
 

@@ -321,7 +321,7 @@ docs/                         Design and integration documentation
 
 GitHub Actions covers source hygiene, clang-format, clang-tidy, GCC/Clang/AppleClang/MSVC builds, optional-dependency-off builds, ASan/UBSan, coverage, install-tree packaging, consumer `find_package` probes, CodeQL, and the real GitHub-hosted update demo.
 
-The release workflow publishes Windows, macOS, and Linux install-tree ZIPs, SHA-256 files, SPDX SBOM files, and release notes extracted from `CHANGELOG.md`.
+The release workflow publishes Windows, macOS, and Linux install-tree ZIPs, SPDX SBOM files, and release notes extracted from `CHANGELOG.md`.
 
 ## Community
 
