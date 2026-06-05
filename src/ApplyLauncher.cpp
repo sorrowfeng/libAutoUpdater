@@ -1,5 +1,7 @@
 #include "ApplyLauncher.h"
 
+#include "util/PathUtil.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -30,7 +32,7 @@ Result<void> launchApplyProcess(const Config& config, const std::filesystem::pat
     request.executable = config.updaterExecutable;
     request.workingDirectory = config.installDir;
     request.detached = true;
-    request.arguments = {"--plan", applyPlanPath.string(),
+    request.arguments = {"--plan", util::pathToUtf8(applyPlanPath),
                          "--pid",  std::to_string(currentProcessId()),
                          "--wait", std::to_string(config.applyWaitTimeout.count())};
     return processLauncher.launch(request);

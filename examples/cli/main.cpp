@@ -1,14 +1,61 @@
 #include "libAutoUpdater/Updater.h"
 
+#include "util/PathUtil.h"
+
 #include <chrono>
 #include <condition_variable>
+#include <cwchar>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 namespace {
+
+#ifdef _WIN32
+std::string wideToUtf8(const wchar_t* text) {
+    if (!text || *text == L'\0') {
+        return {};
+    }
+    const int length = static_cast<int>(wcslen(text));
+    const int count = WideCharToMultiByte(CP_UTF8, 0, text, length, nullptr, 0, nullptr, nullptr);
+    if (count <= 0) {
+        return {};
+    }
+    std::string output(static_cast<std::size_t>(count), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, length, output.data(), count, nullptr, nullptr);
+    return output;
+}
+#endif
+
+std::vector<std::string> commandLineArgs(int argc, char** argv) {
+#ifdef _WIN32
+    int wideCount = 0;
+    LPWSTR* wideArgs = CommandLineToArgvW(GetCommandLineW(), &wideCount);
+    if (wideArgs) {
+        std::vector<std::string> args;
+        args.reserve(static_cast<std::size_t>(wideCount));
+        for (int i = 0; i < wideCount; ++i) {
+            args.push_back(wideToUtf8(wideArgs[i]));
+        }
+        LocalFree(wideArgs);
+        return args;
+    }
+#endif
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        args.emplace_back(argv[i]);
+    }
+    return args;
+}
 
 void usage() {
     std::cout << "Usage:\n"
@@ -42,10 +89,10 @@ void printBanner(const autoupdater::Config& config, bool applyWhenReady) {
     std::cout << "libAutoUpdater CLI example\n";
     std::cout << "  currentVersion: " << config.currentVersion.toString() << "\n";
     std::cout << "  manifestUrl:    " << config.manifestUrl << "\n";
-    std::cout << "  installDir:     " << config.installDir.string() << "\n";
+    std::cout << "  installDir:     " << autoupdater::util::pathToUtf8(config.installDir) << "\n";
     std::cout << "  apply:          " << (applyWhenReady ? "yes" : "no") << "\n";
     if (applyWhenReady) {
-        std::cout << "  updater:        " << config.updaterExecutable.string() << "\n";
+        std::cout << "  updater:        " << autoupdater::util::pathToUtf8(config.updaterExecutable) << "\n";
     }
     std::cout << "\n";
 }
@@ -53,26 +100,27 @@ void printBanner(const autoupdater::Config& config, bool applyWhenReady) {
 } // namespace
 
 int main(int argc, char** argv) {
+    const auto args = commandLineArgs(argc, argv);
     autoupdater::Config config;
     config.appId = "libAutoUpdater.example";
     config.restartCommand = {};
     bool applyWhenReady = false;
 
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--manifest" && i + 1 < argc) {
-            config.manifestUrl = argv[++i];
-        } else if (arg == "--version" && i + 1 < argc) {
-            auto parsed = autoupdater::Version::parse(argv[++i]);
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg == "--manifest" && i + 1 < args.size()) {
+            config.manifestUrl = args[++i];
+        } else if (arg == "--version" && i + 1 < args.size()) {
+            auto parsed = autoupdater::Version::parse(args[++i]);
             if (!parsed) {
                 std::cerr << parsed.error().message << "\n";
                 return 2;
             }
             config.currentVersion = parsed.value();
-        } else if (arg == "--install" && i + 1 < argc) {
-            config.installDir = argv[++i];
-        } else if (arg == "--updater" && i + 1 < argc) {
-            config.updaterExecutable = argv[++i];
+        } else if (arg == "--install" && i + 1 < args.size()) {
+            config.installDir = autoupdater::util::pathFromUtf8(args[++i]);
+        } else if (arg == "--updater" && i + 1 < args.size()) {
+            config.updaterExecutable = autoupdater::util::pathFromUtf8(args[++i]);
         } else if (arg == "--apply") {
             applyWhenReady = true;
         } else if (arg == "--help") {
@@ -162,7 +210,9 @@ int main(int argc, char** argv) {
         std::cout << "readyToApply=true\n";
         if (!remoteVersionText.empty()) {
             std::cout << "  stagedDir: "
-                      << (config.installDir / ".autoupdater" / "staging" / remoteVersionText).string() << "\n";
+                      << autoupdater::util::pathToUtf8(config.installDir / ".autoupdater" / "staging" /
+                                                       remoteVersionText)
+                      << "\n";
         }
         if (applyWhenReady) {
             std::cout << "  action: launching external updater\n";

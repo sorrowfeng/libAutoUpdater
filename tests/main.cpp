@@ -10,8 +10,10 @@ void testManifestFetcherRejectsDisallowedIndexTarget();
 void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
+void testApplyPlanRoundTripPreservesUnicodePaths();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
+void testApplyExecutorReplacesFilesInUnicodeDirectory();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
@@ -28,8 +30,10 @@ int main() {
         {"ManifestFetcherRejectsAllowedBaseUrlPrefixBypass", testManifestFetcherRejectsAllowedBaseUrlPrefixBypass},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
+        {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
+        {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},

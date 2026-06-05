@@ -114,6 +114,8 @@ def main() -> int:
             "--apply",
         ],
         capture_output=True,
+        encoding="utf-8",
+        errors="replace",
         text=True,
         timeout=30,
     )

@@ -1,5 +1,7 @@
 #include "QtNetworkClient.h"
 
+#include "util/PathUtil.h"
+
 #include <QEventLoop>
 #include <QFile>
 #include <QNetworkReply>
@@ -55,7 +57,7 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         }
 
         const bool appending = options.enableResume && resume && resume->offset > 0;
-        QFile file(QString::fromStdString(target.u8string()));
+        QFile file(QString::fromStdString(autoupdater::util::pathToUtf8(target)));
         const auto mode =
             appending ? (QIODevice::WriteOnly | QIODevice::Append) : (QIODevice::WriteOnly | QIODevice::Truncate);
         if (!file.open(mode)) {
@@ -90,7 +92,8 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
             if (progress) {
                 const auto base = appending ? resume->offset : 0;
                 progress({base + static_cast<std::uint64_t>(received),
-                          total > 0 ? base + static_cast<std::uint64_t>(total) : 0, target.generic_string()});
+                          total > 0 ? base + static_cast<std::uint64_t>(total) : 0,
+                          autoupdater::util::pathToUtf8(target)});
             }
         });
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -115,7 +118,7 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (appending && status == 200) {
             file.close();
-            QFile::remove(QString::fromStdString(target.u8string()));
+            QFile::remove(QString::fromStdString(autoupdater::util::pathToUtf8(target)));
             reply->deleteLater();
             return autoupdater::Result<autoupdater::DownloadResult>::fail(
                 {autoupdater::ErrorCode::DownloadFailed, "Server ignored Range request"});

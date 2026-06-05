@@ -1,6 +1,7 @@
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
 #include "util/Json.h"
+#include "util/PathUtil.h"
 
 #include <fstream>
 #include <sstream>
@@ -59,8 +60,8 @@ class JsonStateStore final : public IStateStore {
         util::Json::Object object;
         object.emplace("version", pending.version.toString());
         object.emplace("releaseId", pending.releaseId);
-        object.emplace("backupDir", pending.backupDir.generic_string());
-        object.emplace("applyPlanPath", pending.applyPlanPath.generic_string());
+        object.emplace("backupDir", util::pathToUtf8(pending.backupDir));
+        object.emplace("applyPlanPath", util::pathToUtf8(pending.applyPlanPath));
         root.value()["pendingUpdate"] = util::Json(std::move(object));
         return saveRoot(root.value());
     }
@@ -91,11 +92,11 @@ class JsonStateStore final : public IStateStore {
         }
         const auto* backupDir = object.get("backupDir");
         if (backupDir && backupDir->isString()) {
-            pending.backupDir = backupDir->asString();
+            pending.backupDir = util::pathFromUtf8(backupDir->asString());
         }
         const auto* applyPlanPath = object.get("applyPlanPath");
         if (applyPlanPath && applyPlanPath->isString()) {
-            pending.applyPlanPath = applyPlanPath->asString();
+            pending.applyPlanPath = util::pathFromUtf8(applyPlanPath->asString());
         }
         return Result<std::optional<PendingUpdate>>::ok(pending);
     }

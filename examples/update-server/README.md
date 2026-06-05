@@ -11,3 +11,14 @@ https://raw.githubusercontent.com/sorrowfeng/libAutoUpdater/main/examples/update
 No custom backend is required. The manifest points every managed file at the
 same `raw.githubusercontent.com` release directory.
 
+Run the English demo:
+
+```bash
+uv run examples/github_update_demo.py
+```
+
+Run the Chinese-path demo:
+
+```bash
+uv run examples/github_update_demo_zh.py
+```

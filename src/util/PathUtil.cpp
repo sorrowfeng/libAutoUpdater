@@ -17,6 +17,23 @@ bool startsWith(const std::string& value, const std::string& prefix) {
 
 } // namespace
 
+std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept {
+    try {
+        return std::filesystem::u8path(utf8Path);
+    } catch (...) {
+        return {};
+    }
+}
+
+std::string pathToUtf8(const std::filesystem::path& path) noexcept {
+    try {
+        const auto text = path.generic_u8string();
+        return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+    } catch (...) {
+        return {};
+    }
+}
+
 Result<void> validateManagedPath(const std::string& path) noexcept {
     if (path.empty()) {
         return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path is empty"});

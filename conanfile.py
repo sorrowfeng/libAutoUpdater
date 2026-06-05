@@ -4,7 +4,7 @@ from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
 
 class LibAutoUpdaterConan(ConanFile):
     name = "libautoupdater"
-    version = "0.1.4"
+    version = "0.1.5"
     license = "MIT"
     url = "https://github.com/sorrowfeng/libAutoUpdater"
     homepage = "https://github.com/sorrowfeng/libAutoUpdater"

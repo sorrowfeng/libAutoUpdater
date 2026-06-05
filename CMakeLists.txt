@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(libAutoUpdater
-    VERSION 0.1.4
+    VERSION 0.1.5
     DESCRIPTION "C++17 cross-platform desktop online update library"
     LANGUAGES CXX)
 
@@ -46,6 +46,10 @@ if(LIBAUTOUPDATER_ENABLE_COVERAGE)
         add_compile_options(--coverage -O0 -g)
         add_link_options(--coverage)
     endif()
+endif()
+
+if(MSVC)
+    add_compile_options(/utf-8)
 endif()
 
 function(libautoupdater_apply_project_warnings target)

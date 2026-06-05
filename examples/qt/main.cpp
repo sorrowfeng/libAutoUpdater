@@ -3,27 +3,41 @@
 
 #include "libAutoUpdater/Updater.h"
 
+#include "util/PathUtil.h"
+
 #include <QCoreApplication>
 #include <QDebug>
 
+#include <string>
+
+namespace {
+
+std::string toUtf8String(const QString& value) {
+    const auto bytes = value.toUtf8();
+    return std::string(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    const auto args = app.arguments();
 
-    if (argc < 4) {
+    if (args.size() < 4) {
         qInfo() << "Usage: libAutoUpdater_qt <manifest-url> <current-version> <install-dir>";
         return 2;
     }
 
-    auto version = autoupdater::Version::parse(argv[2]);
+    auto version = autoupdater::Version::parse(toUtf8String(args.at(2)));
     if (!version) {
         qWarning() << QString::fromStdString(version.error().message);
         return 2;
     }
 
     autoupdater::Config config;
-    config.manifestUrl = argv[1];
+    config.manifestUrl = toUtf8String(args.at(1));
     config.currentVersion = version.value();
-    config.installDir = argv[3];
+    config.installDir = autoupdater::util::pathFromUtf8(toUtf8String(args.at(3)));
 
     auto dispatcher = std::make_shared<QtDispatcher>();
     auto network = std::make_shared<QtNetworkClient>();

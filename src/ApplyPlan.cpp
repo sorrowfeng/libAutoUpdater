@@ -77,9 +77,9 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
         if (!backupDir) {
             return Result<ApplyPlan>::fail(backupDir.error());
         }
-        plan.installDir = installDir.value();
-        plan.stagingDir = stagingDir.value();
-        plan.backupDir = backupDir.value();
+        plan.installDir = util::pathFromUtf8(installDir.value());
+        plan.stagingDir = util::pathFromUtf8(stagingDir.value());
+        plan.backupDir = util::pathFromUtf8(backupDir.value());
 
         const auto* restart = json.value().get("restartCommand");
         if (restart && restart->isArray()) {
@@ -147,9 +147,9 @@ std::string ApplyPlan::toJson() const {
     addString(root, "toVersion", toVersion);
     addString(root, "releaseId", releaseId);
     addString(root, "manifestSha256", manifestSha256);
-    root.emplace("installDir", installDir.generic_string());
-    root.emplace("stagingDir", stagingDir.generic_string());
-    root.emplace("backupDir", backupDir.generic_string());
+    root.emplace("installDir", util::pathToUtf8(installDir));
+    root.emplace("stagingDir", util::pathToUtf8(stagingDir));
+    root.emplace("backupDir", util::pathToUtf8(backupDir));
 
     util::Json::Array restart;
     for (const auto& arg : restartCommand) {

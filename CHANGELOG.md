@@ -4,6 +4,22 @@
 
 No unreleased changes yet.
 
+## v0.1.5 - 2026-06-05
+
+### Added
+
+- Added a Chinese GitHub Raw update demo that runs the full cloud-hosted update flow in a Chinese local install path.
+- Added Unicode path unit coverage and a Chinese-path end-to-end update test.
+
+### Changed
+
+- GitHub Raw update demos now prefer `build/dev` executables and retry transient network failures.
+
+### Fixed
+
+- Fixed Windows Unicode path handling across CLI arguments, updater apply-plan arguments, apply-plan JSON, state-store JSON, process launch, local `file://` URLs, and progress reporting.
+- Fixed local `file://` path decoding so percent-encoded UTF-8 paths work in static-file update tests.
+
 ## v0.1.4 - 2026-06-03
 
 ### Added

@@ -3,6 +3,7 @@
 #ifdef LIBAUTOUPDATER_HAS_WINHTTP
 
 #include "util/UrlUtil.h"
+#include "util/PathUtil.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -337,7 +338,7 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
         return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
     }
     if (url.find("://") == std::string::npos) {
-        return Result<std::filesystem::path>::ok(url);
+        return Result<std::filesystem::path>::ok(util::pathFromUtf8(url));
     }
     return Result<std::filesystem::path>::fail({ErrorCode::NetworkError, "WinHTTP supports only HTTP and HTTPS URLs"});
 }
@@ -406,7 +407,7 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesy
                 output.write(buffer.data(), count);
                 written += static_cast<std::uint64_t>(count);
                 if (progress) {
-                    progress({written, static_cast<std::uint64_t>(total), target.generic_string()});
+                    progress({written, static_cast<std::uint64_t>(total), util::pathToUtf8(target)});
                 }
             }
         }
@@ -510,7 +511,7 @@ class WinHttpNetworkClient final : public INetworkClient {
             }
 
             const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes = readResponseBytes(request.value().get(), cancel, std::move(progress), target.generic_string(),
+            auto bytes = readResponseBytes(request.value().get(), cancel, std::move(progress), util::pathToUtf8(target),
                                            initialBytes, &output);
             if (!bytes) {
                 return Result<DownloadResult>::fail(

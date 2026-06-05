@@ -2,6 +2,8 @@
 
 #ifdef LIBAUTOUPDATER_HAS_CURL
 
+#include "util/PathUtil.h"
+
 #include <curl/curl.h>
 
 #include <algorithm>
@@ -156,7 +158,7 @@ class CurlNetworkClient final : public INetworkClient {
             FileContext context;
             context.output = &output;
             context.progress = std::move(progress);
-            context.currentFile = target.generic_string();
+            context.currentFile = util::pathToUtf8(target);
             context.downloaded = resume ? resume->offset : 0;
             context.cancel = &cancel;
 

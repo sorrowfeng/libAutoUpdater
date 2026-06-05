@@ -36,4 +36,13 @@ if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdate
             --updater $<TARGET_FILE:autoupdater_apply>
             --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/e2e-flow)
+    add_test(
+        NAME libAutoUpdater_e2e_flow_unicode_paths
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/e2e_flow.py
+            --cli $<TARGET_FILE:libAutoUpdater_cli>
+            --updater $<TARGET_FILE:autoupdater_apply>
+            --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/e2e-flow-中文路径)
 endif()

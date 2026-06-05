@@ -17,4 +17,5 @@ target_link_libraries(libAutoUpdater_qt
         libAutoUpdater
         Qt6::Core
         Qt6::Network)
+target_include_directories(libAutoUpdater_qt PRIVATE ${libAutoUpdater_SOURCE_DIR}/src)
 libautoupdater_apply_project_warnings(libAutoUpdater_qt)

@@ -1,10 +1,48 @@
 #include "util/UrlUtil.h"
 
+#include "util/PathUtil.h"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <string>
 
 namespace autoupdater::util {
+
+namespace {
+
+int hexValue(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return 10 + (ch - 'a');
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return 10 + (ch - 'A');
+    }
+    return -1;
+}
+
+std::string percentDecodePath(std::string value) {
+    std::string decoded;
+    decoded.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const int high = hexValue(value[i + 1]);
+            const int low = hexValue(value[i + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>((high << 4) | low));
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(value[i]);
+    }
+    return decoded;
+}
+
+} // namespace
 
 std::string joinUrl(const std::string& baseUrl, const std::string& relativePath) {
     if (relativePath.find("://") != std::string::npos || isFileUrl(relativePath)) {
@@ -39,11 +77,15 @@ bool isFileUrl(const std::string& url) {
     return url.compare(0, 7, "file://") == 0;
 }
 
-std::string fileUrlToPath(const std::string& url) {
+std::filesystem::path fileUrlToPath(const std::string& url) {
     if (!isFileUrl(url)) {
-        return url;
+        return pathFromUtf8(url);
     }
     std::string path = url.substr(7);
+    if (path.rfind("localhost/", 0) == 0) {
+        path.erase(0, std::string("localhost").size());
+    }
+    path = percentDecodePath(std::move(path));
 #ifdef _WIN32
     if (path.size() >= 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) && path[2] == ':') {
         path.erase(path.begin());
@@ -51,10 +93,8 @@ std::string fileUrlToPath(const std::string& url) {
 #endif
 #ifdef _WIN32
     std::replace(path.begin(), path.end(), '/', '\\');
-#else
-    std::replace(path.begin(), path.end(), '/', '/');
 #endif
-    return path;
+    return pathFromUtf8(path);
 }
 
 } // namespace autoupdater::util

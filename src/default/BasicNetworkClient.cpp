@@ -1,5 +1,6 @@
 #include "libAutoUpdater/interfaces/INetworkClient.h"
 
+#include "util/PathUtil.h"
 #include "util/UrlUtil.h"
 
 #include <array>
@@ -16,7 +17,7 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
         return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
     }
     if (url.find("://") == std::string::npos) {
-        return Result<std::filesystem::path>::ok(url);
+        return Result<std::filesystem::path>::ok(util::pathFromUtf8(url));
     }
     return Result<std::filesystem::path>::fail({ErrorCode::NetworkError, "No HTTP network adapter is available"});
 }
@@ -89,7 +90,7 @@ class BasicNetworkClient final : public INetworkClient {
                     output.write(buffer.data(), count);
                     written += static_cast<std::uint64_t>(count);
                     if (progress) {
-                        progress({written, static_cast<std::uint64_t>(total), target.generic_string()});
+                        progress({written, static_cast<std::uint64_t>(total), util::pathToUtf8(target)});
                     }
                 }
             }

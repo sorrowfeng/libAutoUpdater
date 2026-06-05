@@ -2,6 +2,7 @@
 
 #include "ApplyExecutor.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
+#include "util/PathUtil.h"
 
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,40 @@ void testApplyExecutorRejectsExistingLock() {
     auto result = autoupdater::updater::executeApplyPlan(plan);
     LAU_REQUIRE(!result);
     LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ApplyFailed);
+
+    std::filesystem::remove_all(root, ec);
+}
+
+void testApplyExecutorReplacesFilesInUnicodeDirectory() {
+    const auto root =
+        std::filesystem::temp_directory_path() / std::filesystem::u8path(u8"libAutoUpdater-应用测试-中文路径");
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto install = root / std::filesystem::u8path(u8"安装目录");
+    const auto staging = root / std::filesystem::u8path(u8"暂存目录");
+    const auto backup = root / std::filesystem::u8path(u8"备份目录");
+    const auto managedPath = u8"资源/应用.txt";
+
+    writeFile(autoupdater::util::safeJoin(install, managedPath).value(), "version 1\n");
+    writeFile(autoupdater::util::safeJoin(staging, managedPath).value(), "version 2\n");
+
+    auto hash = autoupdater::createDefaultHashProvider();
+    auto hashNew = hash->sha256Bytes("version 2\n");
+    LAU_REQUIRE(hashNew);
+
+    autoupdater::ApplyPlan plan;
+    plan.installDir = install;
+    plan.stagingDir = staging;
+    plan.backupDir = backup;
+    plan.releaseId = "unicode-apply-test";
+    plan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, managedPath, managedPath, hashNew.value(), 10});
+
+    auto result = autoupdater::updater::executeApplyPlan(plan);
+    LAU_REQUIRE(result);
+    LAU_REQUIRE(readFile(autoupdater::util::safeJoin(install, managedPath).value()) == "version 2\n");
+    LAU_REQUIRE(readFile(autoupdater::util::safeJoin(backup, managedPath).value()) == "version 1\n");
 
     std::filesystem::remove_all(root, ec);
 }

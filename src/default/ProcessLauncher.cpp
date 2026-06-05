@@ -1,5 +1,7 @@
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
 
+#include "util/PathUtil.h"
+
 #include <sstream>
 #include <vector>
 
@@ -99,17 +101,18 @@ class ProcessLauncher final : public IProcessLauncher {
                 detachStandardStreams();
             }
             if (!request.workingDirectory.empty()) {
-                chdir(request.workingDirectory.string().c_str());
+                const auto workingDirectory = util::pathToUtf8(request.workingDirectory);
+                chdir(workingDirectory.c_str());
             }
             std::vector<std::string> storage;
-            storage.push_back(request.executable.string());
+            storage.push_back(util::pathToUtf8(request.executable));
             storage.insert(storage.end(), request.arguments.begin(), request.arguments.end());
             std::vector<char*> argv;
             for (auto& item : storage) {
                 argv.push_back(item.data());
             }
             argv.push_back(nullptr);
-            execv(request.executable.string().c_str(), argv.data());
+            execv(storage.front().c_str(), argv.data());
             _exit(127);
         }
         return Result<void>::ok();
