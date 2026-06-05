@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -74,6 +75,10 @@ def main() -> int:
     write_text(release_dir / "config" / "unchanged.txt", "keep me\n")
     write_text(release_dir / "data" / "new.txt", "new payload\n")
 
+    child_env = os.environ.copy()
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUTF8"] = "1"
+
     subprocess.run(
         [
             sys.executable,
@@ -96,7 +101,11 @@ def main() -> int:
             "--remove",
             "obsolete.txt",
         ],
+        capture_output=True,
         check=True,
+        encoding="utf-8",
+        errors="replace",
+        env=child_env,
         text=True,
     )
 

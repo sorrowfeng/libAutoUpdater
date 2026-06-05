@@ -47,7 +47,7 @@ void testFuzzSmokeParsersAndPaths() {
 
     LAU_REQUIRE(autoupdater::Version::parse("1.2.3").hasValue());
     LAU_REQUIRE(!autoupdater::util::safeJoin(root, "../escape").hasValue());
-    LAU_REQUIRE(autoupdater::util::pathToUtf8(
-                    autoupdater::util::fileUrlToPath("file:///tmp/%E4%B8%AD%E6%96%87/file.txt"))
-                    .find(u8"中文") != std::string::npos);
+    const auto decodedPath =
+        autoupdater::util::pathToUtf8(autoupdater::util::fileUrlToPath("file:///tmp/%E4%B8%AD%E6%96%87/file.txt"));
+    LAU_REQUIRE(decodedPath.find(u8"中文") != std::string::npos);
 }
