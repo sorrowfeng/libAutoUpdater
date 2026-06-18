@@ -126,12 +126,8 @@ void testUpdaterCanSuppressIntermediateCheckResultBeforeDownload() {
         updater.setEventDispatcher(dispatcher);
 
         autoupdater::Callbacks callbacks;
-        callbacks.onCheckResult = [&](const autoupdater::CheckResult&) {
-            ++checks;
-        };
-        callbacks.onReadyToApply = [&] {
-            ++ready;
-        };
+        callbacks.onCheckResult = [&](const autoupdater::CheckResult&) { ++checks; };
+        callbacks.onReadyToApply = [&] { ++ready; };
         updater.setCallbacks(std::move(callbacks));
         updater.checkAndDownloadAsync(false);
 

@@ -31,7 +31,8 @@ Result<std::filesystem::path> prepareLauncherCopy(const Config& config) {
 
     const auto fileName = source.filename();
     if (fileName.empty()) {
-        return Result<std::filesystem::path>::fail({ErrorCode::ApplyLaunchFailed, "updaterExecutable has no file name"});
+        return Result<std::filesystem::path>::fail(
+            {ErrorCode::ApplyLaunchFailed, "updaterExecutable has no file name"});
     }
 
     const auto launcherDir = config.tempDir / "launcher";
