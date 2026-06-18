@@ -6,6 +6,7 @@ add_executable(libAutoUpdater_tests
     ManifestFetcherTests.cpp
     UpdatePlannerTests.cpp
     ApplyPlanTests.cpp
+    ApplyLauncherTests.cpp
     HashTests.cpp
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp

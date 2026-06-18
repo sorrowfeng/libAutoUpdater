@@ -285,6 +285,22 @@ Use content-addressed storage. Store objects by SHA-256 and let each release man
 ### Can the application update itself while running?
 
 The library can check, download, and prepare an update while the app is running. Actual replacement happens after the main app exits, through `autoupdater_apply`.
+When launching apply, the library runs a staged copy of `autoupdater_apply` from
+the update temp directory, so the installed updater executable can itself be
+part of the managed file set.
+
+### How do I avoid showing the same update prompt twice?
+
+For interactive flows, call `checkAsync()` to present the available update, then
+call `downloadAsync()` after the user confirms. If you need to re-check before
+downloading, call `checkAndDownloadAsync(false)` to suppress the intermediate
+`onCheckResult` for the update-available case.
+
+### When should I mark an update healthy?
+
+Call `markCurrentVersionHealthy()` after the updated application starts
+successfully. It is safe to call unconditionally during normal startup; when no
+pending update exists, it simply records the current version as accepted.
 
 ### Should Linux distro packages or Homebrew apps self-update?
 

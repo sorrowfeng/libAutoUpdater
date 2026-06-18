@@ -11,6 +11,8 @@ void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
+void testApplyLauncherUsesStagedUpdaterCopy();
+void testApplyLauncherRejectsMissingUpdaterExecutable();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
@@ -18,6 +20,8 @@ void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 void testUpdaterQueuedCallbacksOutliveUpdater();
+void testUpdaterCanSuppressIntermediateCheckResultBeforeDownload();
+void testUpdaterStillReportsTerminalCheckResultWhenSuppressed();
 void testFuzzSmokeParsersAndPaths();
 
 int main() {
@@ -31,6 +35,8 @@ int main() {
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
+        {"ApplyLauncherUsesStagedUpdaterCopy", testApplyLauncherUsesStagedUpdaterCopy},
+        {"ApplyLauncherRejectsMissingUpdaterExecutable", testApplyLauncherRejectsMissingUpdaterExecutable},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},
@@ -38,6 +44,10 @@ int main() {
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
         {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
+        {"UpdaterCanSuppressIntermediateCheckResultBeforeDownload",
+         testUpdaterCanSuppressIntermediateCheckResultBeforeDownload},
+        {"UpdaterStillReportsTerminalCheckResultWhenSuppressed",
+         testUpdaterStillReportsTerminalCheckResultWhenSuppressed},
         {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},
     };
 

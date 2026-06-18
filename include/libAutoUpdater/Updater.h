@@ -44,7 +44,13 @@ class Updater {
     /// Run a startup check and optionally download when an update is available.
     void checkOnStartupAsync(bool downloadWhenAvailable = false) noexcept;
     /// Check and immediately download changed or missing files.
-    void checkAndDownloadAsync() noexcept;
+    ///
+    /// When notifyBeforeDownload is true, onCheckResult is emitted after the
+    /// internal check and before downloads start. Set it to false when the
+    /// caller already presented a previous check result and is now continuing
+    /// with download/apply; terminal results such as up-to-date or reinstall
+    /// required are still reported.
+    void checkAndDownloadAsync(bool notifyBeforeDownload = true) noexcept;
     /// Download the update selected by the latest successful check.
     void downloadAsync() noexcept;
     /// Launch the external updater with the prepared apply plan.

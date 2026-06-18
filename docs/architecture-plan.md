@@ -472,7 +472,7 @@ ReadyToApply
 applyAndRestartAsync()
   |
   v
-launch autoupdater_apply
+copy autoupdater_apply to staging and launch staged copy
   |
   v
 main app exits

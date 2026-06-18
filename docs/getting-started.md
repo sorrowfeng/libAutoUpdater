@@ -34,6 +34,7 @@ config.updaterExecutable = "C:/Program Files/MyApp/autoupdater_apply.exe";
 config.restartCommand = {"C:/Program Files/MyApp/MyApp.exe"};
 
 autoupdater::Updater updater(config);
+updater.markCurrentVersionHealthy(); // Safe to call unconditionally after startup.
 updater.setCallbacks({
     .onCheckResult = [](const autoupdater::CheckResult& result) {
         // Update UI or log result.
@@ -47,6 +48,12 @@ updater.setCallbacks({
 });
 updater.checkAndDownloadAsync();
 ```
+
+For a two-step GUI flow, call `checkAsync()` first, show `onCheckResult`
+to the user, then continue with `downloadAsync()` after confirmation. If you
+prefer to re-check the manifest at confirmation time, use
+`checkAndDownloadAsync(false)` so the internal check does not emit a second
+"update available" result before downloads start.
 
 ## 3. Generate a Manifest
 
@@ -77,3 +84,5 @@ Recommended flow:
 3. After user confirmation, call `applyAndRestartAsync()`.
 4. Exit the main application.
 5. `autoupdater_apply` waits for exit, backs up affected files, replaces files, verifies the result, rolls back on failure, and restarts the application.
+6. On the next successful startup, call `markCurrentVersionHealthy()` to clear
+   the pending-update state and record the accepted version.

@@ -261,8 +261,8 @@ struct Updater::Impl {
         });
     }
 
-    void checkAndDownloadAsync() noexcept {
-        start([this] {
+    void checkAndDownloadAsync(bool notifyBeforeDownload) noexcept {
+        start([this, notifyBeforeDownload] {
             auto deps = dependenciesCopy();
             Config effective = config;
             ManifestEnvelope envelope;
@@ -273,12 +273,14 @@ struct Updater::Impl {
             }
 
             const auto check = decision.value().checkResult;
-            auto checkCallback = callbacksCopy().onCheckResult;
-            post([callback = std::move(checkCallback), check] {
-                if (callback) {
-                    callback(check);
-                }
-            });
+            if (notifyBeforeDownload || !check.updateAvailable || check.reinstallRequired) {
+                auto checkCallback = callbacksCopy().onCheckResult;
+                post([callback = std::move(checkCallback), check] {
+                    if (callback) {
+                        callback(check);
+                    }
+                });
+            }
 
             if (!check.updateAvailable || check.reinstallRequired) {
                 setState(check.updateAvailable ? State::UpdateAvailable : State::UpToDate);
@@ -341,7 +343,7 @@ struct Updater::Impl {
 
     void checkOnStartupAsync(bool downloadWhenAvailable) noexcept {
         if (downloadWhenAvailable) {
-            checkAndDownloadAsync();
+            checkAndDownloadAsync(true);
         } else {
             checkAsync();
         }
@@ -368,7 +370,7 @@ struct Updater::Impl {
                         return;
                     }
                     if (downloadWhenAvailable) {
-                        checkAndDownloadAsync();
+                        checkAndDownloadAsync(true);
                     } else {
                         checkAsync();
                     }
@@ -652,8 +654,8 @@ void Updater::checkOnStartupAsync(bool downloadWhenAvailable) noexcept {
     impl_->checkOnStartupAsync(downloadWhenAvailable);
 }
 
-void Updater::checkAndDownloadAsync() noexcept {
-    impl_->checkAndDownloadAsync();
+void Updater::checkAndDownloadAsync(bool notifyBeforeDownload) noexcept {
+    impl_->checkAndDownloadAsync(notifyBeforeDownload);
 }
 
 void Updater::downloadAsync() noexcept {

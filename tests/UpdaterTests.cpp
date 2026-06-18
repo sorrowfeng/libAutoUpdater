@@ -108,3 +108,79 @@ void testUpdaterQueuedCallbacksOutliveUpdater() {
     std::error_code ec;
     std::filesystem::remove_all(installDir, ec);
 }
+
+void testUpdaterCanSuppressIntermediateCheckResultBeforeDownload() {
+    auto dispatcher = std::make_shared<QueuedDispatcher>();
+    std::atomic<int> checks{0};
+    std::atomic<int> ready{0};
+    auto installDir = uniqueTempDir();
+
+    {
+        autoupdater::Config config;
+        config.manifestUrl = "mock://manifest";
+        config.currentVersion = autoupdater::Version::parse("0.9.0").value();
+        config.installDir = installDir;
+
+        autoupdater::Updater updater(config);
+        updater.setNetworkClient(std::make_shared<StaticManifestNetwork>());
+        updater.setEventDispatcher(dispatcher);
+
+        autoupdater::Callbacks callbacks;
+        callbacks.onCheckResult = [&](const autoupdater::CheckResult&) {
+            ++checks;
+        };
+        callbacks.onReadyToApply = [&] {
+            ++ready;
+        };
+        updater.setCallbacks(std::move(callbacks));
+        updater.checkAndDownloadAsync(false);
+
+        for (int i = 0; i < 200 && updater.state() != autoupdater::State::ReadyToApply; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        LAU_REQUIRE(updater.state() == autoupdater::State::ReadyToApply);
+    }
+
+    dispatcher->drain();
+    LAU_REQUIRE(checks.load() == 0);
+    LAU_REQUIRE(ready.load() == 1);
+
+    std::error_code ec;
+    std::filesystem::remove_all(installDir, ec);
+}
+
+void testUpdaterStillReportsTerminalCheckResultWhenSuppressed() {
+    auto dispatcher = std::make_shared<QueuedDispatcher>();
+    std::atomic<int> checks{0};
+    auto installDir = uniqueTempDir();
+
+    {
+        autoupdater::Config config;
+        config.manifestUrl = "mock://manifest";
+        config.currentVersion = autoupdater::Version::parse("1.0.0").value();
+        config.installDir = installDir;
+
+        autoupdater::Updater updater(config);
+        updater.setNetworkClient(std::make_shared<StaticManifestNetwork>());
+        updater.setEventDispatcher(dispatcher);
+
+        autoupdater::Callbacks callbacks;
+        callbacks.onCheckResult = [&](const autoupdater::CheckResult& result) {
+            LAU_REQUIRE(!result.updateAvailable);
+            ++checks;
+        };
+        updater.setCallbacks(std::move(callbacks));
+        updater.checkAndDownloadAsync(false);
+
+        for (int i = 0; i < 200 && updater.state() != autoupdater::State::UpToDate; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        LAU_REQUIRE(updater.state() == autoupdater::State::UpToDate);
+    }
+
+    dispatcher->drain();
+    LAU_REQUIRE(checks.load() == 1);
+
+    std::error_code ec;
+    std::filesystem::remove_all(installDir, ec);
+}
