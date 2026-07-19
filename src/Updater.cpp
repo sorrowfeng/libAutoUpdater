@@ -424,7 +424,12 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             lastAccepted = loaded.value();
         }
 
-        auto decision = planUpdate(effectiveConfig, envelope.value(), snapshot.value(), lastAccepted);
+        auto currentTime = util::currentUtcInstant();
+        if (!currentTime) {
+            return Result<UpdateDecision>::fail(currentTime.error());
+        }
+        auto decision =
+            planUpdate(effectiveConfig, envelope.value(), snapshot.value(), lastAccepted, currentTime.value());
         if (!decision) {
             return Result<UpdateDecision>::fail(decision.error());
         }

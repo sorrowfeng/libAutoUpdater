@@ -46,7 +46,12 @@ Signatures and HTTPS are complementary:
 
 ## Base URL Allowlist
 
-`SecurityOptions::allowedBaseUrls` restricts manifest URLs and release `baseUrl` values to trusted prefixes. Prefix matching must respect host boundaries to prevent bypasses such as `https://trusted.example.com.evil.com`.
+`SecurityOptions::allowedBaseUrls` restricts manifest URLs and release `baseUrl`
+values to trusted prefixes. Prefix matching respects parsed origin and path
+boundaries to prevent bypasses such as
+`https://trusted.example.com.evil.com`. URL paths and queries are validated as
+separate URI components, repeated path separators are preserved, and fragments
+are rejected.
 
 ## Path Safety
 
@@ -84,6 +89,12 @@ The manifest may include:
 - `expiresAt`
 - `releaseId`
 - `allowDowngrade`
+
+Timestamp fields use the documented nanosecond-capable RFC 3339 profile.
+`expiresAt` is an exclusive upper bound: equality is expired. Invalid timestamp
+syntax is rejected even when `rejectExpiredManifest` is disabled. Expiry still
+depends on the local wall clock and does not by itself prevent clock rollback or
+replay of a signed manifest that omits `expiresAt`.
 
 Downgrades are accepted only when all of the following are true:
 

@@ -97,3 +97,10 @@ Use an index manifest to route multi-platform releases:
 ```
 
 `Config::manifestUrl` may point directly to a release manifest or to an index manifest.
+
+An omitted or empty target `platform` or `arch` is a wildcard. Exact
+platform/architecture pairs take precedence over one-dimensional wildcards,
+which take precedence over a global wildcard. If two matching targets have the
+same highest specificity, the index is rejected; array order never breaks a
+tie. Selectors are case-sensitive and must be unique. With `make_index.py`, use
+`*` for a wildcard, for example `--target "windows/*=releases/windows/manifest.json"`.

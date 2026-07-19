@@ -49,6 +49,34 @@ bool isUnreserved(unsigned char ch) {
            ch == '_' || ch == '~';
 }
 
+bool isSubDelimiter(unsigned char ch) {
+    switch (ch) {
+    case '!':
+    case '$':
+    case '&':
+    case '\'':
+    case '(':
+    case ')':
+    case '*':
+    case '+':
+    case ',':
+    case ';':
+    case '=':
+        return true;
+    default:
+        return false;
+    }
+}
+
+enum class UriComponent { PathSegment, Query };
+
+bool isAllowedRawCharacter(unsigned char ch, UriComponent component) {
+    if (isUnreserved(ch) || isSubDelimiter(ch) || ch == ':' || ch == '@') {
+        return true;
+    }
+    return component == UriComponent::Query && (ch == '/' || ch == '?');
+}
+
 bool isAsciiAlpha(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
@@ -83,7 +111,7 @@ bool equalsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
     return true;
 }
 
-Result<std::string> normalizePercentEncoded(std::string_view input, bool pathSegment) {
+Result<std::string> normalizePercentEncoded(std::string_view input, UriComponent component) {
     std::string output;
     output.reserve(input.size());
     for (std::size_t i = 0; i < input.size(); ++i) {
@@ -92,6 +120,10 @@ Result<std::string> normalizePercentEncoded(std::string_view input, bool pathSeg
             return Result<std::string>::fail(invalidUrl("URL contains whitespace, control characters, or backslashes"));
         }
         if (raw != '%') {
+            if (!isAllowedRawCharacter(raw, component)) {
+                return Result<std::string>::fail(
+                    invalidUrl("URL contains a character not allowed in this URI component"));
+            }
             output.push_back(static_cast<char>(raw));
             continue;
         }
@@ -104,7 +136,7 @@ Result<std::string> normalizePercentEncoded(std::string_view input, bool pathSeg
             return Result<std::string>::fail(invalidUrl("URL contains an invalid percent escape"));
         }
         const auto decoded = static_cast<unsigned char>((high << 4) | low);
-        if (isControl(decoded) || decoded == '\\' || (pathSegment && decoded == '/')) {
+        if (isControl(decoded) || decoded == '\\' || (component == UriComponent::PathSegment && decoded == '/')) {
             return Result<std::string>::fail(invalidUrl("URL contains an encoded separator or control character"));
         }
         if (isUnreserved(decoded)) {
@@ -133,29 +165,31 @@ Result<std::string> normalizePath(std::string_view rawPath) {
         return Result<std::string>::fail(invalidUrl("URL path must be absolute"));
     }
 
-    const bool preserveTrailingSlash =
-        rawPath.size() > 1 && (rawPath.back() == '/' || rawPath.substr(rawPath.find_last_of('/') + 1) == "." ||
-                               rawPath.substr(rawPath.find_last_of('/') + 1) == "..");
     std::vector<std::string> segments;
     std::size_t start = 1;
     while (start <= rawPath.size()) {
         const auto end = rawPath.find('/', start);
         const auto rawSegment =
             rawPath.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
-        auto normalized = normalizePercentEncoded(rawSegment, true);
+        auto normalized = normalizePercentEncoded(rawSegment, UriComponent::PathSegment);
         if (!normalized) {
             return normalized;
         }
         if ((normalized.value() == "." || normalized.value() == "..") && containsEncodedDot(rawSegment)) {
             return Result<std::string>::fail(invalidUrl("URL contains a percent-encoded dot segment"));
         }
-        if (normalized.value().empty() || normalized.value() == ".") {
-            // Repeated separators and current-directory segments are normalized.
+        if (normalized.value() == ".") {
+            if (end == std::string_view::npos) {
+                segments.emplace_back();
+            }
         } else if (normalized.value() == "..") {
             if (segments.empty()) {
                 return Result<std::string>::fail(invalidUrl("URL path escapes above its root"));
             }
             segments.pop_back();
+            if (end == std::string_view::npos) {
+                segments.emplace_back();
+            }
         } else {
             segments.push_back(std::move(normalized.value()));
         }
@@ -171,9 +205,6 @@ Result<std::string> normalizePath(std::string_view rawPath) {
             path.push_back('/');
         }
         path += segments[i];
-    }
-    if (preserveTrailingSlash && path.size() > 1 && path.back() != '/') {
-        path.push_back('/');
     }
     return Result<std::string>::ok(std::move(path));
 }
@@ -449,6 +480,18 @@ std::uint16_t defaultPort(UrlScheme scheme) {
     return scheme == UrlScheme::Https ? 443 : (scheme == UrlScheme::Http ? 80 : 0);
 }
 
+Result<void> validateFileUrlPath(std::string_view path) {
+#ifdef _WIN32
+    if (path.size() < 4 || path[0] != '/' || !isAsciiAlpha(static_cast<unsigned char>(path[1])) || path[2] != ':' ||
+        path[3] != '/') {
+        return Result<void>::fail(invalidUrl("Windows file URLs must contain an absolute drive path"));
+    }
+#else
+    (void)path;
+#endif
+    return Result<void>::ok();
+}
+
 std::string serialize(const ParsedUrl& url, bool includeQuery = true) {
     std::string output = schemeName(url.scheme) + "://";
     if (url.scheme != UrlScheme::File) {
@@ -613,20 +656,19 @@ Result<ParsedUrl> parseAbsoluteUrl(std::string_view url) noexcept {
             if (parsed.scheme == UrlScheme::File) {
                 return Result<ParsedUrl>::fail(invalidUrl("file URLs must not contain a query"));
             }
-            auto query = normalizePercentEncoded(pathAndQuery.substr(querySeparator + 1), false);
+            auto query = normalizePercentEncoded(pathAndQuery.substr(querySeparator + 1), UriComponent::Query);
             if (!query) {
                 return Result<ParsedUrl>::fail(query.error());
             }
             parsed.query = std::move(query.value());
             parsed.hasQuery = true;
         }
-#ifdef _WIN32
-        if (parsed.scheme == UrlScheme::File && (parsed.path.size() < 4 || parsed.path[0] != '/' ||
-                                                 !isAsciiAlpha(static_cast<unsigned char>(parsed.path[1])) ||
-                                                 parsed.path[2] != ':' || parsed.path[3] != '/')) {
-            return Result<ParsedUrl>::fail(invalidUrl("Windows file URLs must contain an absolute drive path"));
+        if (parsed.scheme == UrlScheme::File) {
+            auto validFilePath = validateFileUrlPath(parsed.path);
+            if (!validFilePath) {
+                return Result<ParsedUrl>::fail(validFilePath.error());
+            }
         }
-#endif
         parsed.canonical = serialize(parsed);
         return Result<ParsedUrl>::ok(std::move(parsed));
     } catch (...) {
@@ -672,7 +714,10 @@ Result<ParsedUrl> resolveUrlReference(const ParsedUrl& base, std::string_view re
                 candidate.query = base.query;
                 candidate.hasQuery = base.hasQuery;
             } else {
-                auto query = normalizePercentEncoded(referenceQuery, false);
+                if (candidate.scheme == UrlScheme::File) {
+                    return Result<ParsedUrl>::fail(invalidUrl("file URLs must not contain a query"));
+                }
+                auto query = normalizePercentEncoded(referenceQuery, UriComponent::Query);
                 if (!query) {
                     return Result<ParsedUrl>::fail(query.error());
                 }
@@ -696,11 +741,17 @@ Result<ParsedUrl> resolveUrlReference(const ParsedUrl& base, std::string_view re
             return Result<ParsedUrl>::fail(normalizedPath.error());
         }
         candidate.path = std::move(normalizedPath.value());
+        if (candidate.scheme == UrlScheme::File) {
+            auto validFilePath = validateFileUrlPath(candidate.path);
+            if (!validFilePath) {
+                return Result<ParsedUrl>::fail(validFilePath.error());
+            }
+        }
         if (querySeparator != std::string_view::npos) {
             if (candidate.scheme == UrlScheme::File) {
                 return Result<ParsedUrl>::fail(invalidUrl("file URLs must not contain a query"));
             }
-            auto query = normalizePercentEncoded(referenceQuery, false);
+            auto query = normalizePercentEncoded(referenceQuery, UriComponent::Query);
             if (!query) {
                 return Result<ParsedUrl>::fail(query.error());
             }

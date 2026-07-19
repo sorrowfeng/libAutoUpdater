@@ -1,0 +1,35 @@
+# expectation|name|timestamp
+accept|epoch|1970-01-01T00:00:00Z
+accept|min_year|0001-01-01T00:00:00Z
+accept|before_epoch_fraction|1969-12-31T23:59:59.500000000Z
+accept|one_digit_fraction|2026-07-19T12:34:56.1Z
+accept|nine_digit_fraction|2026-07-19T12:34:56.123456789Z
+accept|positive_offset|2026-07-19T12:34:56+08:00
+accept|negative_offset|2026-07-19T12:34:56-04:30
+accept|negative_offset_crosses_day|2026-07-19T23:30:00-01:00
+accept|leap_day_2000|2000-02-29T23:59:59Z
+accept|max_year|9999-12-31T23:59:59.999999999+23:59
+reject|empty|
+reject|year_zero|0000-01-01T00:00:00Z
+reject|lowercase_t|2026-07-19t12:34:56Z
+reject|lowercase_z|2026-07-19T12:34:56z
+reject|missing_zone|2026-07-19T12:34:56
+reject|space_separator|2026-07-19 12:34:56Z
+reject|invalid_month_zero|2026-00-19T12:34:56Z
+reject|invalid_month_high|2026-13-19T12:34:56Z
+reject|invalid_day_zero|2026-07-00T12:34:56Z
+reject|invalid_day_high|2026-04-31T12:34:56Z
+reject|invalid_common_february|2023-02-29T12:34:56Z
+reject|invalid_century_february|1900-02-29T12:34:56Z
+reject|hour_24|2026-07-19T24:00:00Z
+reject|minute_60|2026-07-19T23:60:00Z
+reject|leap_second|2026-07-19T23:59:60Z
+reject|empty_fraction|2026-07-19T12:34:56.Z
+reject|ten_digit_fraction|2026-07-19T12:34:56.1234567890Z
+reject|comma_fraction|2026-07-19T12:34:56,1Z
+reject|offset_hour_24|2026-07-19T12:34:56+24:00
+reject|offset_minute_60|2026-07-19T12:34:56+00:60
+reject|unknown_negative_zero_offset|2026-07-19T12:34:56-00:00
+reject|offset_without_colon|2026-07-19T12:34:56+0800
+reject|trailing_data|2026-07-19T12:34:56Zextra
+reject|leading_data|x2026-07-19T12:34:56Z

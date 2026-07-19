@@ -36,7 +36,11 @@ The output directory is `build/docs/html`.
 
 ## Manifest
 
-`Manifest` represents a server release manifest. `files[]` describes the complete managed file set of the target version. The downloader only fetches files that are missing locally or whose SHA-256 differs.
+`Manifest` represents a server release manifest. `files[]` describes the
+complete managed file set of the target version. The downloader only fetches
+files that are missing locally or whose SHA-256 differs. Optional metadata
+timestamps use `YYYY-MM-DDTHH:MM:SS[.1-9DIGIT](Z|+/-HH:MM)`; `expiresAt` is an
+exclusive validity bound.
 
 `ManifestFile::path` is the server path. `ManifestFile::localPath` is an optional installation path. Content-addressed storage relies on this separation.
 

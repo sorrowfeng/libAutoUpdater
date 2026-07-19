@@ -12,6 +12,11 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from .metadata_contract import is_rfc3339_timestamp
+except ImportError:
+    from metadata_contract import is_rfc3339_timestamp
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -56,6 +61,15 @@ def build_manifest(args: argparse.Namespace) -> dict:
     release_dir = args.release_dir.resolve()
     if not release_dir.is_dir():
         raise SystemExit(f"Release directory does not exist: {release_dir}")
+    for field, value in (
+        ("release-date", args.release_date),
+        ("published-at", args.published_at),
+        ("expires-at", args.expires_at),
+    ):
+        if value and not is_rfc3339_timestamp(value):
+            raise SystemExit(f"--{field} must use the documented RFC 3339 timestamp profile")
+    if not args.release_date:
+        raise SystemExit("--release-date must not be empty")
 
     object_root = args.object_root
     if args.content_addressed:
@@ -130,7 +144,7 @@ def main() -> int:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--release-id", default="")
-    parser.add_argument("--release-date", required=True, help="UTC ISO-8601 timestamp")
+    parser.add_argument("--release-date", required=True, help="RFC 3339 timestamp")
     parser.add_argument("--published-at", default="")
     parser.add_argument("--expires-at", default="")
     parser.add_argument("--min-version", default="")

@@ -37,6 +37,11 @@ autoupdater::ManifestEnvelope plannerEnvelope() {
     return envelope;
 }
 
+const autoupdater::util::UtcInstant& plannerNow() {
+    static const auto instant = autoupdater::util::parseRfc3339("2026-07-19T12:00:00Z").value();
+    return instant;
+}
+
 } // namespace
 
 void testUpdatePlannerCreatesOperations() {
@@ -48,7 +53,7 @@ void testUpdatePlannerCreatesOperations() {
     autoupdater::LocalSnapshot snapshot;
     snapshot.files.push_back({"bin/app.exe", true, "oldhash", 7});
 
-    auto decision = autoupdater::planUpdate(config, envelope, snapshot, std::nullopt);
+    auto decision = autoupdater::planUpdate(config, envelope, snapshot, std::nullopt, plannerNow());
     LAU_REQUIRE(decision);
     LAU_REQUIRE(decision.value().checkResult.updateAvailable);
     LAU_REQUIRE(decision.value().downloads.size() == 1);
@@ -61,15 +66,13 @@ void testUpdatePlannerCreatesOperations() {
     auto reservedFileEnvelope = plannerEnvelope();
     reservedFileEnvelope.manifest.files.push_back(
         {"artifacts/app.exe", ".AUToupdater/staging/rollback-plan.json", "newhash", 7});
-    const auto reservedFile =
-        autoupdater::planUpdate(config, reservedFileEnvelope, {}, std::nullopt);
+    const auto reservedFile = autoupdater::planUpdate(config, reservedFileEnvelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(!reservedFile);
     LAU_REQUIRE(reservedFile.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 
     auto reservedRemoveEnvelope = plannerEnvelope();
     reservedRemoveEnvelope.manifest.remove.push_back(".autoupdater/journal/terminal.json");
-    const auto reservedRemove =
-        autoupdater::planUpdate(config, reservedRemoveEnvelope, {}, std::nullopt);
+    const auto reservedRemove = autoupdater::planUpdate(config, reservedRemoveEnvelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(!reservedRemove);
     LAU_REQUIRE(reservedRemove.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 }
@@ -81,13 +84,51 @@ void testUpdatePlannerPercentEncodesArtifactPaths() {
     envelope.manifest.files.push_back({artifactPath, "", "newhash", 9});
 
     autoupdater::LocalSnapshot snapshot;
-    auto decision = autoupdater::planUpdate(config, envelope, snapshot, std::nullopt);
+    auto decision = autoupdater::planUpdate(config, envelope, snapshot, std::nullopt, plannerNow());
     if (!decision) {
         throw std::runtime_error(decision.error().message);
     }
     LAU_REQUIRE(decision.value().downloads.size() == 1);
     LAU_REQUIRE(decision.value().downloads[0].url == "https://updates.example.test/releases/1.1.0/artifacts/"
                                                      "%E8%B5%84%E6%BA%90/My%20App%23100%25.bin");
+}
+
+void testUpdatePlannerEnforcesRfc3339ExpiryBoundary() {
+    const auto now = autoupdater::util::parseRfc3339("2026-07-19T12:00:00Z").value();
+    auto config = plannerConfig();
+
+    auto valid = plannerEnvelope();
+    valid.manifest.releaseDate = "2026-07-18T12:00:00Z";
+    valid.manifest.publishedAt = "2026-07-19T11:00:00-01:00";
+    valid.manifest.expiresAt = "2026-07-19T12:00:00.000000001Z";
+    const auto beforeBoundary = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(beforeBoundary);
+
+    valid.manifest.expiresAt = "2026-07-19T14:00:00+02:00";
+    const auto atBoundary = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(!atBoundary);
+    LAU_REQUIRE(atBoundary.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+
+    valid.manifest.expiresAt = "2026-07-19T11:59:59.999999999Z";
+    const auto afterBoundary = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(!afterBoundary);
+    LAU_REQUIRE(afterBoundary.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+
+    config.security.rejectExpiredManifest = false;
+    valid.manifest.expiresAt = "2000-01-01T00:00:00Z";
+    const auto policyDisabled = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(policyDisabled);
+
+    valid.manifest.expiresAt = "not-a-time";
+    const auto malformedExpiry = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(!malformedExpiry);
+    LAU_REQUIRE(malformedExpiry.error().code == autoupdater::ErrorCode::ManifestParseFailed);
+
+    valid.manifest.expiresAt.clear();
+    valid.manifest.releaseDate = "2026-02-30T00:00:00Z";
+    const auto malformedMetadata = autoupdater::planUpdate(config, valid, {}, std::nullopt, now);
+    LAU_REQUIRE(!malformedMetadata);
+    LAU_REQUIRE(malformedMetadata.error().code == autoupdater::ErrorCode::ManifestParseFailed);
 }
 
 void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization() {
@@ -119,7 +160,7 @@ void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization() {
         envelope.manifest.allowDowngrade = testCase.remoteAllows;
         envelope.releaseManifestSignatureVerified = testCase.signatureVerified;
 
-        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
         if (testCase.accepted) {
             LAU_REQUIRE(decision);
             LAU_REQUIRE(decision.value().checkResult.updateAvailable);
@@ -138,13 +179,13 @@ void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization() {
     envelope.releaseManifestSignatureVerified = true;
 
     config.security.requireManifestSignature = false;
-    const auto signaturePolicyDisabled = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto signaturePolicyDisabled = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(!signaturePolicyDisabled);
     LAU_REQUIRE(signaturePolicyDisabled.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 
     config.security.requireManifestSignature = true;
     envelope.releaseManifestSignatureVerified = false;
-    const auto releaseSignatureUnverified = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto releaseSignatureUnverified = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(!releaseSignatureUnverified);
     LAU_REQUIRE(releaseSignatureUnverified.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 }
@@ -168,7 +209,7 @@ void testUpdatePlannerUsesHighestDowngradeBaseline() {
         auto envelope = plannerEnvelope();
         envelope.manifest.version = autoupdater::Version::parse(testCase.remoteVersion).value();
 
-        const auto rejected = autoupdater::planUpdate(config, envelope, {}, lastAccepted);
+        const auto rejected = autoupdater::planUpdate(config, envelope, {}, lastAccepted, plannerNow());
         LAU_REQUIRE(!rejected);
         LAU_REQUIRE(rejected.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 
@@ -176,7 +217,7 @@ void testUpdatePlannerUsesHighestDowngradeBaseline() {
         config.security.requireManifestSignature = true;
         envelope.manifest.allowDowngrade = true;
         envelope.releaseManifestSignatureVerified = true;
-        const auto accepted = autoupdater::planUpdate(config, envelope, {}, lastAccepted);
+        const auto accepted = autoupdater::planUpdate(config, envelope, {}, lastAccepted, plannerNow());
         LAU_REQUIRE(accepted);
         LAU_REQUIRE(accepted.value().checkResult.updateAvailable);
     }
@@ -194,7 +235,7 @@ void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision() {
     envelope.manifest.allowDowngrade = true;
     envelope.releaseManifestSignatureVerified = false;
 
-    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(!decision);
     LAU_REQUIRE(decision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 }
@@ -206,7 +247,7 @@ void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics() {
     envelope.releaseManifestSignatureVerified = false;
     envelope.manifest.allowDowngrade = false;
     config.security.rejectDowngrade = true;
-    const auto upgrade = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto upgrade = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(upgrade);
     LAU_REQUIRE(upgrade.value().checkResult.updateAvailable);
 
@@ -215,7 +256,7 @@ void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics() {
     envelope.manifest.version = config.currentVersion;
     envelope.manifest.allowDowngrade = true;
     envelope.releaseManifestSignatureVerified = true;
-    const auto sameVersion = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto sameVersion = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(sameVersion);
     LAU_REQUIRE(!sameVersion.value().checkResult.updateAvailable);
 }
@@ -229,7 +270,7 @@ void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly() {
         envelope.manifest.files = std::move(files);
         envelope.manifest.remove = std::move(remove);
 
-        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
         LAU_REQUIRE(!decision);
         LAU_REQUIRE(decision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
     };
@@ -243,8 +284,7 @@ void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly() {
         {"objects/second.bin", "bin/app.EXE", "same-hash", 4},
     });
     requireRejectedAtCurrentVersion({}, {"obsolete.dll", "obsolete.dll"});
-    requireRejectedAtCurrentVersion(
-        {{"objects/app.bin", "bin/app.exe", "same-hash", 4}}, {"bin/app.exe"});
+    requireRejectedAtCurrentVersion({{"objects/app.bin", "bin/app.exe", "same-hash", 4}}, {"bin/app.exe"});
     requireRejectedAtCurrentVersion({
         {"bin/app.exe", "", "same-hash", 4},
         {"objects/app.bin", "bin/app.exe", "same-hash", 4},
@@ -274,7 +314,7 @@ void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly() {
     snapshot.files.push_back({"bin/app.exe", true, "same-hash", 4});
 
     const auto snapshotDecision =
-        autoupdater::planUpdate(config, snapshotEnvelope, snapshot, std::nullopt);
+        autoupdater::planUpdate(config, snapshotEnvelope, snapshot, std::nullopt, plannerNow());
     LAU_REQUIRE(!snapshotDecision);
     LAU_REQUIRE(snapshotDecision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 }
@@ -289,7 +329,7 @@ void testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets() {
         {"objects/shared.bin", "shared/second.bin", "same-hash", 9},
     };
 
-    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt, plannerNow());
     LAU_REQUIRE(decision);
     LAU_REQUIRE(decision.value().checkResult.updateAvailable);
     LAU_REQUIRE(decision.value().operations.size() == 4);

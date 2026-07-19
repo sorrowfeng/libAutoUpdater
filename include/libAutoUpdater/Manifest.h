@@ -32,8 +32,10 @@ struct Manifest {
     std::string arch;
     Version version;
     std::string releaseId;
+    /// Optional RFC 3339 instants using the updater's documented strict profile.
     std::string releaseDate;
     std::string publishedAt;
+    /// Exclusive validity bound: the manifest is expired at this instant.
     std::string expiresAt;
     std::optional<Version> minVersion;
     std::optional<Version> minClientVersion;
@@ -49,7 +51,8 @@ struct Manifest {
     std::string toJson() const;
 };
 
-/// One platform/architecture routing entry in an index manifest.
+/// One platform/architecture routing entry in an index manifest. An empty
+/// platform or arch is a wildcard; exact selectors outrank wildcard selectors.
 struct IndexTarget {
     std::string platform;
     std::string arch;

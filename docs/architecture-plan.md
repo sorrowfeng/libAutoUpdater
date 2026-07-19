@@ -306,7 +306,16 @@ Example:
 }
 ```
 
-`Config::manifestUrl` may point directly to a release manifest or to an index manifest. When it points to an index manifest, the client selects a matching target by `platform` and `arch`, then downloads the release manifest.
+`Config::manifestUrl` may point directly to a release manifest or to an index
+manifest. When it points to an index manifest, the client selects a matching
+target by `platform` and `arch`, then downloads the release manifest. A missing
+or empty target dimension is a wildcard. Exact `platform` plus `arch` routes
+outrank one-dimensional wildcards, which outrank the global wildcard. Multiple
+matching routes at the highest specificity are invalid rather than
+order-dependent; duplicate selectors and empty `manifestUrl` values are also
+rejected. Client `platform` and `arch` must both be concrete, case-sensitive
+values. The index generator accepts `*` in its command-line selector syntax and
+emits the corresponding omitted wildcard field.
 
 ### 5.2 Release Manifest
 
@@ -365,6 +374,21 @@ lowercase hexadecimal characters. Producers use the same contract and preserve
 Version fields use ASCII SemVer identifiers (`0-9A-Za-z-`); prerelease numeric
 identifiers reject leading zeroes, while build metadata follows SemVer and may
 contain them. Core components are limited to the library's signed 32-bit range.
+
+`releaseDate`, `publishedAt`, `expiresAt`, and `generatedAt`, when present, use
+the following strict RFC 3339 profile:
+
+```text
+YYYY-MM-DDTHH:MM:SS[.1-9DIGIT](Z|+/-HH:MM)
+```
+
+Years are `0001` through `9999`; Gregorian dates, offsets, and ranges are
+validated. Lowercase `t`/`z`, a missing zone, `-00:00`, `24:00:00`, leap seconds,
+and fractions longer than nanoseconds are rejected. Offsets are normalized
+before comparison. `expiresAt` is an exclusive validity bound, so a manifest is
+expired when the current instant is equal to or later than it. Disabling
+`rejectExpiredManifest` disables only that policy decision, not timestamp
+syntax validation.
 
 Changing a fixed schema's fields or meanings requires a schema-version change
 and an explicit compatibility parser. This rule also applies to state,
@@ -648,7 +672,10 @@ The manifest may include:
 - `publishedAt`
 - `expiresAt`
 
-The client rejects expired manifests. If the local system clock is clearly invalid, return a diagnostic error.
+The client parses timestamps as instants and rejects a manifest at and after its
+`expiresAt` boundary when `rejectExpiredManifest` is enabled. This check trusts
+the local wall clock; detecting clock rollback or establishing a trusted time
+source remains an integration concern.
 
 ### 8.6 Download Source Restrictions
 
@@ -658,7 +685,16 @@ The client rejects expired manifests. If the local system clock is clearly inval
 std::vector<std::string> allowedBaseUrls;
 ```
 
-Even after a signature passes, files may only be downloaded from trusted base URLs. If an index manifest is used, the selected release manifest URL is also checked.
+Even after a signature passes, files may only be downloaded from trusted base
+URLs. If an index manifest is used, the selected release manifest URL is also
+checked. URLs are parsed into scheme, authority, path, and query components.
+Relative references follow URI merge and dot-segment rules without collapsing
+meaningful repeated `/` path separators. Raw characters must be valid for their
+specific URI component, and artifact path bytes are percent-encoded per path
+segment. Fragments are rejected for update requests. Query data is never
+treated as path data: a default detached-signature suffix is inserted before
+the query, while an artifact directory derived from a manifest URL does not
+inherit that manifest query.
 
 ## 9. Platform Strategy
 

@@ -230,6 +230,10 @@ See [docs/server-layout.md](docs/server-layout.md) and [docs/content-addressed-s
 }
 ```
 
+Manifest and index timestamps use the strict RFC 3339 profile
+`YYYY-MM-DDTHH:MM:SS[.1-9DIGIT](Z|+/-HH:MM)`. `expiresAt` is exclusive: the
+manifest is expired at that instant.
+
 ## One-Minute Demo Result
 
 The GitHub-hosted demo updates a local install tree using this repository as the HTTPS update server:

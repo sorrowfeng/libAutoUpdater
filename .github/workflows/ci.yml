@@ -32,6 +32,7 @@ jobs:
           python -m py_compile
           tools/make_manifest.py
           tools/make_index.py
+          tools/metadata_contract.py
           tools/sign_manifest.py
           tools/gc_objects.py
           tools/check_release_ready.py
@@ -39,6 +40,8 @@ jobs:
           tools/make_sbom.py
           examples/github_update_demo.py
           tests/e2e_flow.py
+          tests/gc_objects_tests.py
+          tests/metadata_tool_tests.py
 
       - name: Validate CMake Presets
         run: cmake --list-presets

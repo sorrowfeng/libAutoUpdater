@@ -11,16 +11,21 @@ void testManifestRejectsReservedUpdaterTargetsFromEveryTargetForm();
 void testManifestAllowsSharedSourceForDistinctManagedTargets();
 void testManifestAllowsNonConflictingTargetPrefixesAndSiblings();
 void testManifestFetcherRoutesIndexManifest();
+void testManifestFetcherRanksWildcardIndexTargets();
+void testManifestFetcherRejectsAmbiguousIndexTargets();
+void testManifestFetcherRequiresConcreteClientRouteDimensions();
 void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex();
 void testManifestFetcherRejectsDisallowedIndexTarget();
 void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testManifestFetcherRejectsInitialUrlBeforeNetwork();
 void testManifestFetcherResolvesIndexTargetFromEffectiveUrl();
 void testManifestFetcherResolvesSignaturesFromEffectiveUrl();
+void testManifestFetcherKeepsQueriesInTheirUriComponent();
 void testManifestFetcherResolvesEmptyAndRelativeArtifactBases();
 void testUrlPolicyFailsClosedAndRejectsMalformedUrls();
 void testUrlPolicyCanonicalizesAndEnforcesScopeBoundaries();
 void testUrlPolicyRejectsLocalAndAmbiguousAddressLiterals();
+void testUrlUtilitiesPreserveUriComponentSemantics();
 void testNetworkRequestRejectsInitialUrlBeforeTransport();
 void testNetworkRequestFollowsAllAllowedRedirectStatuses();
 void testNetworkRequestEnforcesRedirectOriginsAndProtocols();
@@ -37,9 +42,12 @@ void testJsonRfc8259SyntaxAndUnicode();
 void testJsonExactNumericContract();
 void testMetadataSchemasRequireExactTypesAndRanges();
 void testStateAndJournalSchemasFailClosed();
+void testRfc3339ProfileAndNormalization();
+void testMetadataTimestampsUseStrictProfile();
 void testManifestAndSignatureResourceLimits();
 void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
+void testUpdatePlannerEnforcesRfc3339ExpiryBoundary();
 void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization();
 void testUpdatePlannerUsesHighestDowngradeBaseline();
 void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision();
@@ -119,6 +127,10 @@ int main(int argc, char* argv[]) {
         {"ManifestAllowsNonConflictingTargetPrefixesAndSiblings",
          testManifestAllowsNonConflictingTargetPrefixesAndSiblings},
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
+        {"ManifestFetcherRanksWildcardIndexTargets", testManifestFetcherRanksWildcardIndexTargets},
+        {"ManifestFetcherRejectsAmbiguousIndexTargets", testManifestFetcherRejectsAmbiguousIndexTargets},
+        {"ManifestFetcherRequiresConcreteClientRouteDimensions",
+         testManifestFetcherRequiresConcreteClientRouteDimensions},
         {"ManifestFetcherRejectsInvalidReleaseBehindSignedIndex",
          testManifestFetcherRejectsInvalidReleaseBehindSignedIndex},
         {"ManifestFetcherRejectsDisallowedIndexTarget", testManifestFetcherRejectsDisallowedIndexTarget},
@@ -126,11 +138,13 @@ int main(int argc, char* argv[]) {
         {"ManifestFetcherRejectsInitialUrlBeforeNetwork", testManifestFetcherRejectsInitialUrlBeforeNetwork},
         {"ManifestFetcherResolvesIndexTargetFromEffectiveUrl", testManifestFetcherResolvesIndexTargetFromEffectiveUrl},
         {"ManifestFetcherResolvesSignaturesFromEffectiveUrl", testManifestFetcherResolvesSignaturesFromEffectiveUrl},
+        {"ManifestFetcherKeepsQueriesInTheirUriComponent", testManifestFetcherKeepsQueriesInTheirUriComponent},
         {"ManifestFetcherResolvesEmptyAndRelativeArtifactBases",
          testManifestFetcherResolvesEmptyAndRelativeArtifactBases},
         {"UrlPolicyFailsClosedAndRejectsMalformedUrls", testUrlPolicyFailsClosedAndRejectsMalformedUrls},
         {"UrlPolicyCanonicalizesAndEnforcesScopeBoundaries", testUrlPolicyCanonicalizesAndEnforcesScopeBoundaries},
         {"UrlPolicyRejectsLocalAndAmbiguousAddressLiterals", testUrlPolicyRejectsLocalAndAmbiguousAddressLiterals},
+        {"UrlUtilitiesPreserveUriComponentSemantics", testUrlUtilitiesPreserveUriComponentSemantics},
         {"NetworkRequestRejectsInitialUrlBeforeTransport", testNetworkRequestRejectsInitialUrlBeforeTransport},
         {"NetworkRequestFollowsAllAllowedRedirectStatuses", testNetworkRequestFollowsAllAllowedRedirectStatuses},
         {"NetworkRequestEnforcesRedirectOriginsAndProtocols", testNetworkRequestEnforcesRedirectOriginsAndProtocols},
@@ -148,9 +162,12 @@ int main(int argc, char* argv[]) {
         {"JsonExactNumericContract", testJsonExactNumericContract},
         {"MetadataSchemasRequireExactTypesAndRanges", testMetadataSchemasRequireExactTypesAndRanges},
         {"StateAndJournalSchemasFailClosed", testStateAndJournalSchemasFailClosed},
+        {"Rfc3339ProfileAndNormalization", testRfc3339ProfileAndNormalization},
+        {"MetadataTimestampsUseStrictProfile", testMetadataTimestampsUseStrictProfile},
         {"ManifestAndSignatureResourceLimits", testManifestAndSignatureResourceLimits},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
+        {"UpdatePlannerEnforcesRfc3339ExpiryBoundary", testUpdatePlannerEnforcesRfc3339ExpiryBoundary},
         {"UpdatePlannerRequiresVerifiedLocalDowngradeAuthorization",
          testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization},
         {"UpdatePlannerUsesHighestDowngradeBaseline", testUpdatePlannerUsesHighestDowngradeBaseline},

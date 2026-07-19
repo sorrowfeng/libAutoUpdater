@@ -211,7 +211,7 @@ likelihood of affecting production update flows.
     - Negative, fractional, non-finite, over-range, and greater-than-`2^53`
       integer cases never trigger undefined behavior or precision loss.
 
-- [ ] **AU-014 — Fix timestamp, index routing, and URL construction semantics**
+- [x] **AU-014 — Fix timestamp, index routing, and URL construction semantics**
   - Classification: Verified correctness defects; expiry impact requires policy
     confirmation.
   - Key code: `src/UpdatePlanner.cpp:14-49`,

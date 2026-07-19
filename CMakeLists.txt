@@ -117,6 +117,7 @@ set(LIBAUTOUPDATER_SOURCES
     src/util/Json.cpp
     src/util/BoundedFile.cpp
     src/util/PathUtil.cpp
+    src/util/Rfc3339.cpp
     src/util/Sha256.cpp
     src/util/UrlUtil.cpp)
 

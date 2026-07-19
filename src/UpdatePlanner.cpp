@@ -2,32 +2,32 @@
 
 #include "UrlPolicy.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 #include "util/UrlUtil.h"
 
-#include <ctime>
-#include <iomanip>
-#include <sstream>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace autoupdater {
 
 namespace {
 
-std::string currentUtcIsoLike() {
-    const auto now = std::time(nullptr);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &now);
-#else
-    gmtime_r(&now, &tm);
-#endif
-    std::ostringstream stream;
-    stream << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return stream.str();
+Result<std::optional<util::UtcInstant>> parseOptionalTimestamp(const std::string& value, const char* field) {
+    if (value.empty()) {
+        return Result<std::optional<util::UtcInstant>>::ok(std::nullopt);
+    }
+    auto parsed = util::parseRfc3339(value);
+    if (!parsed) {
+        return Result<std::optional<util::UtcInstant>>::fail(
+            {ErrorCode::ManifestParseFailed,
+             std::string(field) + " must use the documented RFC 3339 timestamp profile"});
+    }
+    return Result<std::optional<util::UtcInstant>>::ok(parsed.value());
 }
 
 Result<void> validateManifestAgainstConfig(const Config& config, const ManifestEnvelope& envelope,
-                                           const UrlPolicy& policy) {
+                                           const UrlPolicy& policy, const util::UtcInstant& currentTime) {
     const auto& manifest = envelope.manifest;
     std::vector<std::string> managedTargets;
     managedTargets.reserve(manifest.files.size() + manifest.remove.size());
@@ -58,8 +58,19 @@ Result<void> validateManifestAgainstConfig(const Config& config, const ManifestE
     if (manifest.minClientVersion && config.clientVersion < *manifest.minClientVersion) {
         return Result<void>::fail({ErrorCode::UnsupportedManifestSchema, "Updater client version is too old"});
     }
-    if (config.security.rejectExpiredManifest && !manifest.expiresAt.empty() &&
-        currentUtcIsoLike() > manifest.expiresAt) {
+    auto releaseDate = parseOptionalTimestamp(manifest.releaseDate, "releaseDate");
+    auto publishedAt = parseOptionalTimestamp(manifest.publishedAt, "publishedAt");
+    auto expiresAt = parseOptionalTimestamp(manifest.expiresAt, "expiresAt");
+    if (!releaseDate) {
+        return Result<void>::fail(releaseDate.error());
+    }
+    if (!publishedAt) {
+        return Result<void>::fail(publishedAt.error());
+    }
+    if (!expiresAt) {
+        return Result<void>::fail(expiresAt.error());
+    }
+    if (config.security.rejectExpiredManifest && expiresAt.value() && currentTime >= *expiresAt.value()) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest has expired"});
     }
     auto source = policy.authorize(envelope.sourceUrl);
@@ -84,13 +95,14 @@ Result<void> validateManifestAgainstConfig(const Config& config, const ManifestE
 } // namespace
 
 Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& envelope, const LocalSnapshot& snapshot,
-                                  const std::optional<Version>& lastAcceptedVersion) {
+                                  const std::optional<Version>& lastAcceptedVersion,
+                                  const util::UtcInstant& currentTime) {
     const auto& manifest = envelope.manifest;
     auto policy = UrlPolicy::fromConfig(config);
     if (!policy) {
         return Result<UpdateDecision>::fail(policy.error());
     }
-    auto validation = validateManifestAgainstConfig(config, envelope, policy.value());
+    auto validation = validateManifestAgainstConfig(config, envelope, policy.value(), currentTime);
     if (!validation) {
         return Result<UpdateDecision>::fail(validation.error());
     }
@@ -111,9 +123,9 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
         downgradeBaseline = *lastAcceptedVersion;
     }
     const bool isDowngrade = manifest.version < downgradeBaseline;
-    const bool downgradeAuthorized =
-        isDowngrade && !config.security.rejectDowngrade && config.security.requireManifestSignature &&
-        envelope.releaseManifestSignatureVerified && manifest.allowDowngrade;
+    const bool downgradeAuthorized = isDowngrade && !config.security.rejectDowngrade &&
+                                     config.security.requireManifestSignature &&
+                                     envelope.releaseManifestSignatureVerified && manifest.allowDowngrade;
     if (isDowngrade && !downgradeAuthorized) {
         decision.checkResult.downgradeRejected = true;
         return Result<UpdateDecision>::fail(

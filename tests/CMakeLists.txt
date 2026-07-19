@@ -19,6 +19,7 @@ add_executable(libAutoUpdater_tests
     StateStoreTests.cpp
     UpdaterTests.cpp
     JsonContractTests.cpp
+    Rfc3339Tests.cpp
     FuzzSmokeTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
@@ -26,7 +27,8 @@ target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/src)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/updater)
 target_compile_definitions(libAutoUpdater_tests PRIVATE
-    LIBAUTOUPDATER_JSON_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt")
+    LIBAUTOUPDATER_JSON_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt"
+    LIBAUTOUPDATER_RFC3339_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/rfc3339_conformance_corpus.txt")
 libautoupdater_apply_project_warnings(libAutoUpdater_tests)
 
 add_executable(libAutoUpdater_process_launcher_helper process_launcher_helper.cpp)
@@ -68,7 +70,16 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/gc_objects_tests.py
             --gc ${libAutoUpdater_SOURCE_DIR}/tools/gc_objects.py
             --json-corpus ${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt
+            --rfc3339-corpus ${CMAKE_CURRENT_SOURCE_DIR}/rfc3339_conformance_corpus.txt
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/gc-objects-validation)
+    add_test(
+        NAME libAutoUpdater_metadata_tools_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/metadata_tool_tests.py
+            --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
+            --make-index ${libAutoUpdater_SOURCE_DIR}/tools/make_index.py
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/metadata-tools-validation)
 endif()
 
 if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)

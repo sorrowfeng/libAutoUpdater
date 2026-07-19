@@ -123,6 +123,146 @@ void testManifestFetcherRoutesIndexManifest() {
                 std::vector<std::string>({indexUrl, indexUrl + ".sig", releaseUrl, releaseUrl + ".sig"}));
 }
 
+void testManifestFetcherRanksWildcardIndexTargets() {
+    const std::string indexUrl = "https://updates.example.test/index.json";
+    const std::string exactUrl = "https://updates.example.test/releases/exact/manifest.json";
+    autoupdater::test::ScriptedNetworkClient network;
+    network.queueText(indexUrl, autoupdater::test::textResponse(R"json({
+      "schemaVersion": 1,
+      "targets": [
+        {"manifestUrl": "releases/global/manifest.json"},
+        {"platform": "windows", "manifestUrl": "releases/windows/manifest.json"},
+        {"arch": "x64", "manifestUrl": "releases/x64/manifest.json"},
+        {"platform": "windows", "arch": "x64", "manifestUrl": "releases/exact/manifest.json"}
+      ]
+    })json"));
+    network.queueText(exactUrl, autoupdater::test::textResponse(releaseManifest()));
+    auto config = manifestConfig(indexUrl);
+    CountingSignatureVerifier verifier;
+
+    const auto envelope = fetch(config, network, verifier);
+
+    LAU_REQUIRE(envelope);
+    LAU_REQUIRE(network.textRequests == std::vector<std::string>({indexUrl, exactUrl}));
+
+    const std::string platformUrl = "https://updates.example.test/releases/windows/manifest.json";
+    autoupdater::test::ScriptedNetworkClient fallbackNetwork;
+    fallbackNetwork.queueText(indexUrl, autoupdater::test::textResponse(R"json({
+      "schemaVersion": 1,
+      "targets": [
+        {"manifestUrl": "releases/global/manifest.json"},
+        {"platform": "windows", "manifestUrl": "releases/windows/manifest.json"}
+      ]
+    })json"));
+    fallbackNetwork.queueText(platformUrl, autoupdater::test::textResponse(releaseManifest()));
+    CountingSignatureVerifier fallbackVerifier;
+
+    const auto fallbackEnvelope = fetch(config, fallbackNetwork, fallbackVerifier);
+
+    LAU_REQUIRE(fallbackEnvelope);
+    LAU_REQUIRE(fallbackNetwork.textRequests == std::vector<std::string>({indexUrl, platformUrl}));
+
+    const std::string archUrl = "https://updates.example.test/releases/x64/manifest.json";
+    autoupdater::test::ScriptedNetworkClient archNetwork;
+    archNetwork.queueText(indexUrl, autoupdater::test::textResponse(R"json({
+      "schemaVersion": 1,
+      "targets": [
+        {"manifestUrl": "releases/global/manifest.json"},
+        {"arch": "x64", "manifestUrl": "releases/x64/manifest.json"}
+      ]
+    })json"));
+    archNetwork.queueText(archUrl, autoupdater::test::textResponse(releaseManifest()));
+    CountingSignatureVerifier archVerifier;
+
+    const auto archEnvelope = fetch(config, archNetwork, archVerifier);
+
+    LAU_REQUIRE(archEnvelope);
+    LAU_REQUIRE(archNetwork.textRequests == std::vector<std::string>({indexUrl, archUrl}));
+
+    const std::string globalUrl = "https://updates.example.test/releases/global/manifest.json";
+    autoupdater::test::ScriptedNetworkClient globalNetwork;
+    globalNetwork.queueText(indexUrl, autoupdater::test::textResponse(R"json({
+      "schemaVersion": 1,
+      "targets": [{"manifestUrl": "releases/global/manifest.json"}]
+    })json"));
+    globalNetwork.queueText(globalUrl, autoupdater::test::textResponse(releaseManifest()));
+    CountingSignatureVerifier globalVerifier;
+
+    const auto globalEnvelope = fetch(config, globalNetwork, globalVerifier);
+
+    LAU_REQUIRE(globalEnvelope);
+    LAU_REQUIRE(globalNetwork.textRequests == std::vector<std::string>({indexUrl, globalUrl}));
+}
+
+void testManifestFetcherRejectsAmbiguousIndexTargets() {
+    const std::string indexUrl = "https://updates.example.test/index.json";
+    auto config = manifestConfig(indexUrl);
+
+    for (const auto& indexDocument : {
+             R"json({
+               "schemaVersion": 1,
+               "targets": [
+                 {"platform": "windows", "manifestUrl": "windows/manifest.json"},
+                 {"arch": "x64", "manifestUrl": "x64/manifest.json"}
+               ]
+             })json",
+             R"json({
+               "schemaVersion": 1,
+               "targets": [
+                 {"platform": "windows", "arch": "x64", "manifestUrl": "first.json"},
+                 {"platform": "windows", "arch": "x64", "manifestUrl": "second.json"}
+               ]
+             })json",
+             R"json({
+               "schemaVersion": 1,
+               "targets": [
+                 {"manifestUrl": "first.json"},
+                 {"platform": "", "arch": "", "manifestUrl": "second.json"}
+               ]
+             })json",
+             R"json({
+               "schemaVersion": 1,
+               "targets": [
+                 {"platform": "windows", "arch": "x64", "manifestUrl": ""}
+               ]
+             })json"}) {
+        autoupdater::test::ScriptedNetworkClient network;
+        network.queueText(indexUrl, autoupdater::test::textResponse(indexDocument));
+        CountingSignatureVerifier verifier;
+
+        const auto envelope = fetch(config, network, verifier);
+
+        LAU_REQUIRE(!envelope);
+        LAU_REQUIRE(envelope.error().code == autoupdater::ErrorCode::ManifestParseFailed);
+        LAU_REQUIRE(network.textRequests == std::vector<std::string>({indexUrl}));
+    }
+}
+
+void testManifestFetcherRequiresConcreteClientRouteDimensions() {
+    const std::string indexUrl = "https://updates.example.test/index.json";
+    const std::string indexDocument = R"json({
+      "schemaVersion": 1,
+      "targets": [{"manifestUrl": "fallback/manifest.json"}]
+    })json";
+    for (const bool clearPlatform : {false, true}) {
+        autoupdater::test::ScriptedNetworkClient network;
+        network.queueText(indexUrl, autoupdater::test::textResponse(indexDocument));
+        auto config = manifestConfig(indexUrl);
+        if (clearPlatform) {
+            config.platform.clear();
+        } else {
+            config.arch.clear();
+        }
+        CountingSignatureVerifier verifier;
+
+        const auto envelope = fetch(config, network, verifier);
+
+        LAU_REQUIRE(!envelope);
+        LAU_REQUIRE(envelope.error().code == autoupdater::ErrorCode::InvalidConfig);
+        LAU_REQUIRE(network.textRequests == std::vector<std::string>({indexUrl}));
+    }
+}
+
 void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex() {
     const std::string indexUrl = "https://updates.example.test/index.json";
     const std::string releaseUrl = "https://updates.example.test/releases/1.2.0/windows-x64/manifest.json";
@@ -138,8 +278,7 @@ void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex() {
         }
       ]
     })json";
-    const auto releaseDocument =
-        releaseManifest("https://updates.example.test/releases/1.2.0/windows-x64/");
+    const auto releaseDocument = releaseManifest("https://updates.example.test/releases/1.2.0/windows-x64/");
 
     autoupdater::test::ScriptedNetworkClient network;
     network.queueText(indexUrl, autoupdater::test::textResponse(indexDocument));
@@ -157,8 +296,7 @@ void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex() {
     LAU_REQUIRE(envelope.error().code == autoupdater::ErrorCode::ManifestSignatureInvalid);
     LAU_REQUIRE(verifier.calls == 2);
     LAU_REQUIRE(verifier.verifiedData == std::vector<std::string>({indexDocument, releaseDocument}));
-    LAU_REQUIRE(verifier.verifiedSignatures ==
-                std::vector<std::string>({"index-signature", "release-signature"}));
+    LAU_REQUIRE(verifier.verifiedSignatures == std::vector<std::string>({"index-signature", "release-signature"}));
     LAU_REQUIRE(network.textRequests ==
                 std::vector<std::string>({indexUrl, indexUrl + ".sig", releaseUrl, releaseUrl + ".sig"}));
 }
@@ -292,6 +430,44 @@ void testManifestFetcherResolvesSignaturesFromEffectiveUrl() {
         LAU_REQUIRE(verifier.verifiedSignatures == std::vector<std::string>({"relative-signature"}));
         LAU_REQUIRE(verifier.verifiedPublicKeys == std::vector<std::string>({"fake-key"}));
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({initial, effective, relativeSignature}));
+    }
+}
+
+void testManifestFetcherKeepsQueriesInTheirUriComponent() {
+    const std::string manifestUrl = "https://updates.example.test/releases/manifest.json?token=manifest";
+
+    {
+        const std::string signatureUrl = "https://updates.example.test/releases/manifest.json.sig?token=manifest";
+        autoupdater::test::ScriptedNetworkClient network;
+        network.queueText(manifestUrl, autoupdater::test::textResponse(releaseManifest()));
+        network.queueText(signatureUrl, autoupdater::test::textResponse("signature"));
+        auto config = manifestConfig(manifestUrl);
+        config.security.requireManifestSignature = true;
+        config.security.publicKeyPem = "fake-key";
+        CountingSignatureVerifier verifier;
+
+        const auto envelope = fetch(config, network, verifier);
+
+        LAU_REQUIRE(envelope);
+        LAU_REQUIRE(envelope.value().artifactBaseUrl == "https://updates.example.test/releases/");
+        LAU_REQUIRE(network.textRequests == std::vector<std::string>({manifestUrl, signatureUrl}));
+    }
+
+    {
+        const std::string signatureUrl = "https://updates.example.test/releases/manifest.json?signature=one/two?three";
+        autoupdater::test::ScriptedNetworkClient network;
+        network.queueText(manifestUrl, autoupdater::test::textResponse(releaseManifest()));
+        network.queueText(signatureUrl, autoupdater::test::textResponse("signature"));
+        auto config = manifestConfig(manifestUrl);
+        config.security.requireManifestSignature = true;
+        config.security.manifestSignatureUrl = "?signature=one/two?three";
+        config.security.publicKeyPem = "fake-key";
+        CountingSignatureVerifier verifier;
+
+        const auto envelope = fetch(config, network, verifier);
+
+        LAU_REQUIRE(envelope);
+        LAU_REQUIRE(network.textRequests == std::vector<std::string>({manifestUrl, signatureUrl}));
     }
 }
 

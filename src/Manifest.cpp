@@ -2,6 +2,7 @@
 
 #include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 #include "util/Sha256.h"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace autoupdater {
@@ -31,8 +33,7 @@ Result<std::string> optionalString(const util::Json& object, const std::string& 
         return Result<std::string>::ok({});
     }
     if (!value->isString()) {
-        return Result<std::string>::fail(
-            {ErrorCode::ManifestParseFailed, "Optional field must be a string: " + key});
+        return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Optional field must be a string: " + key});
     }
     return Result<std::string>::ok(value->asString());
 }
@@ -43,18 +44,28 @@ Result<bool> optionalBool(const util::Json& object, const std::string& key, bool
         return Result<bool>::ok(fallback);
     }
     if (!value->isBool()) {
-        return Result<bool>::fail(
-            {ErrorCode::ManifestParseFailed, "Optional field must be a boolean: " + key});
+        return Result<bool>::fail({ErrorCode::ManifestParseFailed, "Optional field must be a boolean: " + key});
     }
     return Result<bool>::ok(value->asBool());
+}
+
+Result<void> validateOptionalTimestamp(const util::Json& object, const std::string& key) {
+    const auto* value = object.get(key);
+    if (!value) {
+        return Result<void>::ok();
+    }
+    if (!value->isString() || value->asString().empty() || !util::parseRfc3339(value->asString())) {
+        return Result<void>::fail(
+            {ErrorCode::ManifestParseFailed, key + " must use the documented RFC 3339 timestamp profile"});
+    }
+    return Result<void>::ok();
 }
 
 Result<void> requireOnlyKeys(const util::Json& object, std::initializer_list<const char*> allowedKeys,
                              const std::string& context) {
     for (const auto& entry : object.asObject()) {
-        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
-            return entry.first == key;
-        });
+        const auto allowed =
+            std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) { return entry.first == key; });
         if (!allowed) {
             return Result<void>::fail(
                 {ErrorCode::ManifestParseFailed, context + " contains unknown field: " + entry.first});
@@ -170,12 +181,12 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
             return Result<Manifest>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported manifest schemaVersion"});
         }
         manifest.schemaVersion = kSupportedManifestSchema;
-        auto rootKeys = requireOnlyKeys(
-            json.value(),
-            {"schemaVersion", "appId", "channel", "platform", "arch", "version", "releaseId",
-             "releaseDate", "publishedAt", "expiresAt", "minVersion", "minClientVersion", "mandatory",
-             "allowDowngrade", "notes", "baseUrl", "files", "remove"},
-            "Manifest");
+        auto rootKeys =
+            requireOnlyKeys(json.value(),
+                            {"schemaVersion", "appId", "channel", "platform", "arch", "version", "releaseId",
+                             "releaseDate", "publishedAt", "expiresAt", "minVersion", "minClientVersion", "mandatory",
+                             "allowDowngrade", "notes", "baseUrl", "files", "remove"},
+                            "Manifest");
         if (!rootKeys) {
             return Result<Manifest>::fail(rootKeys.error());
         }
@@ -226,6 +237,12 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
             return Result<Manifest>::fail(mandatory.error());
         if (!allowDowngrade)
             return Result<Manifest>::fail(allowDowngrade.error());
+        for (const auto* timestampField : {"releaseDate", "publishedAt", "expiresAt"}) {
+            auto validTimestamp = validateOptionalTimestamp(json.value(), timestampField);
+            if (!validTimestamp) {
+                return Result<Manifest>::fail(validTimestamp.error());
+            }
+        }
         manifest.appId = std::move(appId.value());
         manifest.channel = std::move(channel.value());
         manifest.platform = std::move(platform.value());
@@ -442,6 +459,10 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const Re
             return Result<IndexManifest>::fail(channel.error());
         if (!generatedAt)
             return Result<IndexManifest>::fail(generatedAt.error());
+        auto validGeneratedAt = validateOptionalTimestamp(json.value(), "generatedAt");
+        if (!validGeneratedAt) {
+            return Result<IndexManifest>::fail(validGeneratedAt.error());
+        }
         manifest.appId = std::move(appId.value());
         manifest.channel = std::move(channel.value());
         manifest.generatedAt = std::move(generatedAt.value());
@@ -450,6 +471,7 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const Re
         if (!targets || !targets->isArray()) {
             return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "targets array is required"});
         }
+        std::set<std::pair<std::string, std::string>> selectors;
         for (const auto& item : targets->asArray()) {
             if (!item.isObject()) {
                 return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "target must be object"});
@@ -471,7 +493,15 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const Re
             if (!url) {
                 return Result<IndexManifest>::fail(url.error());
             }
+            if (url.value().empty()) {
+                return Result<IndexManifest>::fail(
+                    {ErrorCode::ManifestParseFailed, "Index target manifestUrl must not be empty"});
+            }
             target.manifestUrl = url.value();
+            if (!selectors.emplace(target.platform, target.arch).second) {
+                return Result<IndexManifest>::fail(
+                    {ErrorCode::ManifestParseFailed, "Index target selectors must be unique"});
+            }
             manifest.targets.push_back(std::move(target));
         }
         return Result<IndexManifest>::ok(std::move(manifest));

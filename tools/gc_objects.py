@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Iterator, Optional
 
+try:
+    from .metadata_contract import is_rfc3339_timestamp
+except ImportError:
+    from metadata_contract import is_rfc3339_timestamp
+
 
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
@@ -67,6 +72,7 @@ STRING_KEYS = {
 }
 VERSION_KEYS = {"version", "minVersion", "minClientVersion"}
 BOOL_KEYS = {"mandatory", "allowDowngrade"}
+TIMESTAMP_KEYS = {"releaseDate", "publishedAt", "expiresAt"}
 FILE_KEYS = {"path", "localPath", "sha256", "size"}
 WINDOWS_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CLOCK$"}
 
@@ -311,6 +317,9 @@ def validate_manifest(data: dict[str, Any], object_prefix: str) -> dict[str, int
     for key in STRING_KEYS:
         if key in data and not isinstance(data[key], str):
             raise ValidationError(f"{key} must be a string")
+    for key in TIMESTAMP_KEYS:
+        if key in data and not is_rfc3339_timestamp(data[key]):
+            raise ValidationError(f"{key} must use the documented RFC 3339 timestamp profile")
     for key in VERSION_KEYS:
         if key not in data:
             continue

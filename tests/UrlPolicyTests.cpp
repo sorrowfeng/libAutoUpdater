@@ -138,3 +138,65 @@ void testUrlPolicyRejectsLocalAndAmbiguousAddressLiterals() {
     auto publicIpv6 = autoupdater::util::parseAbsoluteUrl("https://[2606:4700:4700::1111]/update");
     LAU_REQUIRE(publicIpv6);
 }
+
+void testUrlUtilitiesPreserveUriComponentSemantics() {
+    const auto repeated = autoupdater::util::parseAbsoluteUrl("https://updates.example.test/a//b");
+    LAU_REQUIRE(repeated);
+    LAU_REQUIRE(repeated.value().canonical == "https://updates.example.test/a//b");
+
+    const auto emptyBeforeParent = autoupdater::util::parseAbsoluteUrl("https://updates.example.test/a//../b");
+    LAU_REQUIRE(emptyBeforeParent);
+    LAU_REQUIRE(emptyBeforeParent.value().canonical == "https://updates.example.test/a/b");
+
+    const auto base =
+        autoupdater::util::parseAbsoluteUrl("https://updates.example.test/a/b/manifest.json?old=1/2?3&x=y");
+    LAU_REQUIRE(base);
+    LAU_REQUIRE(autoupdater::util::resolveUrlReference(base.value(), "").value().canonical == base.value().canonical);
+    LAU_REQUIRE(autoupdater::util::resolveUrlReference(base.value(), "?new=2/3?4&x=y").value().canonical ==
+                "https://updates.example.test/a/b/manifest.json?new=2/3?4&x=y");
+    LAU_REQUIRE(autoupdater::util::resolveUrlReference(base.value(), "next.json?new=2").value().canonical ==
+                "https://updates.example.test/a/b/next.json?new=2");
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(base.value(), "#fragment"));
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(base.value(), "next.json#fragment"));
+
+#ifdef _WIN32
+    const auto fileBase = autoupdater::util::parseAbsoluteUrl("file:///C:/updates/manifest.json");
+#else
+    const auto fileBase = autoupdater::util::parseAbsoluteUrl("file:///tmp/updates/manifest.json");
+#endif
+    LAU_REQUIRE(fileBase);
+    LAU_REQUIRE(autoupdater::util::resolveUrlReference(fileBase.value(), "").value().canonical ==
+                fileBase.value().canonical);
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(fileBase.value(), "?signature=1"));
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(fileBase.value(), "?"));
+#ifdef _WIN32
+    const auto resolvedFile = autoupdater::util::resolveUrlReference(fileBase.value(), "/D:/payload.bin");
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(fileBase.value(), "/tmp/payload.bin"));
+    LAU_REQUIRE(!autoupdater::util::resolveUrlReference(fileBase.value(), "../.."));
+#else
+    const auto resolvedFile = autoupdater::util::resolveUrlReference(fileBase.value(), "/var/tmp/payload.bin");
+#endif
+    LAU_REQUIRE(resolvedFile);
+    const auto reparsedFile = autoupdater::util::parseAbsoluteUrl(resolvedFile.value().canonical);
+    LAU_REQUIRE(reparsedFile);
+    LAU_REQUIRE(reparsedFile.value().canonical == resolvedFile.value().canonical);
+
+    const auto signature = autoupdater::util::appendUrlPathSuffix(base.value(), ".sig");
+    LAU_REQUIRE(signature);
+    LAU_REQUIRE(signature.value().canonical == "https://updates.example.test/a/b/manifest.json.sig?old=1/2?3&x=y");
+
+    const auto directory = autoupdater::util::parseAbsoluteUrl("https://updates.example.test/artifacts/");
+    LAU_REQUIRE(directory);
+    const auto artifact = autoupdater::util::appendEncodedPath(directory.value(), "dir/a b?#%.bin");
+    LAU_REQUIRE(artifact);
+    LAU_REQUIRE(artifact.value().canonical == "https://updates.example.test/artifacts/dir/a%20b%3F%23%25.bin");
+
+    for (const char character : std::string("\"<>[]^`{|}")) {
+        requireRejectedUrl(std::string("https://updates.example.test/a") + character + "b");
+        requireRejectedUrl(std::string("https://updates.example.test/a?x=") + character);
+    }
+    const auto encodedReserved =
+        autoupdater::util::parseAbsoluteUrl("https://updates.example.test/a%7Cb?x=%5Bvalue%5D");
+    LAU_REQUIRE(encodedReserved);
+    LAU_REQUIRE(encodedReserved.value().canonical == "https://updates.example.test/a%7Cb?x=%5Bvalue%5D");
+}

@@ -18,6 +18,7 @@ from typing import Any
 
 GC_SCRIPT = Path()
 JSON_CORPUS = Path()
+RFC3339_CORPUS = Path()
 GC_MODULE: Any = None
 WORK_DIR = Path()
 OBJECT_PREFIX = "objects/sha256"
@@ -51,6 +52,9 @@ class GcObjectsTests(unittest.TestCase):
             "platform": "windows",
             "arch": "x64",
             "version": "1.2.3",
+            "releaseDate": "2026-07-19T12:34:56Z",
+            "publishedAt": "2026-07-19T20:34:56+08:00",
+            "expiresAt": "2099-12-31T23:59:59.999999999Z",
             "mandatory": False,
             "allowDowngrade": False,
             "notes": "Valid Unicode scalar: 😀",
@@ -202,6 +206,8 @@ class GcObjectsTests(unittest.TestCase):
             "missing_version": json.dumps({key: value for key, value in valid.items() if key != "version"}).encode(),
             "unknown_root_key": json.dumps({**valid, "unexpected": True}).encode(),
             "optional_string_wrong_type": json.dumps({**valid, "notes": 123}).encode(),
+            "invalid_timestamp": json.dumps({**valid, "expiresAt": "2026-02-30T00:00:00Z"}).encode(),
+            "empty_timestamp": json.dumps({**valid, "publishedAt": ""}).encode(),
             "version_non_ascii_prerelease": json.dumps({**valid, "version": "1.2.3-ª"}).encode(),
             "version_non_ascii_build": json.dumps({**valid, "version": "1.2.3+ª"}).encode(),
             "version_non_ascii_core": json.dumps({**valid, "version": "ª.2.3"}).encode(),
@@ -306,6 +312,18 @@ class GcObjectsTests(unittest.TestCase):
             except GC_MODULE.ValidationError:
                 accepted = False
             self.assertEqual(accepted, expectation == "accept", msg=name)
+
+    def test_shared_rfc3339_conformance_corpus(self) -> None:
+        for line_number, raw_line in enumerate(RFC3339_CORPUS.read_text(encoding="ascii").splitlines(), 1):
+            if not raw_line or raw_line.startswith("#"):
+                continue
+            parts = raw_line.split("|", 2)
+            self.assertEqual(len(parts), 3, msg=f"corpus line {line_number}")
+            expectation, name, timestamp = parts
+            self.assertIn(expectation, {"accept", "reject"}, msg=f"corpus line {line_number}")
+            self.assertEqual(
+                GC_MODULE.is_rfc3339_timestamp(timestamp), expectation == "accept", msg=name
+            )
 
     def test_json_resource_limits_match_library_defaults(self) -> None:
         cases = {
@@ -589,19 +607,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gc", required=True, type=Path)
     parser.add_argument("--json-corpus", required=True, type=Path)
+    parser.add_argument("--rfc3339-corpus", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
 
-    global GC_SCRIPT, GC_MODULE, JSON_CORPUS, WORK_DIR
+    global GC_SCRIPT, GC_MODULE, JSON_CORPUS, RFC3339_CORPUS, WORK_DIR
     GC_SCRIPT = args.gc.resolve()
     JSON_CORPUS = args.json_corpus.resolve()
+    RFC3339_CORPUS = args.rfc3339_corpus.resolve()
     WORK_DIR = args.work_dir.resolve()
     module_spec = importlib.util.spec_from_file_location("gc_objects_under_test", GC_SCRIPT)
     if module_spec is None or module_spec.loader is None:
         raise RuntimeError("cannot load gc_objects.py")
     GC_MODULE = importlib.util.module_from_spec(module_spec)
     sys.modules[module_spec.name] = GC_MODULE
-    module_spec.loader.exec_module(GC_MODULE)
+    sys.path.insert(0, str(GC_SCRIPT.parent))
+    try:
+        module_spec.loader.exec_module(GC_MODULE)
+    finally:
+        sys.path.pop(0)
     shutil.rmtree(WORK_DIR, ignore_errors=True)
     WORK_DIR.mkdir(parents=True)
 

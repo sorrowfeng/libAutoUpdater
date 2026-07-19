@@ -230,6 +230,10 @@ python tools/make_manifest.py dist/MyApp \
 }
 ```
 
+Manifest 与 index 的时间戳使用严格 RFC 3339 格式
+`YYYY-MM-DDTHH:MM:SS[.1-9DIGIT](Z|+/-HH:MM)`。`expiresAt` 是排他上界：到达该
+时刻即视为过期。
+
 ## 一分钟 demo 效果
 
 GitHub-hosted demo 会把本地安装目录从 `1.0.0` 更新到 `2.0.0`，本仓库本身就是 HTTPS 更新服务器：

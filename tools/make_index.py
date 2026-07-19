@@ -7,6 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
+try:
+    from .metadata_contract import is_rfc3339_timestamp
+except ImportError:
+    from metadata_contract import is_rfc3339_timestamp
+
 
 def parse_target(value: str) -> dict:
     parts = value.split("=", 1)
@@ -19,11 +24,12 @@ def parse_target(value: str) -> dict:
     platform, arch = platform_parts
     if not platform or not arch or not url:
         raise argparse.ArgumentTypeError("target must be platform/arch=url")
-    return {
-        "platform": platform,
-        "arch": arch,
-        "manifestUrl": url,
-    }
+    target = {"manifestUrl": url}
+    if platform != "*":
+        target["platform"] = platform
+    if arch != "*":
+        target["arch"] = arch
+    return target
 
 
 def main() -> int:
@@ -31,15 +37,23 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("index.json"))
     parser.add_argument("--app-id", required=True)
     parser.add_argument("--channel", default="stable")
-    parser.add_argument("--generated-at", required=True, help="UTC ISO-8601 timestamp")
+    parser.add_argument("--generated-at", required=True, help="RFC 3339 timestamp")
     parser.add_argument(
         "--target",
         action="append",
         type=parse_target,
         required=True,
-        help="Target mapping like windows/x64=https://example.com/releases/1.2.0/windows-x64/manifest.json",
+        help="Target mapping like windows/x64=url; use * as a platform or architecture wildcard",
     )
     args = parser.parse_args()
+    if not is_rfc3339_timestamp(args.generated_at):
+        parser.error("--generated-at must use the documented RFC 3339 timestamp profile")
+    selectors: set[tuple[str, str]] = set()
+    for target in args.target:
+        selector = (target.get("platform", ""), target.get("arch", ""))
+        if selector in selectors:
+            parser.error("--target selectors must be unique")
+        selectors.add(selector)
 
     manifest = {
         "schemaVersion": 1,

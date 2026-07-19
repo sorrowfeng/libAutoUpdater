@@ -81,16 +81,37 @@ Result<std::string> selectIndexTarget(const Config& config, const IndexManifest&
         return Result<std::string>::fail(
             {ErrorCode::SecurityPolicyViolation, "Index manifest channel does not match config"});
     }
+    if (config.platform.empty() || config.arch.empty()) {
+        return Result<std::string>::fail(
+            {ErrorCode::InvalidConfig, "platform and arch are required when selecting an index target"});
+    }
 
+    const IndexTarget* selected = nullptr;
+    int bestSpecificity = -1;
+    std::size_t bestMatchCount = 0;
     for (const auto& target : index.targets) {
-        const bool platformMatches =
-            target.platform.empty() || config.platform.empty() || target.platform == config.platform;
-        const bool archMatches = target.arch.empty() || config.arch.empty() || target.arch == config.arch;
-        if (platformMatches && archMatches) {
-            return Result<std::string>::ok(target.manifestUrl);
+        const bool platformMatches = target.platform.empty() || target.platform == config.platform;
+        const bool archMatches = target.arch.empty() || target.arch == config.arch;
+        if (!platformMatches || !archMatches) {
+            continue;
+        }
+        const int specificity = (target.platform.empty() ? 0 : 1) + (target.arch.empty() ? 0 : 1);
+        if (specificity > bestSpecificity) {
+            selected = &target;
+            bestSpecificity = specificity;
+            bestMatchCount = 1;
+        } else if (specificity == bestSpecificity) {
+            ++bestMatchCount;
         }
     }
 
+    if (selected && bestMatchCount > 1) {
+        return Result<std::string>::fail(
+            {ErrorCode::ManifestParseFailed, "Ambiguous release manifest targets in index manifest"});
+    }
+    if (selected) {
+        return Result<std::string>::ok(selected->manifestUrl);
+    }
     return Result<std::string>::fail(
         {ErrorCode::ManifestParseFailed, "No matching release manifest target in index manifest"});
 }
