@@ -2,10 +2,16 @@
 
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
+#include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Sha256.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <fstream>
+#include <random>
+#include <sstream>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -15,7 +21,9 @@
 #else
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -77,6 +85,137 @@ Result<void> copyReplacing(const std::filesystem::path& from, const std::filesys
     return Result<void>::ok();
 }
 
+Result<void> systemFailure(const std::string& action, int code) {
+#ifdef _WIN32
+    return Result<void>::fail({ErrorCode::FileSystemError,
+                               action + ": " + std::system_category().message(code)});
+#else
+    return Result<void>::fail({ErrorCode::FileSystemError,
+                               action + ": " + std::generic_category().message(code)});
+#endif
+}
+
+std::filesystem::path journalTemporaryPath(const std::filesystem::path& path) {
+    static std::atomic<std::uint64_t> sequence{0};
+    std::random_device random;
+    std::string seed = util::pathToUtf8(path);
+    seed.append(std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    seed.append(std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+    seed.append(std::to_string(random()));
+    seed.append(std::to_string(random()));
+    return std::filesystem::path(path).concat(".tmp." + util::sha256Bytes(seed).substr(0, 24));
+}
+
+Result<void> atomicWriteFile(const std::filesystem::path& path, const std::string& contents) {
+    const auto temporaryPath = journalTemporaryPath(path);
+
+#ifdef _WIN32
+    HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return systemFailure("Failed to create journal temporary file", static_cast<int>(GetLastError()));
+    }
+
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        const auto remaining = contents.size() - offset;
+        const auto chunk =
+            static_cast<DWORD>(std::min<std::size_t>(remaining, static_cast<std::size_t>(MAXDWORD)));
+        DWORD written = 0;
+        if (!WriteFile(file, contents.data() + offset, chunk, &written, nullptr) || written == 0) {
+            const auto error = GetLastError();
+            CloseHandle(file);
+            DeleteFileW(temporaryPath.c_str());
+            return systemFailure("Failed to write journal temporary file", static_cast<int>(error));
+        }
+        offset += written;
+    }
+
+    if (!FlushFileBuffers(file)) {
+        const auto error = GetLastError();
+        CloseHandle(file);
+        DeleteFileW(temporaryPath.c_str());
+        return systemFailure("Failed to flush journal temporary file", static_cast<int>(error));
+    }
+    if (!CloseHandle(file)) {
+        const auto error = GetLastError();
+        DeleteFileW(temporaryPath.c_str());
+        return systemFailure("Failed to close journal temporary file", static_cast<int>(error));
+    }
+    if (!MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const auto error = GetLastError();
+        DeleteFileW(temporaryPath.c_str());
+        return systemFailure("Failed to replace transaction journal", static_cast<int>(error));
+    }
+#else
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    const int file = ::open(temporaryPath.c_str(), flags, S_IRUSR | S_IWUSR);
+    if (file < 0) {
+        return systemFailure("Failed to create journal temporary file", errno);
+    }
+
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        const auto written = ::write(file, contents.data() + offset, contents.size() - offset);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written <= 0) {
+            const auto error = errno;
+            ::close(file);
+            ::unlink(temporaryPath.c_str());
+            return systemFailure("Failed to write journal temporary file", error);
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+
+    if (::fsync(file) != 0) {
+        const auto error = errno;
+        ::close(file);
+        ::unlink(temporaryPath.c_str());
+        return systemFailure("Failed to flush journal temporary file", error);
+    }
+    if (::close(file) != 0) {
+        const auto error = errno;
+        ::unlink(temporaryPath.c_str());
+        return systemFailure("Failed to close journal temporary file", error);
+    }
+    if (::rename(temporaryPath.c_str(), path.c_str()) != 0) {
+        const auto error = errno;
+        ::unlink(temporaryPath.c_str());
+        return systemFailure("Failed to replace transaction journal", error);
+    }
+
+    int directoryFlags = O_RDONLY;
+#ifdef O_CLOEXEC
+    directoryFlags |= O_CLOEXEC;
+#endif
+#ifdef O_DIRECTORY
+    directoryFlags |= O_DIRECTORY;
+#endif
+    const int directory = ::open(path.parent_path().c_str(), directoryFlags);
+    if (directory < 0) {
+        return systemFailure("Failed to open journal directory for flush", errno);
+    }
+    if (::fsync(directory) != 0) {
+        const auto error = errno;
+        ::close(directory);
+        return systemFailure("Failed to flush journal directory", error);
+    }
+    if (::close(directory) != 0) {
+        return systemFailure("Failed to close journal directory", errno);
+    }
+#endif
+
+    return Result<void>::ok();
+}
+
 std::filesystem::path joinChecked(const std::filesystem::path& root, const std::string& relative) {
     auto joined = util::safeJoin(root, relative);
     if (!joined) {
@@ -89,19 +228,22 @@ Result<void> writeJournal(const ApplyPlan& plan, const std::vector<AppliedOperat
                           const std::string& state) {
     try {
         const auto journalDir = plan.installDir / ".autoupdater" / "journal";
-        std::error_code ec;
-        std::filesystem::create_directories(journalDir, ec);
-        const auto journalPath = journalDir / (plan.releaseId.empty() ? "transaction.json" : plan.releaseId + ".json");
-        std::ofstream output(journalPath, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write transaction journal"});
+        auto dirs = createDirectories(journalDir);
+        if (!dirs) {
+            return dirs;
         }
+        auto fileName = transactionJournalFileName(plan);
+        if (!fileName) {
+            return Result<void>::fail(fileName.error());
+        }
+
+        std::ostringstream output;
         output << "{\n";
-        output << "  \"state\": \"" << state << "\",\n";
-        output << "  \"toVersion\": \"" << plan.toVersion << "\",\n";
+        output << "  \"state\": \"" << util::jsonEscape(state) << "\",\n";
+        output << "  \"toVersion\": \"" << util::jsonEscape(plan.toVersion) << "\",\n";
         output << "  \"appliedCount\": " << applied.size() << "\n";
         output << "}\n";
-        return Result<void>::ok();
+        return atomicWriteFile(journalDir / fileName.value(), output.str());
     } catch (...) {
         return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write transaction journal"});
     }
@@ -177,6 +319,14 @@ Result<LockCleanup> acquireUpdateLock(const std::filesystem::path& installDir) {
 
 } // namespace
 
+Result<std::string> transactionJournalFileName(const ApplyPlan& plan) noexcept {
+    try {
+        return Result<std::string>::ok(util::sha256Bytes(plan.toJson()) + ".json");
+    } catch (...) {
+        return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to create transaction identifier"});
+    }
+}
+
 Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout) noexcept {
     if (pid == 0) {
         return Result<void>::ok();
@@ -220,6 +370,11 @@ Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
             return backupDirs;
         }
         auto hashProvider = createDefaultHashProvider();
+
+        auto initialJournal = writeJournal(plan, applied, "applying");
+        if (!initialJournal) {
+            return initialJournal;
+        }
 
         for (const auto& operation : plan.operations) {
             const auto target = joinChecked(plan.installDir, operation.target);
@@ -270,10 +425,18 @@ Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
                 }
             }
 
-            writeJournal(plan, applied, "applying");
+            auto journal = writeJournal(plan, applied, "applying");
+            if (!journal) {
+                rollback(plan, applied);
+                return journal;
+            }
         }
 
-        writeJournal(plan, applied, "complete");
+        auto completedJournal = writeJournal(plan, applied, "complete");
+        if (!completedJournal) {
+            rollback(plan, applied);
+            return completedJournal;
+        }
         return restart(plan);
     } catch (...) {
         rollback(plan, applied);

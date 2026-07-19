@@ -2,10 +2,12 @@
 
 #include "ApplyExecutor.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
+#include "util/Json.h"
 #include "util/PathUtil.h"
 
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 namespace {
 
@@ -21,6 +23,115 @@ std::string readFile(const std::filesystem::path& path) {
 }
 
 } // namespace
+
+void testApplyExecutorUsesSafeAtomicJournalName() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-journal-name-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    autoupdater::ApplyPlan plan;
+    plan.installDir = root / "install";
+    plan.stagingDir = root / "staging";
+    plan.backupDir = root / "backup";
+    plan.toVersion = "2.0.0";
+    plan.manifestSha256 = "manifest-digest";
+
+    const std::vector<std::string> untrustedReleaseIds = {
+        "",
+        "../escaped",
+        "..\\escaped-windows",
+        (root / "absolute-journal").string(),
+        "\\\\server\\share\\journal",
+        std::string("nul\0suffix", 10),
+        std::string(4096, 'a'),
+    };
+
+    for (const auto& releaseId : untrustedReleaseIds) {
+        plan.releaseId = releaseId;
+        const auto fileName = autoupdater::updater::transactionJournalFileName(plan);
+        LAU_REQUIRE(fileName);
+        LAU_REQUIRE(fileName.value().size() == 64 + std::string(".json").size());
+        LAU_REQUIRE(fileName.value().substr(64) == ".json");
+        for (std::size_t i = 0; i < 64; ++i) {
+            const auto value = fileName.value()[i];
+            LAU_REQUIRE((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f'));
+        }
+    }
+
+    plan.releaseId = "same-release";
+    const auto emptyPlanName = autoupdater::updater::transactionJournalFileName(plan);
+    LAU_REQUIRE(emptyPlanName);
+    plan.operations.push_back({autoupdater::ApplyOperationType::Remove, "", "obsolete.txt", "", 0});
+    const auto changedPlanName = autoupdater::updater::transactionJournalFileName(plan);
+    LAU_REQUIRE(changedPlanName);
+    LAU_REQUIRE(emptyPlanName.value() != changedPlanName.value());
+    plan.operations.clear();
+
+    plan.releaseId = "../../../escaped";
+    auto result = autoupdater::updater::executeApplyPlan(plan);
+    LAU_REQUIRE(result);
+    LAU_REQUIRE(!std::filesystem::exists(root / "escaped.json"));
+
+    const auto absoluteJournal = root / "absolute-journal.json";
+    writeFile(absoluteJournal, "sentinel");
+    plan.releaseId = (root / "absolute-journal").string();
+    plan.toVersion = "2.0.0\"\nwith-control";
+    result = autoupdater::updater::executeApplyPlan(plan);
+    LAU_REQUIRE(result);
+    LAU_REQUIRE(readFile(absoluteJournal) == "sentinel");
+
+    const auto journalDir = plan.installDir / ".autoupdater" / "journal";
+    std::size_t journalCount = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(journalDir)) {
+        LAU_REQUIRE(entry.path().extension() != ".tmp");
+        LAU_REQUIRE(entry.path().parent_path() == journalDir);
+        ++journalCount;
+    }
+    LAU_REQUIRE(journalCount == 2);
+
+    const auto journalName = autoupdater::updater::transactionJournalFileName(plan);
+    LAU_REQUIRE(journalName);
+    const auto journal = autoupdater::util::Json::parse(readFile(journalDir / journalName.value()));
+    LAU_REQUIRE(journal);
+    LAU_REQUIRE(journal.value().get("state") != nullptr);
+    LAU_REQUIRE(journal.value().get("state")->asString() == "complete");
+    LAU_REQUIRE(journal.value().get("toVersion") != nullptr);
+    LAU_REQUIRE(journal.value().get("toVersion")->asString() == plan.toVersion);
+
+    std::filesystem::remove_all(root, ec);
+}
+
+void testApplyExecutorRequiresWritableJournal() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-journal-required-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const auto install = root / "install";
+    const auto staging = root / "staging";
+    const auto backup = root / "backup";
+    writeFile(install / "bin/app.txt", "old");
+    writeFile(staging / "bin/app.txt", "new");
+    writeFile(install / ".autoupdater" / "journal", "not-a-directory");
+
+    auto hash = autoupdater::createDefaultHashProvider();
+    const auto expectedHash = hash->sha256Bytes("new");
+    LAU_REQUIRE(expectedHash);
+
+    autoupdater::ApplyPlan plan;
+    plan.installDir = install;
+    plan.stagingDir = staging;
+    plan.backupDir = backup;
+    plan.releaseId = "journal-required";
+    plan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "bin/app.txt", "bin/app.txt", expectedHash.value(), 3});
+
+    const auto result = autoupdater::updater::executeApplyPlan(plan);
+    LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::FileSystemError);
+    LAU_REQUIRE(readFile(install / "bin/app.txt") == "old");
+
+    std::filesystem::remove_all(root, ec);
+}
 
 void testApplyExecutorRollsBackCurrentFailedOperation() {
     const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-apply-test";

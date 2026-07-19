@@ -11,6 +11,8 @@ void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testUpdatePlannerCreatesOperations();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
+void testApplyExecutorUsesSafeAtomicJournalName();
+void testApplyExecutorRequiresWritableJournal();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
@@ -31,6 +33,8 @@ int main() {
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
+        {"ApplyExecutorUsesSafeAtomicJournalName", testApplyExecutorUsesSafeAtomicJournalName},
+        {"ApplyExecutorRequiresWritableJournal", testApplyExecutorRequiresWritableJournal},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},

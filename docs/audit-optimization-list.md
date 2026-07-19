@@ -17,7 +17,7 @@ likelihood of affecting production update flows.
 
 ## P0: Immediate security and integrity work
 
-- [ ] **AU-001 — Remove `releaseId` from journal path construction**
+- [x] **AU-001 — Remove `releaseId` from journal path construction**
   - Classification: Verified security issue; high severity; CWE-22/CWE-73.
   - Key code: `src/Manifest.cpp:90`, `src/ApplyPlanWriter.cpp:35`,
     `src/ApplyPlan.cpp:65`, `updater/ApplyExecutor.cpp:91-95,273,276`.
