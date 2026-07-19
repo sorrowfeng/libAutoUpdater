@@ -174,7 +174,7 @@ likelihood of affecting production update flows.
       targets, replace/remove conflicts, normalized path collisions, and
       `.autoupdater` internal paths.
 
-- [ ] **AU-011 — Correct platform timeout and process-launch behavior**
+- [x] **AU-011 — Correct platform timeout and process-launch behavior**
   - Classification: Verified high-to-medium stability defects.
   - Key code: `src/default/CfNetworkClient.cpp:249-367`,
     `src/default/ProcessLauncher.cpp:36-46,94-118`,

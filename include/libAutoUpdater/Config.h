@@ -67,6 +67,7 @@ struct Config {
     ResourceLimits resources;
 
     std::vector<std::string> managedPathWhitelist;
+    /// Must be between zero and 24 hours, inclusive.
     std::chrono::seconds applyWaitTimeout{60};
     std::chrono::seconds healthConfirmationTimeout{120};
 };

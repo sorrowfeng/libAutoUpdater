@@ -1,5 +1,6 @@
 #include "ApplyLauncher.h"
 
+#include "ProcessWait.h"
 #include "util/PathUtil.h"
 #include "util/Sha256.h"
 
@@ -31,6 +32,9 @@ Result<void> launchApplyProcess(const Config& config, const std::filesystem::pat
     }
     if (!util::isLowerHexSha256(applyPlanDigest)) {
         return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "A valid apply-plan digest is required"});
+    }
+    if (!detail::validProcessWaitTimeout(config.applyWaitTimeout)) {
+        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "applyWaitTimeout is outside the safe range"});
     }
 
     ProcessLaunchRequest request;

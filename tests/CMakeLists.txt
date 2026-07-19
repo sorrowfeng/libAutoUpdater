@@ -14,6 +14,7 @@ add_executable(libAutoUpdater_tests
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp
     ApplyCrashRecoveryTests.cpp
+    ProcessLauncherTests.cpp
     RootedFileSystemTests.cpp
     StateStoreTests.cpp
     UpdaterTests.cpp
@@ -24,6 +25,13 @@ target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/src)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/updater)
 libautoupdater_apply_project_warnings(libAutoUpdater_tests)
+
+add_executable(libAutoUpdater_process_launcher_helper process_launcher_helper.cpp)
+target_compile_features(libAutoUpdater_process_launcher_helper PRIVATE cxx_std_17)
+libautoupdater_apply_project_warnings(libAutoUpdater_process_launcher_helper)
+set_target_properties(libAutoUpdater_process_launcher_helper PROPERTIES
+    OUTPUT_NAME "libAutoUpdater process launcher helper")
+add_dependencies(libAutoUpdater_tests libAutoUpdater_process_launcher_helper)
 
 add_executable(libAutoUpdater_apply_crash_helper
     apply_crash_helper.cpp
@@ -38,6 +46,8 @@ add_dependencies(libAutoUpdater_tests libAutoUpdater_apply_crash_helper)
 
 if(WIN32)
     target_compile_definitions(libAutoUpdater_apply_crash_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(libAutoUpdater_process_launcher_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(libAutoUpdater_process_launcher_helper PRIVATE shell32)
 endif()
 
 if(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL)
@@ -73,4 +83,14 @@ if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdate
             --updater $<TARGET_FILE:autoupdater_apply>
             --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/e2e-flow-中文路径)
+endif()
+
+if(Python3_Interpreter_FOUND AND TARGET autoupdater_apply)
+    add_test(
+        NAME libAutoUpdater_updater_argument_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/updater_argument_validation.py
+            --updater $<TARGET_FILE:autoupdater_apply>
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/updater-argument-validation)
 endif()

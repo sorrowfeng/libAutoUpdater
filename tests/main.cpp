@@ -57,11 +57,15 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback();
 void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly();
+void testApplyExecutorValidatesProcessWaitInputs();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
 void testDownloadExecutorContainsSwapsAndHardLinks();
 void testDownloadExecutorKeepsValidatorsBoundToTheirResource();
 void testApplyExecutorUsesSafePosixPermissions();
+void testProcessLauncherReportsSetupAndExecFailures();
+void testProcessLauncherPreservesArgumentsAndWorkingDirectory();
+void testProcessLauncherRejectsLossyArguments();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
@@ -85,6 +89,7 @@ void testUpdaterPeriodicCheckPreservesReadyGeneration();
 void testUpdaterQueueOverflowErrorReentryIsBounded();
 void testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction();
 void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt();
+void testApplyLauncherBoundsProcessWaitTimeout();
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
 void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable();
 void testFuzzSmokeParsersAndPaths();
@@ -167,12 +172,17 @@ int main(int argc, char* argv[]) {
         {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
         {"ApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly",
          testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly},
+        {"ApplyExecutorValidatesProcessWaitInputs", testApplyExecutorValidatesProcessWaitInputs},
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
         {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},
         {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},
         {"DownloadExecutorKeepsValidatorsBoundToTheirResource",
          testDownloadExecutorKeepsValidatorsBoundToTheirResource},
         {"ApplyExecutorUsesSafePosixPermissions", testApplyExecutorUsesSafePosixPermissions},
+        {"ProcessLauncherReportsSetupAndExecFailures", testProcessLauncherReportsSetupAndExecFailures},
+        {"ProcessLauncherPreservesArgumentsAndWorkingDirectory",
+         testProcessLauncherPreservesArgumentsAndWorkingDirectory},
+        {"ProcessLauncherRejectsLossyArguments", testProcessLauncherRejectsLossyArguments},
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
@@ -199,6 +209,7 @@ int main(int argc, char* argv[]) {
          testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction},
         {"UpdaterHealthyMarkRequiresMatchingTerminalReceipt",
          testUpdaterHealthyMarkRequiresMatchingTerminalReceipt},
+        {"ApplyLauncherBoundsProcessWaitTimeout", testApplyLauncherBoundsProcessWaitTimeout},
         {"UpdaterDelegatesRollbackToTerminalBoundExternalPlan",
          testUpdaterDelegatesRollbackToTerminalBoundExternalPlan},
         {"UpdaterFailsClosedWhenAcceptedStateIsUnreadable",

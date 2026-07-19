@@ -30,9 +30,9 @@ The output directory is `build/docs/html`.
 - Application identity: `appId`, `channel`, `platform`, `arch`.
 - Versions: `currentVersion`, `clientVersion`.
 - Paths: `installDir`, `tempDir`, `updaterExecutable`.
-- Network policy: timeouts, TLS, resumable downloads.
+- Network policy: connect and transfer timeouts, TLS, resumable downloads. Positive timeout values bound transport waits; zero disables the corresponding bound.
 - Security policy: signatures, public key, URL allowlist, anti-downgrade, expired manifest rejection. Setting `rejectDowngrade=false` permits only downgrades requested by an independently verified release manifest; it does not make unsigned downgrade requests effective.
-- Apply policy: process wait timeout and healthy-confirmation timeout.
+- Apply policy: process wait timeout and healthy-confirmation timeout. `applyWaitTimeout` is restricted to the inclusive range from zero to 24 hours.
 
 ## Manifest
 
@@ -67,6 +67,11 @@ Injectable interfaces:
 - `IStateStore`
 
 Use these interfaces for tests, Qt integration, custom network stacks, and sandboxed environments.
+
+`IProcessLauncher::launch()` reports success only after the operating system has
+created the requested executable image. Arguments are UTF-8 values passed
+without shell interpretation; child setup, working-directory, and executable
+loading failures are returned synchronously.
 
 ## Threading Contract
 

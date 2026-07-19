@@ -6,6 +6,7 @@
 #include "DownloadExecutor.h"
 #include "LocalSnapshotBuilder.h"
 #include "ManifestFetcher.h"
+#include "ProcessWait.h"
 #include "UpdatePlanner.h"
 #include "util/PathUtil.h"
 
@@ -376,6 +377,9 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         auto resources = validateResourceLimits(config.resources);
         if (!resources) {
             return resources;
+        }
+        if (!detail::validProcessWaitTimeout(config.applyWaitTimeout)) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "applyWaitTimeout is outside the safe range"});
         }
         return Result<void>::ok();
     }

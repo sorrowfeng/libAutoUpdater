@@ -2,6 +2,7 @@
 
 #include "ApplyExecutor.h"
 #include "ApplyJournal.h"
+#include "ProcessWait.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
@@ -730,4 +731,23 @@ void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly() {
     }
 
     LAU_REQUIRE(!std::filesystem::exists(root));
+}
+
+void testApplyExecutorValidatesProcessWaitInputs() {
+    const auto noWait = autoupdater::updater::waitForProcessExit(0, std::chrono::seconds(0));
+    LAU_REQUIRE(noWait);
+
+    const auto negative = autoupdater::updater::waitForProcessExit(0, std::chrono::seconds(-1));
+    LAU_REQUIRE(!negative);
+    LAU_REQUIRE(negative.error().code == autoupdater::ErrorCode::ApplyFailed);
+
+    const auto overlong = autoupdater::updater::waitForProcessExit(
+        0, autoupdater::detail::kMaximumProcessWaitTimeout + std::chrono::seconds(1));
+    LAU_REQUIRE(!overlong);
+    LAU_REQUIRE(overlong.error().code == autoupdater::ErrorCode::ApplyFailed);
+
+    const auto invalidPid = autoupdater::updater::waitForProcessExit(
+        autoupdater::detail::maximumPlatformProcessId() + 1, std::chrono::seconds(0));
+    LAU_REQUIRE(!invalidPid);
+    LAU_REQUIRE(invalidPid.error().code == autoupdater::ErrorCode::ApplyFailed);
 }

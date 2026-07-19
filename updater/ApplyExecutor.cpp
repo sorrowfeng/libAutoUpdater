@@ -1,6 +1,7 @@
 #include "ApplyExecutor.h"
 
 #include "ApplyJournal.h"
+#include "ProcessWait.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
@@ -8,6 +9,7 @@
 #include "util/PathUtil.h"
 #include "util/Sha256.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -1680,6 +1682,12 @@ Result<void> executeRollbackRequest(const ApplyPlan& request, IRootedDirectory& 
 } // namespace
 
 Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout) noexcept {
+    if (!detail::validPlatformProcessId(pid)) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Process identifier is outside the platform range"});
+    }
+    if (!detail::validProcessWaitTimeout(timeout)) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Process wait timeout is outside the safe range"});
+    }
     if (pid == 0) {
         return Result<void>::ok();
     }
@@ -1687,24 +1695,53 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 #ifdef _WIN32
     HANDLE handle = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
     if (!handle) {
-        return Result<void>::ok();
+        const auto error = GetLastError();
+        if (error == ERROR_INVALID_PARAMETER) {
+            return Result<void>::ok();
+        }
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Failed to open process for waiting (Windows error " + std::to_string(error) +
+                                         ")"});
     }
     const DWORD waitMs = static_cast<DWORD>(timeout.count() * 1000);
     const DWORD result = WaitForSingleObject(handle, waitMs);
+    const auto waitError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
     CloseHandle(handle);
     if (result == WAIT_TIMEOUT) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Timed out waiting for main process exit"});
     }
-    return Result<void>::ok();
-#else
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) {
-            return Result<void>::ok();
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    if (result == WAIT_OBJECT_0) {
+        return Result<void>::ok();
     }
-    return Result<void>::fail({ErrorCode::ApplyFailed, "Timed out waiting for main process exit"});
+    if (result == WAIT_FAILED) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Failed while waiting for process exit (Windows error " +
+                                         std::to_string(waitError) + ")"});
+    }
+    return Result<void>::fail({ErrorCode::ApplyFailed, "Unexpected process wait result"});
+#else
+    const auto nativePid = static_cast<pid_t>(pid);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (kill(nativePid, 0) != 0) {
+            const auto error = errno;
+            if (error == ESRCH) {
+                return Result<void>::ok();
+            }
+            if (error != EPERM && error != EINTR) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed, "Failed to query process state (errno " + std::to_string(error) + ")"});
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Timed out waiting for main process exit"});
+        }
+        const auto remaining = deadline - now;
+        const auto pollInterval =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for((std::min)(remaining, pollInterval));
+    }
 #endif
 }
 

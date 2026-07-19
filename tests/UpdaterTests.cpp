@@ -1,6 +1,8 @@
 #include "TestCommon.h"
 
+#include "ApplyLauncher.h"
 #include "ApplyTransactionReceipt.h"
+#include "ProcessWait.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/Updater.h"
 #include "libAutoUpdater/interfaces/IEventDispatcher.h"
@@ -1167,6 +1169,37 @@ void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt() {
     LAU_REQUIRE(stateStore->saveLastAcceptedCalls() == 1);
     LAU_REQUIRE(stateStore->clearCalls() == 1);
     LAU_REQUIRE(!stateStore->hasPendingUpdate());
+}
+
+void testApplyLauncherBoundsProcessWaitTimeout() {
+    autoupdater::Config config;
+    config.updaterExecutable = "autoupdater_apply";
+    config.installDir = "install";
+    CapturingProcessLauncher launcher;
+    const std::string digest(64, 'a');
+
+    config.applyWaitTimeout = std::chrono::seconds(-1);
+    auto launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
+                                                     autoupdater::ApplyLaunchIntent::Install, launcher);
+    LAU_REQUIRE(!launched);
+    LAU_REQUIRE(launched.error().code == autoupdater::ErrorCode::ApplyLaunchFailed);
+    LAU_REQUIRE(launcher.launchCalls() == 0);
+
+    config.applyWaitTimeout =
+        autoupdater::detail::kMaximumProcessWaitTimeout + std::chrono::seconds(1);
+    launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
+                                                autoupdater::ApplyLaunchIntent::Install, launcher);
+    LAU_REQUIRE(!launched);
+    LAU_REQUIRE(launcher.launchCalls() == 0);
+
+    config.applyWaitTimeout = std::chrono::seconds(0);
+    launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
+                                                autoupdater::ApplyLaunchIntent::Install, launcher);
+    LAU_REQUIRE(launched);
+    LAU_REQUIRE(launcher.launchCalls() == 1);
+    const auto request = launcher.request();
+    LAU_REQUIRE(request);
+    LAU_REQUIRE(argumentValue(*request, "--wait") == std::optional<std::string>("0"));
 }
 
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {

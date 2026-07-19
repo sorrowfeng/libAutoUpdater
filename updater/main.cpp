@@ -1,16 +1,20 @@
 #include "ApplyExecutor.h"
 
+#include "ProcessWait.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/ResourceLimits.h"
 #include "util/BoundedFile.h"
 #include "util/Sha256.h"
 
 #include <chrono>
-#include <cstdlib>
 #include <cwchar>
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "util/PathUtil.h"
@@ -27,62 +31,122 @@ struct Args {
     std::string planDigest;
     std::filesystem::path installRoot;
     std::uint64_t pid = 0;
-    int waitSeconds = 60;
+    std::chrono::seconds waitTimeout{60};
     bool rollback = false;
 };
 
 #ifdef _WIN32
-std::string wideToUtf8(const wchar_t* text) {
-    if (!text || *text == L'\0') {
-        return {};
+bool wideToUtf8(const wchar_t* text, std::string& output) {
+    if (!text) {
+        return false;
     }
-    const int length = static_cast<int>(wcslen(text));
-    const int count = WideCharToMultiByte(CP_UTF8, 0, text, length, nullptr, 0, nullptr, nullptr);
+    if (*text == L'\0') {
+        output.clear();
+        return true;
+    }
+    const auto size = wcslen(text);
+    if (size > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+    const int length = static_cast<int>(size);
+    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, length, nullptr, 0, nullptr, nullptr);
     if (count <= 0) {
-        return {};
+        return false;
     }
-    std::string output(static_cast<std::size_t>(count), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text, length, output.data(), count, nullptr, nullptr);
-    return output;
+    output.resize(static_cast<std::size_t>(count));
+    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, length, output.data(), count, nullptr,
+                               nullptr) == count;
 }
 #endif
 
-std::vector<std::string> commandLineArgs(int argc, char** argv) {
+std::optional<std::vector<std::string>> commandLineArgs(int argc, char** argv) {
 #ifdef _WIN32
+    (void)argc;
+    (void)argv;
     int wideCount = 0;
     LPWSTR* wideArgs = CommandLineToArgvW(GetCommandLineW(), &wideCount);
-    if (wideArgs) {
-        std::vector<std::string> args;
-        args.reserve(static_cast<std::size_t>(wideCount));
-        for (int i = 0; i < wideCount; ++i) {
-            args.push_back(wideToUtf8(wideArgs[i]));
-        }
-        LocalFree(wideArgs);
-        return args;
+    if (!wideArgs || wideCount < 0) {
+        return std::nullopt;
     }
-#endif
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(wideCount));
+    bool converted = true;
+    for (int i = 0; i < wideCount; ++i) {
+        std::string value;
+        if (!wideToUtf8(wideArgs[i], value)) {
+            converted = false;
+            break;
+        }
+        args.push_back(std::move(value));
+    }
+    (void)LocalFree(wideArgs);
+    if (!converted) {
+        return std::nullopt;
+    }
+    return args;
+#else
     std::vector<std::string> values;
     values.reserve(static_cast<std::size_t>(argc));
     for (int i = 0; i < argc; ++i) {
         values.emplace_back(argv[i]);
     }
     return values;
+#endif
+}
+
+bool parseUnsignedDecimal(std::string_view text, std::uint64_t maximum, std::uint64_t& value) {
+    if (text.empty()) {
+        return false;
+    }
+    std::uint64_t parsed = 0;
+    for (const unsigned char character : text) {
+        if (character < '0' || character > '9') {
+            return false;
+        }
+        const auto digit = static_cast<std::uint64_t>(character - '0');
+        if (digit > maximum || parsed > (maximum - digit) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + digit;
+    }
+    value = parsed;
+    return true;
 }
 
 bool parseArgs(const std::vector<std::string>& values, Args& args) {
+    bool planSeen = false;
+    bool digestSeen = false;
+    bool rootSeen = false;
+    bool pidSeen = false;
+    bool waitSeen = false;
+    bool rollbackSeen = false;
     for (std::size_t i = 1; i < values.size(); ++i) {
         const auto& arg = values[i];
-        if (arg == "--plan" && i + 1 < values.size()) {
+        if (arg == "--plan" && i + 1 < values.size() && !planSeen) {
+            planSeen = true;
             args.planPath = autoupdater::util::pathFromUtf8(values[++i]);
-        } else if (arg == "--plan-sha256" && i + 1 < values.size()) {
+        } else if (arg == "--plan-sha256" && i + 1 < values.size() && !digestSeen) {
+            digestSeen = true;
             args.planDigest = values[++i];
-        } else if (arg == "--install-root" && i + 1 < values.size()) {
+        } else if (arg == "--install-root" && i + 1 < values.size() && !rootSeen) {
+            rootSeen = true;
             args.installRoot = autoupdater::util::pathFromUtf8(values[++i]);
-        } else if (arg == "--pid" && i + 1 < values.size()) {
-            args.pid = static_cast<std::uint64_t>(std::strtoull(values[++i].c_str(), nullptr, 10));
-        } else if (arg == "--wait" && i + 1 < values.size()) {
-            args.waitSeconds = std::atoi(values[++i].c_str());
-        } else if (arg == "--rollback") {
+        } else if (arg == "--pid" && i + 1 < values.size() && !pidSeen) {
+            pidSeen = true;
+            if (!parseUnsignedDecimal(values[++i], autoupdater::detail::maximumPlatformProcessId(), args.pid)) {
+                return false;
+            }
+        } else if (arg == "--wait" && i + 1 < values.size() && !waitSeen) {
+            waitSeen = true;
+            std::uint64_t seconds = 0;
+            const auto maximum =
+                static_cast<std::uint64_t>(autoupdater::detail::kMaximumProcessWaitTimeout.count());
+            if (!parseUnsignedDecimal(values[++i], maximum, seconds)) {
+                return false;
+            }
+            args.waitTimeout = std::chrono::seconds(static_cast<std::chrono::seconds::rep>(seconds));
+        } else if (arg == "--rollback" && !rollbackSeen) {
+            rollbackSeen = true;
             args.rollback = true;
         } else if (arg == "--help") {
             return false;
@@ -90,7 +154,7 @@ bool parseArgs(const std::vector<std::string>& values, Args& args) {
             return false;
         }
     }
-    return !args.planPath.empty() && !args.installRoot.empty() &&
+    return planSeen && digestSeen && rootSeen && !args.planPath.empty() && !args.installRoot.empty() &&
            autoupdater::util::isLowerHexSha256(args.planDigest);
 }
 
@@ -99,13 +163,13 @@ bool parseArgs(const std::vector<std::string>& values, Args& args) {
 int main(int argc, char** argv) {
     const auto values = commandLineArgs(argc, argv);
     Args args;
-    if (!parseArgs(values, args)) {
+    if (!values || !parseArgs(*values, args)) {
         std::cerr << "Usage: autoupdater_apply --plan <apply-plan.json> --plan-sha256 <digest> "
                      "--install-root <path> [--rollback] [--pid <pid>] [--wait <seconds>]\n";
         return 2;
     }
 
-    auto wait = autoupdater::updater::waitForProcessExit(args.pid, std::chrono::seconds(args.waitSeconds));
+    auto wait = autoupdater::updater::waitForProcessExit(args.pid, args.waitTimeout);
     if (!wait) {
         std::cerr << wait.error().message << "\n";
         return 3;

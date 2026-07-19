@@ -413,6 +413,18 @@ install/.autoupdater/journal/<transaction-id>.json
 
 The journal records each completed step so interrupted operations can be inspected and future recovery logic can resume cleanup or rollback.
 
+Updater command-line PID and wait values use strict unsigned decimal syntax.
+The PID must fit the native platform type and the wait is bounded to 24 hours.
+Windows process-open and wait failures are errors rather than evidence that the
+application exited.
+
+Process creation does not use a shell. Windows arguments follow the CRT
+backslash-and-quote rules and bind `CreateProcessW` to an explicit application
+path. POSIX launch prepares all C++ state before `fork()` and uses a
+close-on-exec status pipe so `setsid`, descriptor redirection, `chdir`, and
+`execv` failures are reported to the parent before launch is declared
+successful.
+
 ## 7. Update Flow
 
 ### 7.1 Check

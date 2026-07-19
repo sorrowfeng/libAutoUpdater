@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +24,7 @@ namespace {
 
 constexpr std::size_t kMaxPreHeaderBodyBytes = 64 * 1024;
 constexpr std::size_t kResponseReadBufferBytes = 64 * 1024;
+constexpr auto kRunLoopPollInterval = std::chrono::milliseconds(25);
 
 template <class T> class CfRef {
   public:
@@ -85,6 +89,214 @@ std::string streamError(CFReadStreamRef stream, const char* action) {
            std::to_string(error.error) + ")";
 }
 
+using SteadyClock = std::chrono::steady_clock;
+using Deadline = std::optional<SteadyClock::time_point>;
+
+Deadline deadlineAfter(SteadyClock::time_point started, std::chrono::milliseconds timeout) noexcept {
+    if (timeout.count() <= 0) {
+        return std::nullopt;
+    }
+
+    const auto maximumDelay = SteadyClock::time_point::max() - started;
+    const auto maximumMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(maximumDelay);
+    if (timeout >= maximumMilliseconds) {
+        return SteadyClock::time_point::max();
+    }
+    return started + std::chrono::duration_cast<SteadyClock::duration>(timeout);
+}
+
+// Each synchronous request pumps only its own value-unique run-loop mode. The
+// callback context points at this object, so the session is deliberately
+// non-movable and tears down the stream before the context can become invalid.
+class CfStreamSession final {
+  public:
+    CfStreamSession(CFReadStreamRef stream, const NetworkOptions& options, ErrorCode errorCode)
+        : stream_(stream), connectTimeout_(options.connectTimeout), transferTimeout_(options.transferTimeout),
+          errorCode_(errorCode), mode_(makeCfString("com.libAutoUpdater.CFNetwork." +
+                                                    std::to_string(reinterpret_cast<std::uintptr_t>(stream)))) {}
+
+    ~CfStreamSession() {
+        stop();
+    }
+
+    CfStreamSession(const CfStreamSession&) = delete;
+    CfStreamSession& operator=(const CfStreamSession&) = delete;
+    CfStreamSession(CfStreamSession&&) = delete;
+    CfStreamSession& operator=(CfStreamSession&&) = delete;
+
+    Result<void> start(CancellationToken& cancel) {
+        if (cancel.isCancelled()) {
+            return Result<void>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        }
+        if (!stream_ || !mode_) {
+            return Result<void>::fail({errorCode_, "Failed to initialize the CFNetwork run loop"});
+        }
+
+        CFStreamClientContext context{};
+        context.info = this;
+        constexpr CFOptionFlags events = kCFStreamEventOpenCompleted | kCFStreamEventHasBytesAvailable |
+                                         kCFStreamEventErrorOccurred | kCFStreamEventEndEncountered;
+        if (!CFReadStreamSetClient(stream_, events, &CfStreamSession::streamCallback, &context)) {
+            return Result<void>::fail({errorCode_, "Failed to install the CFNetwork stream callback"});
+        }
+        clientInstalled_ = true;
+
+        runLoop_ = CFRunLoopGetCurrent();
+        CFReadStreamScheduleWithRunLoop(stream_, runLoop_, mode_.get());
+        scheduled_ = true;
+
+        const auto started = SteadyClock::now();
+        connectDeadline_ = deadlineAfter(started, connectTimeout_);
+        transferDeadline_ = deadlineAfter(started, transferTimeout_);
+        openAttempted_ = true;
+        if (!CFReadStreamOpen(stream_)) {
+            const auto message = streamError(stream_, "CFReadStreamOpen");
+            stop();
+            if (cancel.isCancelled()) {
+                return Result<void>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+            }
+            return Result<void>::fail({errorCode_, message});
+        }
+        return Result<void>::ok();
+    }
+
+    Result<CFIndex> read(UInt8* buffer, CFIndex size, CancellationToken& cancel) {
+        if (!buffer || size <= 0) {
+            return Result<CFIndex>::fail({ErrorCode::InternalError, "Invalid CFNetwork read buffer"});
+        }
+
+        for (;;) {
+            auto active = check(cancel);
+            if (!active) {
+                return Result<CFIndex>::fail(active.error());
+            }
+
+            // CFReadStreamRead may block unless the stream first reports that
+            // bytes are available. No other thread reads from this stream.
+            if (CFReadStreamHasBytesAvailable(stream_)) {
+                connected_ = true;
+                const auto count = CFReadStreamRead(stream_, buffer, size);
+                if (count < 0) {
+                    if (cancel.isCancelled()) {
+                        return Result<CFIndex>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+                    }
+                    return Result<CFIndex>::fail({errorCode_, streamError(stream_, "CFReadStreamRead")});
+                }
+                return Result<CFIndex>::ok(count);
+            }
+
+            if ((pendingEvents_ & static_cast<CFOptionFlags>(kCFStreamEventEndEncountered)) != 0) {
+                return Result<CFIndex>::ok(0);
+            }
+
+            const auto wait = nextWaitDuration();
+            if (wait <= SteadyClock::duration::zero()) {
+                continue;
+            }
+            const auto seconds = std::chrono::duration<double>(wait).count();
+            const auto runResult = CFRunLoopRunInMode(mode_.get(), seconds, true);
+            if (runResult == kCFRunLoopRunFinished) {
+                auto activeAfterRun = check(cancel);
+                if (!activeAfterRun) {
+                    return Result<CFIndex>::fail(activeAfterRun.error());
+                }
+                return Result<CFIndex>::fail({errorCode_, "CFNetwork run loop ended before the response completed"});
+            }
+        }
+    }
+
+    Result<void> check(CancellationToken& cancel) {
+        updateConnectionState();
+        return checkActive(cancel);
+    }
+
+    void markConnected() noexcept {
+        connected_ = true;
+    }
+
+  private:
+    static void streamCallback(CFReadStreamRef, CFStreamEventType event, void* context) noexcept {
+        auto* session = static_cast<CfStreamSession*>(context);
+        if (session) {
+            session->pendingEvents_ |= static_cast<CFOptionFlags>(event);
+        }
+    }
+
+    void updateConnectionState() noexcept {
+        constexpr CFOptionFlags connectedEvents = kCFStreamEventOpenCompleted | kCFStreamEventHasBytesAvailable;
+        if ((pendingEvents_ & connectedEvents) != 0) {
+            connected_ = true;
+        }
+        pendingEvents_ &= ~connectedEvents;
+    }
+
+    Result<void> checkActive(CancellationToken& cancel) const {
+        if (cancel.isCancelled()) {
+            return Result<void>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        }
+        if ((pendingEvents_ & static_cast<CFOptionFlags>(kCFStreamEventErrorOccurred)) != 0) {
+            return Result<void>::fail({errorCode_, streamError(stream_, "CFReadStream")});
+        }
+
+        const auto now = SteadyClock::now();
+        if (!connected_ && connectDeadline_ && now >= *connectDeadline_) {
+            return Result<void>::fail({errorCode_, "CFNetwork connection timed out"});
+        }
+        if (transferDeadline_ && now >= *transferDeadline_) {
+            return Result<void>::fail({errorCode_, "CFNetwork transfer timed out"});
+        }
+        return Result<void>::ok();
+    }
+
+    SteadyClock::duration nextWaitDuration() const noexcept {
+        const auto now = SteadyClock::now();
+        auto wait = std::chrono::duration_cast<SteadyClock::duration>(kRunLoopPollInterval);
+        const auto shorten = [&](const Deadline& deadline) {
+            if (!deadline) {
+                return;
+            }
+            const auto remaining = *deadline - now;
+            if (remaining < wait) {
+                wait = remaining;
+            }
+        };
+        if (!connected_) {
+            shorten(connectDeadline_);
+        }
+        shorten(transferDeadline_);
+        return wait;
+    }
+
+    void stop() noexcept {
+        if (openAttempted_) {
+            CFReadStreamClose(stream_);
+            openAttempted_ = false;
+        }
+        if (scheduled_) {
+            CFReadStreamUnscheduleFromRunLoop(stream_, runLoop_, mode_.get());
+            scheduled_ = false;
+        }
+        if (clientInstalled_) {
+            CFReadStreamSetClient(stream_, kCFStreamEventNone, nullptr, nullptr);
+            clientInstalled_ = false;
+        }
+    }
+
+    CFReadStreamRef stream_ = nullptr;
+    std::chrono::milliseconds connectTimeout_{};
+    std::chrono::milliseconds transferTimeout_{};
+    ErrorCode errorCode_ = ErrorCode::NetworkError;
+    CfRef<CFStringRef> mode_;
+    CFRunLoopRef runLoop_ = nullptr;
+    Deadline connectDeadline_;
+    Deadline transferDeadline_;
+    CFOptionFlags pendingEvents_ = 0;
+    bool clientInstalled_ = false;
+    bool scheduled_ = false;
+    bool openAttempted_ = false;
+    bool connected_ = false;
+};
+
 bool isHttpUrl(const std::string& url) {
     const auto separator = url.find("://");
     if (separator == std::string::npos) {
@@ -135,7 +347,7 @@ void setHeader(CFHTTPMessageRef request, CFStringRef name, const std::string& va
     }
 }
 
-Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const NetworkOptions& options) {
+Result<CfRef<CFReadStreamRef>> createStream(const HttpRequest& request, const NetworkOptions& options) {
     auto stream = CfRef<CFReadStreamRef>(CFReadStreamCreateForHTTPRequest(kCFAllocatorDefault, request.message.get()));
     if (!stream) {
         return Result<CfRef<CFReadStreamRef>>::fail({ErrorCode::NetworkError, "Failed to create CFNetwork stream"});
@@ -156,10 +368,6 @@ Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const Netw
         }
     }
 
-    if (!CFReadStreamOpen(stream.get())) {
-        return Result<CfRef<CFReadStreamRef>>::fail(
-            {ErrorCode::NetworkError, streamError(stream.get(), "CFReadStreamOpen")});
-    }
     return Result<CfRef<CFReadStreamRef>>::ok(std::move(stream));
 }
 
@@ -281,17 +489,20 @@ struct ResponseStart {
     std::vector<char> bufferedBody;
 };
 
-Result<ResponseStart> waitForResponse(CFReadStreamRef stream, std::uint64_t maxBufferedBodyBytes,
-                                      ErrorCode readErrorCode, CancellationToken& cancel) {
+Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CfStreamSession& session,
+                                      std::uint64_t maxBufferedBodyBytes, ErrorCode readErrorCode,
+                                      CancellationToken& cancel) {
     ResponseStart start;
     std::array<UInt8, kResponseReadBufferBytes> buffer{};
 
     for (;;) {
-        if (cancel.isCancelled()) {
-            return Result<ResponseStart>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        auto active = session.check(cancel);
+        if (!active) {
+            return Result<ResponseStart>::fail(active.error());
         }
 
         if (auto headers = copyResponseHeaders(stream)) {
+            session.markConnected();
             start.headers = std::move(headers);
             return Result<ResponseStart>::ok(std::move(start));
         }
@@ -302,11 +513,17 @@ Result<ResponseStart> waitForResponse(CFReadStreamRef stream, std::uint64_t maxB
         if (remaining < requested) {
             requested = static_cast<std::size_t>(remaining + 1);
         }
-        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(requested));
-        if (count < 0) {
-            return Result<ResponseStart>::fail({readErrorCode, streamError(stream, "CFReadStreamRead")});
+        auto read = session.read(buffer.data(), static_cast<CFIndex>(requested), cancel);
+        if (!read) {
+            return Result<ResponseStart>::fail(read.error());
         }
+        const CFIndex count = read.value();
         if (count == 0) {
+            if (auto headers = copyResponseHeaders(stream)) {
+                session.markConnected();
+                start.headers = std::move(headers);
+                return Result<ResponseStart>::ok(std::move(start));
+            }
             return Result<ResponseStart>::fail({readErrorCode, "No HTTP response headers received"});
         }
 
@@ -340,7 +557,7 @@ struct ReadResponseResult {
     std::uint64_t actualBytes = 0;
 };
 
-Result<ReadResponseResult> readResponse(CFReadStreamRef stream, const NetworkResponseInfo& response,
+Result<ReadResponseResult> readResponse(CfStreamSession& session, const NetworkResponseInfo& response,
                                         std::uint64_t maxResponseBytes, std::uint64_t initialBytes,
                                         std::uint64_t totalBytes, ErrorCode readErrorCode, CancellationToken& cancel,
                                         ProgressCallback progress, const std::string& currentFile, IRootedFile* output,
@@ -406,10 +623,11 @@ Result<ReadResponseResult> readResponse(CFReadStreamRef stream, const NetworkRes
         if (remaining < requested) {
             requested = static_cast<std::size_t>(remaining + 1);
         }
-        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(requested));
-        if (count < 0) {
-            return Result<ReadResponseResult>::fail({readErrorCode, streamError(stream, "CFReadStreamRead")});
+        auto read = session.read(buffer.data(), static_cast<CFIndex>(requested), cancel);
+        if (!read) {
+            return Result<ReadResponseResult>::fail(read.error());
         }
+        const CFIndex count = read.value();
         if (count == 0) {
             break;
         }
@@ -455,12 +673,18 @@ class CfNetworkClient final : public INetworkClient {
                 return Result<TextResponse>::fail(request.error());
             }
             setHeader(request.value().message.get(), CFSTR("Accept-Encoding"), "identity");
-            auto stream = openStream(request.value(), options);
+            auto stream = createStream(request.value(), options);
             if (!stream) {
                 return Result<TextResponse>::fail(stream.error());
             }
+            CfStreamSession session(stream.value().get(), options, ErrorCode::NetworkError);
+            auto started = session.start(cancel);
+            if (!started) {
+                return Result<TextResponse>::fail(started.error());
+            }
             const auto preHeaderLimit = std::min<std::uint64_t>(maxResponseBytes, kMaxPreHeaderBodyBytes);
-            auto response = waitForResponse(stream.value().get(), preHeaderLimit, ErrorCode::NetworkError, cancel);
+            auto response =
+                waitForResponse(stream.value().get(), session, preHeaderLimit, ErrorCode::NetworkError, cancel);
             if (!response) {
                 return Result<TextResponse>::fail(response.error());
             }
@@ -472,7 +696,7 @@ class CfNetworkClient final : public INetworkClient {
             result.response = std::move(info.value());
             if (result.response.statusCode == 200) {
                 auto bytes =
-                    readResponse(stream.value().get(), result.response, maxResponseBytes, 0, maxResponseBytes,
+                    readResponse(session, result.response, maxResponseBytes, 0, maxResponseBytes,
                                  ErrorCode::NetworkError, cancel, {}, {}, nullptr, response.value().bufferedBody);
                 if (!bytes) {
                     return Result<TextResponse>::fail(bytes.error());
@@ -507,12 +731,18 @@ class CfNetworkClient final : public INetworkClient {
             setHeader(request.value().message.get(), CFSTR("Accept-Encoding"), "identity");
             setResumeHeaders(request.value().message.get(), options, resume);
 
-            auto stream = openStream(request.value(), options);
+            auto stream = createStream(request.value(), options);
             if (!stream) {
                 return Result<DownloadResult>::fail(stream.error());
             }
+            CfStreamSession session(stream.value().get(), options, ErrorCode::DownloadFailed);
+            auto started = session.start(cancel);
+            if (!started) {
+                return Result<DownloadResult>::fail(started.error());
+            }
             const auto preHeaderLimit = std::min<std::uint64_t>(remaining.value(), kMaxPreHeaderBodyBytes);
-            auto response = waitForResponse(stream.value().get(), preHeaderLimit, ErrorCode::DownloadFailed, cancel);
+            auto response =
+                waitForResponse(stream.value().get(), session, preHeaderLimit, ErrorCode::DownloadFailed, cancel);
             if (!response) {
                 return Result<DownloadResult>::fail(response.error());
             }
@@ -524,9 +754,9 @@ class CfNetworkClient final : public INetworkClient {
             const int writableStatus = appending ? 206 : 200;
             std::uint64_t responseBytes = 0;
             if (info.value().statusCode == writableStatus) {
-                auto bytes = readResponse(stream.value().get(), info.value(), remaining.value(), initialBytes,
-                                          maxTotalBytes, ErrorCode::DownloadFailed, cancel, std::move(progress), {},
-                                          &target, response.value().bufferedBody);
+                auto bytes = readResponse(session, info.value(), remaining.value(), initialBytes, maxTotalBytes,
+                                          ErrorCode::DownloadFailed, cancel, std::move(progress), {}, &target,
+                                          response.value().bufferedBody);
                 if (!bytes) {
                     return Result<DownloadResult>::fail(bytes.error());
                 }
