@@ -2,9 +2,13 @@
 
 #include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Sha256.h"
 
-#include <cmath>
+#include <algorithm>
+#include <initializer_list>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <sstream>
 
 namespace autoupdater {
@@ -21,14 +25,76 @@ Result<std::string> requiredString(const util::Json& object, const std::string& 
     return Result<std::string>::ok(value->asString());
 }
 
-std::string optionalString(const util::Json& object, const std::string& key) {
+Result<std::string> optionalString(const util::Json& object, const std::string& key) {
     const auto* value = object.get(key);
-    return value && value->isString() ? value->asString() : std::string();
+    if (!value) {
+        return Result<std::string>::ok({});
+    }
+    if (!value->isString()) {
+        return Result<std::string>::fail(
+            {ErrorCode::ManifestParseFailed, "Optional field must be a string: " + key});
+    }
+    return Result<std::string>::ok(value->asString());
 }
 
-bool optionalBool(const util::Json& object, const std::string& key, bool fallback) {
+Result<bool> optionalBool(const util::Json& object, const std::string& key, bool fallback) {
     const auto* value = object.get(key);
-    return value && value->isBool() ? value->asBool() : fallback;
+    if (!value) {
+        return Result<bool>::ok(fallback);
+    }
+    if (!value->isBool()) {
+        return Result<bool>::fail(
+            {ErrorCode::ManifestParseFailed, "Optional field must be a boolean: " + key});
+    }
+    return Result<bool>::ok(value->asBool());
+}
+
+Result<void> requireOnlyKeys(const util::Json& object, std::initializer_list<const char*> allowedKeys,
+                             const std::string& context) {
+    for (const auto& entry : object.asObject()) {
+        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
+            return entry.first == key;
+        });
+        if (!allowed) {
+            return Result<void>::fail(
+                {ErrorCode::ManifestParseFailed, context + " contains unknown field: " + entry.first});
+        }
+    }
+    return Result<void>::ok();
+}
+
+bool isNonNegativeInteger(const util::Json& value) {
+    return value.isUnsignedInteger() || (value.isSignedInteger() && value.asInt64(-1) >= 0);
+}
+
+std::string portableSourceKey(std::string path) {
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char character) {
+        if (character == '/') {
+            return '\0';
+        }
+        if (character >= 'A' && character <= 'Z') {
+            return static_cast<char>(character - 'A' + 'a');
+        }
+        return static_cast<char>(character);
+    });
+    return path;
+}
+
+Result<void>
+validateSourceTopology(const std::map<std::string, std::pair<std::string, std::uint64_t>>& sourceEvidence) {
+    if (sourceEvidence.empty()) {
+        return Result<void>::ok();
+    }
+    auto previous = sourceEvidence.begin();
+    for (auto current = std::next(previous); current != sourceEvidence.end(); ++current, ++previous) {
+        if (current->first.size() > previous->first.size() &&
+            current->first.compare(0, previous->first.size(), previous->first) == 0 &&
+            current->first[previous->first.size()] == '\0') {
+            return Result<void>::fail(
+                {ErrorCode::ManifestParseFailed, "Manifest source paths have an ancestor/descendant conflict"});
+        }
+    }
+    return Result<void>::ok();
 }
 
 Result<std::optional<Version>> optionalVersion(const util::Json& object, const std::string& key) {
@@ -55,17 +121,10 @@ void addString(util::Json::Object& object, const std::string& key, const std::st
 
 Result<std::uint64_t> artifactSize(const util::Json& object, const ResourceLimits& limits) {
     const auto* value = object.get("size");
-    if (!value || !value->isNumber()) {
+    if (!value || !isNonNegativeInteger(*value)) {
         return Result<std::uint64_t>::fail({ErrorCode::ManifestParseFailed, "file size is required"});
     }
-    const double number = value->asNumber();
-    constexpr double kLargestExactlyRepresentableInteger = 9007199254740991.0;
-    if (!std::isfinite(number) || number < 0 || number > kLargestExactlyRepresentableInteger ||
-        std::floor(number) != number) {
-        return Result<std::uint64_t>::fail(
-            {ErrorCode::ManifestParseFailed, "file size must be a non-negative exact integer"});
-    }
-    const auto parsed = static_cast<std::uint64_t>(number);
+    const auto parsed = value->asUInt64();
     if (parsed > limits.maxArtifactBytes) {
         return Result<std::uint64_t>::fail(
             {ErrorCode::ResourceLimitExceeded, "Artifact exceeds the per-file byte limit"});
@@ -99,18 +158,27 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
         if (!json.value().isObject()) {
             return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "Manifest root must be object"});
         }
-
         Manifest manifest;
         std::uint64_t totalArtifactBytes = 0;
         std::vector<std::string> managedTargets;
+        std::map<std::string, std::pair<std::string, std::uint64_t>> sourceEvidence;
         const auto* schema = json.value().get("schemaVersion");
-        if (!schema || !schema->isNumber()) {
+        if (!schema || !isNonNegativeInteger(*schema)) {
             return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "schemaVersion is required"});
         }
-        if (schema->asInt() != kSupportedManifestSchema) {
+        if (schema->asUInt64() != static_cast<std::uint64_t>(kSupportedManifestSchema)) {
             return Result<Manifest>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported manifest schemaVersion"});
         }
         manifest.schemaVersion = kSupportedManifestSchema;
+        auto rootKeys = requireOnlyKeys(
+            json.value(),
+            {"schemaVersion", "appId", "channel", "platform", "arch", "version", "releaseId",
+             "releaseDate", "publishedAt", "expiresAt", "minVersion", "minClientVersion", "mandatory",
+             "allowDowngrade", "notes", "baseUrl", "files", "remove"},
+            "Manifest");
+        if (!rootKeys) {
+            return Result<Manifest>::fail(rootKeys.error());
+        }
 
         auto versionText = requiredString(json.value(), "version");
         if (!versionText) {
@@ -122,18 +190,54 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
         }
         manifest.version = version.value();
 
-        manifest.appId = optionalString(json.value(), "appId");
-        manifest.channel = optionalString(json.value(), "channel");
-        manifest.platform = optionalString(json.value(), "platform");
-        manifest.arch = optionalString(json.value(), "arch");
-        manifest.releaseId = optionalString(json.value(), "releaseId");
-        manifest.releaseDate = optionalString(json.value(), "releaseDate");
-        manifest.publishedAt = optionalString(json.value(), "publishedAt");
-        manifest.expiresAt = optionalString(json.value(), "expiresAt");
-        manifest.notes = optionalString(json.value(), "notes");
-        manifest.baseUrl = optionalString(json.value(), "baseUrl");
-        manifest.mandatory = optionalBool(json.value(), "mandatory", false);
-        manifest.allowDowngrade = optionalBool(json.value(), "allowDowngrade", false);
+        auto appId = optionalString(json.value(), "appId");
+        auto channel = optionalString(json.value(), "channel");
+        auto platform = optionalString(json.value(), "platform");
+        auto arch = optionalString(json.value(), "arch");
+        auto releaseId = optionalString(json.value(), "releaseId");
+        auto releaseDate = optionalString(json.value(), "releaseDate");
+        auto publishedAt = optionalString(json.value(), "publishedAt");
+        auto expiresAt = optionalString(json.value(), "expiresAt");
+        auto notes = optionalString(json.value(), "notes");
+        auto baseUrl = optionalString(json.value(), "baseUrl");
+        auto mandatory = optionalBool(json.value(), "mandatory", false);
+        auto allowDowngrade = optionalBool(json.value(), "allowDowngrade", false);
+        if (!appId)
+            return Result<Manifest>::fail(appId.error());
+        if (!channel)
+            return Result<Manifest>::fail(channel.error());
+        if (!platform)
+            return Result<Manifest>::fail(platform.error());
+        if (!arch)
+            return Result<Manifest>::fail(arch.error());
+        if (!releaseId)
+            return Result<Manifest>::fail(releaseId.error());
+        if (!releaseDate)
+            return Result<Manifest>::fail(releaseDate.error());
+        if (!publishedAt)
+            return Result<Manifest>::fail(publishedAt.error());
+        if (!expiresAt)
+            return Result<Manifest>::fail(expiresAt.error());
+        if (!notes)
+            return Result<Manifest>::fail(notes.error());
+        if (!baseUrl)
+            return Result<Manifest>::fail(baseUrl.error());
+        if (!mandatory)
+            return Result<Manifest>::fail(mandatory.error());
+        if (!allowDowngrade)
+            return Result<Manifest>::fail(allowDowngrade.error());
+        manifest.appId = std::move(appId.value());
+        manifest.channel = std::move(channel.value());
+        manifest.platform = std::move(platform.value());
+        manifest.arch = std::move(arch.value());
+        manifest.releaseId = std::move(releaseId.value());
+        manifest.releaseDate = std::move(releaseDate.value());
+        manifest.publishedAt = std::move(publishedAt.value());
+        manifest.expiresAt = std::move(expiresAt.value());
+        manifest.notes = std::move(notes.value());
+        manifest.baseUrl = std::move(baseUrl.value());
+        manifest.mandatory = mandatory.value();
+        manifest.allowDowngrade = allowDowngrade.value();
 
         auto minVersion = optionalVersion(json.value(), "minVersion");
         if (!minVersion) {
@@ -156,6 +260,10 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
                 if (!item.isObject()) {
                     return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "files item must be object"});
                 }
+                auto fileKeys = requireOnlyKeys(item, {"path", "localPath", "sha256", "size"}, "Manifest file");
+                if (!fileKeys) {
+                    return Result<Manifest>::fail(fileKeys.error());
+                }
                 ManifestFile file;
                 auto path = requiredString(item, "path");
                 auto sha = requiredString(item, "sha256");
@@ -166,8 +274,16 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
                     return Result<Manifest>::fail(sha.error());
                 }
                 file.path = path.value();
-                file.localPath = optionalString(item, "localPath");
+                auto localPath = optionalString(item, "localPath");
+                if (!localPath) {
+                    return Result<Manifest>::fail(localPath.error());
+                }
+                file.localPath = std::move(localPath.value());
                 file.sha256 = sha.value();
+                if (!util::isLowerHexSha256(file.sha256)) {
+                    return Result<Manifest>::fail(
+                        {ErrorCode::ManifestParseFailed, "file sha256 must be a lowercase SHA-256 digest"});
+                }
                 auto size = artifactSize(item, limits);
                 if (!size) {
                     return Result<Manifest>::fail(size.error());
@@ -190,6 +306,16 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
                     if (!validLocalPath) {
                         return Result<Manifest>::fail(validLocalPath.error());
                     }
+                }
+                const auto sourceKey = portableSourceKey(file.path);
+                const auto existingEvidence = sourceEvidence.find(sourceKey);
+                if (existingEvidence == sourceEvidence.end()) {
+                    sourceEvidence.emplace(sourceKey, std::make_pair(file.sha256, file.size));
+                } else if (existingEvidence->second.first != file.sha256 ||
+                           existingEvidence->second.second != file.size) {
+                    return Result<Manifest>::fail(
+                        {ErrorCode::ManifestParseFailed,
+                         "Shared manifest source paths must use identical size and SHA-256 evidence"});
                 }
                 managedTargets.push_back(file.localPath.empty() ? file.path : file.localPath);
                 manifest.files.push_back(std::move(file));
@@ -214,6 +340,11 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
             }
         }
 
+        auto validSources = validateSourceTopology(sourceEvidence);
+        if (!validSources) {
+            return Result<Manifest>::fail(validSources.error());
+        }
+
         auto validTargets = util::validateManagedTargetPaths(managedTargets);
         if (!validTargets) {
             return Result<Manifest>::fail(validTargets.error());
@@ -227,7 +358,7 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
 
 std::string Manifest::toJson() const {
     util::Json::Object root;
-    root.emplace("schemaVersion", static_cast<double>(schemaVersion));
+    root.emplace("schemaVersion", schemaVersion);
     addString(root, "appId", appId);
     addString(root, "channel", channel);
     addString(root, "platform", platform);
@@ -256,7 +387,7 @@ std::string Manifest::toJson() const {
             item.emplace("localPath", file.localPath);
         }
         item.emplace("sha256", file.sha256);
-        item.emplace("size", static_cast<double>(file.size));
+        item.emplace("size", file.size);
         fileArray.emplace_back(std::move(item));
     }
     root.emplace("files", std::move(fileArray));
@@ -287,20 +418,33 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const Re
         if (!json.value().isObject()) {
             return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "Index manifest root must be object"});
         }
-
         IndexManifest manifest;
         const auto* schema = json.value().get("schemaVersion");
-        if (!schema || !schema->isNumber()) {
+        if (!schema || !isNonNegativeInteger(*schema)) {
             return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "schemaVersion is required"});
         }
-        if (schema->asInt() != kSupportedManifestSchema) {
+        if (schema->asUInt64() != static_cast<std::uint64_t>(kSupportedManifestSchema)) {
             return Result<IndexManifest>::fail(
                 {ErrorCode::UnsupportedManifestSchema, "Unsupported index manifest schemaVersion"});
         }
         manifest.schemaVersion = kSupportedManifestSchema;
-        manifest.appId = optionalString(json.value(), "appId");
-        manifest.channel = optionalString(json.value(), "channel");
-        manifest.generatedAt = optionalString(json.value(), "generatedAt");
+        auto rootKeys = requireOnlyKeys(json.value(), {"schemaVersion", "appId", "channel", "generatedAt", "targets"},
+                                        "Index manifest");
+        if (!rootKeys) {
+            return Result<IndexManifest>::fail(rootKeys.error());
+        }
+        auto appId = optionalString(json.value(), "appId");
+        auto channel = optionalString(json.value(), "channel");
+        auto generatedAt = optionalString(json.value(), "generatedAt");
+        if (!appId)
+            return Result<IndexManifest>::fail(appId.error());
+        if (!channel)
+            return Result<IndexManifest>::fail(channel.error());
+        if (!generatedAt)
+            return Result<IndexManifest>::fail(generatedAt.error());
+        manifest.appId = std::move(appId.value());
+        manifest.channel = std::move(channel.value());
+        manifest.generatedAt = std::move(generatedAt.value());
 
         const auto* targets = json.value().get("targets");
         if (!targets || !targets->isArray()) {
@@ -310,9 +454,19 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const Re
             if (!item.isObject()) {
                 return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "target must be object"});
             }
+            auto targetKeys = requireOnlyKeys(item, {"platform", "arch", "manifestUrl"}, "Index target");
+            if (!targetKeys) {
+                return Result<IndexManifest>::fail(targetKeys.error());
+            }
             IndexTarget target;
-            target.platform = optionalString(item, "platform");
-            target.arch = optionalString(item, "arch");
+            auto platform = optionalString(item, "platform");
+            auto arch = optionalString(item, "arch");
+            if (!platform)
+                return Result<IndexManifest>::fail(platform.error());
+            if (!arch)
+                return Result<IndexManifest>::fail(arch.error());
+            target.platform = std::move(platform.value());
+            target.arch = std::move(arch.value());
             auto url = requiredString(item, "manifestUrl");
             if (!url) {
                 return Result<IndexManifest>::fail(url.error());

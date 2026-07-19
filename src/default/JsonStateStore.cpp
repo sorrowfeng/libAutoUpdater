@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -24,8 +23,7 @@ namespace autoupdater {
 
 namespace {
 
-constexpr double kStateSchemaVersion = 1.0;
-constexpr double kLargestExactlyRepresentableInteger = 9007199254740991.0;
+constexpr std::uint64_t kStateSchemaVersion = 1;
 constexpr auto kLockRetryDelay = std::chrono::milliseconds(10);
 constexpr std::size_t kLockAttempts = 500;
 
@@ -77,16 +75,17 @@ Result<void> requireOnlyKeys(const util::Json::Object& object,
     return Result<void>::ok();
 }
 
+bool containsControlCharacter(const std::string& value) {
+    return std::any_of(value.begin(), value.end(), [](unsigned char character) {
+        return character < 0x20 || character == 0x7f;
+    });
+}
+
 Result<std::uint64_t> parseOffset(const util::Json& value) {
-    if (!value.isNumber()) {
+    if (!value.isUnsignedInteger()) {
         return Result<std::uint64_t>::fail(stateError("Download resume offset must be an integer"));
     }
-    const auto number = value.asNumber();
-    if (!std::isfinite(number) || number < 0 || number > kLargestExactlyRepresentableInteger ||
-        std::floor(number) != number) {
-        return Result<std::uint64_t>::fail(stateError("Download resume offset is invalid"));
-    }
-    return Result<std::uint64_t>::ok(static_cast<std::uint64_t>(number));
+    return Result<std::uint64_t>::ok(value.asUInt64());
 }
 
 Result<PendingUpdate> parsePendingUpdate(const util::Json& value, bool allowMissingLegacyDigest = false) {
@@ -142,6 +141,9 @@ Result<PendingUpdate> parsePendingUpdate(const util::Json& value, bool allowMiss
     if (backupDirText.value().empty() || applyPlanPathText.value().empty()) {
         return Result<PendingUpdate>::fail(stateError("Pending update paths must not be empty"));
     }
+    if (containsControlCharacter(backupDirText.value()) || containsControlCharacter(applyPlanPathText.value())) {
+        return Result<PendingUpdate>::fail(stateError("Pending update paths contain control characters"));
+    }
     auto backupDir = util::pathFromUtf8(backupDirText.value());
     auto applyPlanPath = util::pathFromUtf8(applyPlanPathText.value());
     if (backupDir.empty() || applyPlanPath.empty()) {
@@ -168,17 +170,16 @@ Result<PendingUpdate> parsePendingUpdate(const util::Json& value, bool allowMiss
 }
 
 Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& limits) {
+    const auto schema = root.find("schemaVersion");
+    if (schema != root.end() &&
+        (!schema->second.isUnsignedInteger() || schema->second.asUInt64() != kStateSchemaVersion)) {
+        return Result<void>::fail(stateError("State schemaVersion is unsupported"));
+    }
     auto keys = requireOnlyKeys(root, {"schemaVersion", "lastAcceptedVersion", "lastAcceptedReleaseId",
                                        "pendingUpdate", "downloadResume"},
                                 "State root");
     if (!keys) {
         return keys;
-    }
-
-    const auto schema = root.find("schemaVersion");
-    if (schema != root.end() && (!schema->second.isNumber() || !std::isfinite(schema->second.asNumber()) ||
-                                 schema->second.asNumber() != kStateSchemaVersion)) {
-        return Result<void>::fail(stateError("State schemaVersion is unsupported"));
     }
 
     const auto acceptedVersion = root.find("lastAcceptedVersion");
@@ -213,7 +214,7 @@ Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& 
             return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
         }
         for (const auto& entry : downloads->second.asObject()) {
-            if (entry.first.empty() || !entry.second.isObject()) {
+            if (entry.first.empty() || containsControlCharacter(entry.first) || !entry.second.isObject()) {
                 return Result<void>::fail(stateError("Download resume entries must have a non-empty key and object"));
             }
             const auto& record = entry.second.asObject();
@@ -241,6 +242,10 @@ Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& 
             }
             if (!util::isLowerHexSha256(sha256->second.asString())) {
                 return Result<void>::fail(stateError("Download resume SHA-256 is invalid"));
+            }
+            if (containsControlCharacter(etag->second.asString()) ||
+                containsControlCharacter(lastModified->second.asString())) {
+                return Result<void>::fail(stateError("Download resume validators contain control characters"));
             }
         }
     }
@@ -558,11 +563,14 @@ class JsonStateStore final : public IStateStore {
 
     Result<void> saveDownloadResume(const DownloadResumeState& resume) noexcept override {
         try {
-            if (resume.key.empty() || !util::isLowerHexSha256(resume.sha256)) {
+            if (resume.key.empty() || containsControlCharacter(resume.key) ||
+                !util::isLowerHexSha256(resume.sha256)) {
                 return Result<void>::fail(stateError("Download resume key or SHA-256 is invalid"));
             }
-            if (resume.offset > limits_.maxArtifactBytes ||
-                resume.offset > static_cast<std::uint64_t>(kLargestExactlyRepresentableInteger)) {
+            if (containsControlCharacter(resume.etag) || containsControlCharacter(resume.lastModified)) {
+                return Result<void>::fail(stateError("Download resume validators contain control characters"));
+            }
+            if (resume.offset > limits_.maxArtifactBytes) {
                 return Result<void>::fail(
                     {ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
             }
@@ -580,7 +588,7 @@ class JsonStateStore final : public IStateStore {
                 return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
             }
             util::Json::Object record;
-            record.emplace("offset", static_cast<double>(resume.offset));
+            record.emplace("offset", resume.offset);
             record.emplace("etag", resume.etag);
             record.emplace("lastModified", resume.lastModified);
             record.emplace("sha256", resume.sha256);

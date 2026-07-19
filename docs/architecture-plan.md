@@ -333,13 +333,13 @@ Example:
   "files": [
     {
       "path": "bin/MyApp.exe",
-      "sha256": "9b3f...",
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
       "size": 18432000
     },
     {
       "path": "resources/app.dat",
       "localPath": "resources/app.dat",
-      "sha256": "1a2b...",
+      "sha256": "1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b",
       "size": 7340032
     }
   ],
@@ -349,7 +349,34 @@ Example:
 }
 ```
 
-### 5.3 Path Rules
+### 5.3 JSON Contract
+
+All updater-controlled JSON documents use a strict RFC 8259 contract. Parsers
+reject duplicate object keys, invalid UTF-8, unescaped control characters,
+invalid Unicode surrogate pairs, non-finite numbers, and non-JSON whitespace.
+Known schema versions reject unknown fields instead of silently discarding
+them. Integer fields must be JSON integers in their declared unsigned range;
+floating-point spellings such as `1.0` and `1e0` are not accepted as integers.
+The versioned journal v2 schema is the explicit compatibility exception: its
+counter fields are canonical unsigned decimal strings, and its parser rejects
+signs, leading zeroes, and out-of-range values. SHA-256 fields are exactly 64
+lowercase hexadecimal characters. Producers use the same contract and preserve
+64-bit integers without converting through IEEE-754 `double`.
+Version fields use ASCII SemVer identifiers (`0-9A-Za-z-`); prerelease numeric
+identifiers reject leading zeroes, while build metadata follows SemVer and may
+contain them. Core components are limited to the library's signed 32-bit range.
+
+Changing a fixed schema's fields or meanings requires a schema-version change
+and an explicit compatibility parser. This rule also applies to state,
+apply-plan, receipt, and journal records.
+
+The C++ parser and repository maintenance tools share the byte-level
+conformance corpus in `tests/json_conformance_corpus.txt`. Any additional JSON
+consumer, including an external signing service, must run the same corpus (or
+an equivalent cross-parser compatibility check) before it is trusted to
+interpret signed updater metadata.
+
+### 5.4 Path Rules
 
 All manifest paths must satisfy:
 
@@ -382,7 +409,7 @@ Example:
   "fromVersion": "1.3.0",
   "toVersion": "1.4.0",
   "releaseId": "1.4.0+20260601.1",
-  "manifestSha256": "abc...",
+  "manifestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "installDir": "C:/Program Files/MyApp",
   "stagingDir": "C:/Program Files/MyApp/.autoupdater/staging/1.4.0",
   "backupDir": "C:/Program Files/MyApp/.autoupdater/backup/1.3.0-to-1.4.0",
@@ -394,7 +421,7 @@ Example:
       "type": "replace",
       "source": "bin/MyApp.exe",
       "target": "bin/MyApp.exe",
-      "sha256": "9b3f...",
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
       "size": 18432000
     },
     {

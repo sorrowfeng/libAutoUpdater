@@ -100,7 +100,7 @@ PublicRollbackScenario completePublicRollbackSource(const std::filesystem::path&
     scenario.forwardPlan.fromVersion = "1.0.0";
     scenario.forwardPlan.toVersion = "2.0.0";
     scenario.forwardPlan.releaseId = "release-2";
-    scenario.forwardPlan.manifestSha256 = "forward-manifest-digest";
+    scenario.forwardPlan.manifestSha256 = std::string(64, 'd');
     scenario.forwardPlan.installDir = scenario.installDir;
     scenario.forwardPlan.stagingDir = scenario.stagingDir;
     scenario.forwardPlan.backupDir = scenario.forwardBackupDir;
@@ -172,7 +172,7 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     plan.stagingDir = root / "staging";
     plan.backupDir = root / "backup";
     plan.toVersion = "2.0.0";
-    plan.manifestSha256 = "manifest-digest";
+    plan.manifestSha256 = std::string(64, 'd');
 
     auto reservedTargetPlan = plan;
     reservedTargetPlan.operations.push_back(
@@ -220,7 +220,7 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     const auto absoluteJournal = root / "absolute-journal.json";
     writeFile(absoluteJournal, "sentinel");
     plan.releaseId = (root / "absolute-journal").string();
-    plan.toVersion = "2.0.0\"\nwith-control";
+    plan.toVersion = "2.0.0";
     result = autoupdater::updater::executeApplyPlan(plan);
     LAU_REQUIRE(result);
     LAU_REQUIRE(readFile(absoluteJournal) == "sentinel");
@@ -312,7 +312,7 @@ void testApplyExecutorRollsBackCurrentFailedOperation() {
     plan.releaseId = "test";
     plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/a.txt", "bin/a.txt", hashA.value(), 5});
     plan.operations.push_back(
-        {autoupdater::ApplyOperationType::Replace, "bin/b.txt", "bin/b.txt", "not-the-real-hash", 5});
+        {autoupdater::ApplyOperationType::Replace, "bin/b.txt", "bin/b.txt", std::string(64, '0'), 5});
 
     auto result = autoupdater::updater::executeApplyPlan(plan);
     LAU_REQUIRE(!result);
@@ -688,8 +688,8 @@ void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly() {
 
     const std::vector<std::vector<autoupdater::ApplyOperation>> conflictingOperations = {
         {
-            {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", "hash", 4},
-            {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", "hash", 4},
+            {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", std::string(64, 'a'), 4},
+            {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", std::string(64, 'a'), 4},
         },
         {
             {autoupdater::ApplyOperationType::Remove, "", "Bin/App.exe", "", 0},
@@ -700,7 +700,7 @@ void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly() {
             {autoupdater::ApplyOperationType::Remove, "", "obsolete.dll", "", 0},
         },
         {
-            {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", "hash", 4},
+            {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", std::string(64, 'a'), 4},
             {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
         },
         {

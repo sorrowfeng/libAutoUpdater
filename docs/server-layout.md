@@ -25,11 +25,13 @@ Manifest:
 
 ```json
 {
+  "schemaVersion": 1,
+  "version": "1.1.0",
   "baseUrl": "https://example.com/updates/releases/1.1.0/windows-x64/",
   "files": [
     {
       "path": "bin/MyApp.exe",
-      "sha256": "...",
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
       "size": 123
     }
   ]
@@ -58,6 +60,8 @@ Manifest:
 
 ```json
 {
+  "schemaVersion": 1,
+  "version": "1.1.0",
   "baseUrl": "https://example.com/updates/",
   "files": [
     {

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cctype>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -18,7 +19,7 @@ namespace autoupdater::updater {
 
 namespace {
 
-constexpr int kJournalSchemaVersion = 2;
+constexpr std::uint64_t kJournalSchemaVersion = 2;
 constexpr std::size_t kReadChunkBytes = 64 * 1024;
 
 Error journalError(const std::string& message) {
@@ -58,10 +59,25 @@ Result<util::Json> parseObject(const std::string& text, const std::string& descr
         return Result<util::Json>::fail(journalError(description + " must be a JSON object"));
     }
     const auto* schema = parsed.value().get("schemaVersion");
-    if (!schema || !schema->isNumber() || schema->asNumber() != static_cast<double>(kJournalSchemaVersion)) {
+    if (!schema || !schema->isUnsignedInteger() || schema->asUInt64() != kJournalSchemaVersion) {
         return Result<util::Json>::fail(journalError("Unsupported " + description + " schema version"));
     }
     return parsed;
+}
+
+Result<void> requireOnlyKeys(const util::Json::Object& object,
+                             std::initializer_list<const char*> allowedKeys,
+                             const std::string& description) {
+    for (const auto& entry : object) {
+        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
+            return entry.first == key;
+        });
+        if (!allowed) {
+            return Result<void>::fail(
+                journalError(description + " contains unknown field '" + entry.first + "'"));
+        }
+    }
+    return Result<void>::ok();
 }
 
 Result<std::string> requiredString(const util::Json& object, const std::string& key) {
@@ -87,6 +103,10 @@ Result<std::uint64_t> parseDecimal(const util::Json& object, const std::string& 
     }
     if (text.value().empty()) {
         return Result<std::uint64_t>::fail(journalError("Apply journal integer field is empty: " + key));
+    }
+    if (text.value().size() > 1 && text.value().front() == '0') {
+        return Result<std::uint64_t>::fail(
+            journalError("Apply journal integer field is not canonical: " + key));
     }
     std::uint64_t result = 0;
     for (const unsigned char character : text.value()) {
@@ -114,6 +134,10 @@ Result<JournalError> errorFromJson(const util::Json& object, const std::string& 
     if (!value || !value->isObject()) {
         return Result<JournalError>::fail(journalError("Apply journal error field is missing: " + key));
     }
+    auto keys = requireOnlyKeys(value->asObject(), {"code", "message"}, "Apply journal error field " + key);
+    if (!keys) {
+        return Result<JournalError>::fail(keys.error());
+    }
     auto code = requiredString(*value, "code");
     auto message = requiredString(*value, "message");
     if (!code) {
@@ -121,6 +145,9 @@ Result<JournalError> errorFromJson(const util::Json& object, const std::string& 
     }
     if (!message) {
         return Result<JournalError>::fail(message.error());
+    }
+    if (code.value().empty() != message.value().empty()) {
+        return Result<JournalError>::fail(journalError("Apply journal error field is incomplete: " + key));
     }
     return Result<JournalError>::ok({code.value(), message.value()});
 }
@@ -208,6 +235,11 @@ Result<void> validateOperationRecord(const ApplyJournalOperation& operation) {
     if (operation.intent != "replace" && operation.intent != "remove") {
         return Result<void>::fail(journalError("Invalid apply journal operation intent"));
     }
+    if (journalBackupStateName(operation.backupState) == "invalid" ||
+        journalApplyStateName(operation.applyState) == "invalid" ||
+        journalRollbackStateName(operation.rollbackState) == "invalid") {
+        return Result<void>::fail(journalError("Invalid apply journal operation state"));
+    }
     if (operation.originalExists) {
         if (operation.originalIdentity.empty() || !isLowerHexDigest(operation.originalSha256)) {
             return Result<void>::fail(journalError("Original file evidence is incomplete in apply journal"));
@@ -225,6 +257,23 @@ Result<void> validateOperationRecord(const ApplyJournalOperation& operation) {
     }
     if (operation.error.code.empty() != operation.error.message.empty()) {
         return Result<void>::fail(journalError("Apply journal operation error is incomplete"));
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validateSummaryRecord(const ApplyJournalSummary& summary) {
+    auto transaction = validateTransaction(summary.transactionId, summary.planDigest);
+    if (!transaction) {
+        return transaction;
+    }
+    if (journalFileStateName(summary.fileState) == "invalid" ||
+        journalRestartStateName(summary.restartState) == "invalid") {
+        return Result<void>::fail(journalError("Invalid apply journal summary state"));
+    }
+    const auto completeError = [](const JournalError& error) { return error.code.empty() == error.message.empty(); };
+    if (!completeError(summary.applyError) || !completeError(summary.rollbackError) ||
+        !completeError(summary.restartError)) {
+        return Result<void>::fail(journalError("Apply journal summary contains an incomplete error"));
     }
     return Result<void>::ok();
 }
@@ -391,11 +440,11 @@ Result<ActiveTransaction> parseActiveTransaction(const std::string& text) noexce
 
 Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summary) noexcept {
     try {
-        auto valid = validateTransaction(summary.transactionId, summary.planDigest);
+        auto valid = validateSummaryRecord(summary);
         if (!valid)
             return Result<std::string>::fail(valid.error());
         util::Json::Object object;
-        object.emplace("schemaVersion", static_cast<double>(kJournalSchemaVersion));
+        object.emplace("schemaVersion", kJournalSchemaVersion);
         object.emplace("transactionId", summary.transactionId);
         object.emplace("planDigest", summary.planDigest);
         object.emplace("fileState", journalFileStateName(summary.fileState));
@@ -415,6 +464,13 @@ Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) no
         auto object = parseObject(text, "apply journal summary");
         if (!object)
             return Result<ApplyJournalSummary>::fail(object.error());
+        auto keys = requireOnlyKeys(object.value().asObject(),
+                                    {"schemaVersion", "transactionId", "planDigest", "fileState",
+                                     "operationCount", "applyError", "rollbackError", "restartState",
+                                     "restartError"},
+                                    "Apply journal summary");
+        if (!keys)
+            return Result<ApplyJournalSummary>::fail(keys.error());
         auto transactionId = requiredString(object.value(), "transactionId");
         auto planDigest = requiredString(object.value(), "planDigest");
         auto fileStateText = requiredString(object.value(), "fileState");
@@ -472,7 +528,7 @@ Result<std::string> serializeApplyJournalOperation(const ApplyJournalOperation& 
         if (!valid)
             return Result<std::string>::fail(valid.error());
         util::Json::Object object;
-        object.emplace("schemaVersion", static_cast<double>(kJournalSchemaVersion));
+        object.emplace("schemaVersion", kJournalSchemaVersion);
         object.emplace("transactionId", operation.transactionId);
         object.emplace("index", std::to_string(operation.index));
         object.emplace("operationId", operation.operationId);
@@ -499,6 +555,14 @@ Result<ApplyJournalOperation> parseApplyJournalOperation(const std::string& text
         auto object = parseObject(text, "apply journal operation");
         if (!object)
             return Result<ApplyJournalOperation>::fail(object.error());
+        auto keys = requireOnlyKeys(object.value().asObject(),
+                                    {"schemaVersion", "transactionId", "index", "operationId", "intent",
+                                     "originalExists", "originalIdentity", "originalSize", "originalSha256",
+                                     "originalPermissionsKnown", "originalPermissions", "backupState",
+                                     "applyState", "installedIdentity", "rollbackState", "error"},
+                                    "Apply journal operation");
+        if (!keys)
+            return Result<ApplyJournalOperation>::fail(keys.error());
         auto transactionId = requiredString(object.value(), "transactionId");
         auto index = parseDecimal(object.value(), "index");
         auto operationId = requiredString(object.value(), "operationId");

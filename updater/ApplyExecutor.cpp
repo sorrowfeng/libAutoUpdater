@@ -62,6 +62,23 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
         return Result<void>::fail(
             {ErrorCode::ApplyFailed, "Apply plan schemaVersion 1 cannot contain transaction intent"});
     }
+    if (plan.intent != ApplyPlanIntent::Install && plan.intent != ApplyPlanIntent::Rollback) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply plan intent is invalid"});
+    }
+    if (plan.operations.size() > limits.json.maxContainerEntries ||
+        plan.restartCommand.size() > limits.json.maxContainerEntries) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan entry limit exceeded"});
+    }
+    for (const auto& operation : plan.operations) {
+        if (operation.type != ApplyOperationType::Replace && operation.type != ApplyOperationType::Remove) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Apply operation type is invalid"});
+        }
+        if (plan.schemaVersion == 1 && (operation.permissions || operation.precondition)) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "Apply plan schemaVersion 1 contains schemaVersion 2 fields"});
+        }
+    }
+
     if (plan.intent == ApplyPlanIntent::Rollback) {
         if (plan.schemaVersion != 2 || !plan.rollbackOf ||
             !util::isLowerHexSha256(plan.rollbackOf->transactionId) ||
@@ -70,10 +87,6 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
         }
     } else if (plan.rollbackOf) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Install plans cannot contain rollbackOf"});
-    }
-    if (plan.operations.size() > limits.json.maxContainerEntries ||
-        plan.restartCommand.size() > limits.json.maxContainerEntries) {
-        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan entry limit exceeded"});
     }
     std::vector<std::string> managedTargets;
     managedTargets.reserve(plan.operations.size());
@@ -163,6 +176,16 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
             }
             totalArtifactBytes += operation.size;
         }
+    }
+    std::string canonicalJson;
+    try {
+        canonicalJson = plan.toJson();
+    } catch (...) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply plan cannot be serialized as valid JSON"});
+    }
+    auto schemaValidation = ApplyPlan::parse(canonicalJson, limits);
+    if (!schemaValidation) {
+        return Result<void>::fail(schemaValidation.error());
     }
     return Result<void>::ok();
 }

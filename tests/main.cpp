@@ -33,6 +33,10 @@ void testNetworkDownloadRestartsIgnoredHttpResume();
 void testNetworkDownloadPreservesLocalFileResume();
 void testNetworkResourceLimits();
 void testJsonResourceLimits();
+void testJsonRfc8259SyntaxAndUnicode();
+void testJsonExactNumericContract();
+void testMetadataSchemasRequireExactTypesAndRanges();
+void testStateAndJournalSchemasFailClosed();
 void testManifestAndSignatureResourceLimits();
 void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
@@ -140,6 +144,10 @@ int main(int argc, char* argv[]) {
         {"NetworkDownloadPreservesLocalFileResume", testNetworkDownloadPreservesLocalFileResume},
         {"NetworkResourceLimits", testNetworkResourceLimits},
         {"JsonResourceLimits", testJsonResourceLimits},
+        {"JsonRfc8259SyntaxAndUnicode", testJsonRfc8259SyntaxAndUnicode},
+        {"JsonExactNumericContract", testJsonExactNumericContract},
+        {"MetadataSchemasRequireExactTypesAndRanges", testMetadataSchemasRequireExactTypesAndRanges},
+        {"StateAndJournalSchemasFailClosed", testStateAndJournalSchemasFailClosed},
         {"ManifestAndSignatureResourceLimits", testManifestAndSignatureResourceLimits},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},

@@ -9,6 +9,9 @@
 
 namespace {
 
+const std::string kSha256(64, 'a');
+const std::string kManifestSha256(64, 'b');
+
 autoupdater::ApplyPlan applyPlanWithOperations(std::vector<autoupdater::ApplyOperation> operations) {
     autoupdater::ApplyPlan plan;
     plan.installDir = "install";
@@ -32,12 +35,12 @@ void testApplyPlanRoundTrip() {
     plan.fromVersion = "1.0.0";
     plan.toVersion = "1.1.0";
     plan.releaseId = "1.1.0+1";
-    plan.manifestSha256 = "abc";
+    plan.manifestSha256 = kManifestSha256;
     plan.installDir = "install";
     plan.stagingDir = "install/.autoupdater/staging/1.1.0";
     plan.backupDir = "install/.autoupdater/backup/1.0.0-to-1.1.0";
     plan.restartCommand = {"install/app"};
-    plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app", "hash", 4});
+    plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app", kSha256, 4});
     plan.operations.push_back({autoupdater::ApplyOperationType::Remove, "", "old.dll", "", 0});
 
     auto parsed = autoupdater::ApplyPlan::parse(plan.toJson());
@@ -55,13 +58,13 @@ void testApplyPlanRoundTripPreservesUnicodePaths() {
     plan.fromVersion = "1.0.0";
     plan.toVersion = "2.0.0";
     plan.releaseId = "unicode-paths";
-    plan.manifestSha256 = "abc";
+    plan.manifestSha256 = kManifestSha256;
     plan.installDir = root / std::filesystem::u8path(u8"安装目录");
     plan.stagingDir = root / std::filesystem::u8path(u8"暂存目录");
     plan.backupDir = root / std::filesystem::u8path(u8"备份目录");
     plan.restartCommand = {autoupdater::util::pathToUtf8(plan.installDir / std::filesystem::u8path(u8"应用.exe"))};
     plan.operations.push_back(
-        {autoupdater::ApplyOperationType::Replace, u8"资源/应用.txt", u8"资源/应用.txt", "hash", 4});
+        {autoupdater::ApplyOperationType::Replace, u8"资源/应用.txt", u8"资源/应用.txt", kSha256, 4});
 
     const auto json = plan.toJson();
     LAU_REQUIRE(json.find(u8"安装目录") != std::string::npos);
@@ -135,8 +138,8 @@ void testApplyPlanRollbackContract() {
 
 void testApplyPlanRejectsConflictingManagedTargets() {
     requireApplyPlanTargetConflict({
-        {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", "hash", 4},
-        {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", "hash", 4},
+        {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", kSha256, 4},
+        {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", kSha256, 4},
     });
 
     requireApplyPlanTargetConflict({
@@ -150,7 +153,7 @@ void testApplyPlanRejectsConflictingManagedTargets() {
     });
 
     requireApplyPlanTargetConflict({
-        {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", "hash", 4},
+        {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", kSha256, 4},
         {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
     });
 
@@ -170,12 +173,12 @@ void testApplyPlanRejectsConflictingManagedTargets() {
 
 void testApplyPlanAllowsSharedSourceForDistinctManagedTargets() {
     const auto parsed = autoupdater::ApplyPlan::parse(applyPlanWithOperations({
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/first.exe", "same-hash", 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/second.exe", "same-hash", 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "a", "same-hash", 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "ab", "same-hash", 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/first", "same-hash", 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/second", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/first.exe", kSha256, 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/second.exe", kSha256, 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "a", kSha256, 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "ab", kSha256, 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/first", kSha256, 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/second", kSha256, 9},
     }).toJson());
 
     LAU_REQUIRE(parsed);

@@ -195,7 +195,7 @@ likelihood of affecting production update flows.
       PID plus process-start identity checks for stale lock recovery.
     - Tests cover crash, stale lock, PID reuse, and an active competing updater.
 
-- [ ] **AU-013 — Enforce a strict JSON and schema contract**
+- [x] **AU-013 — Enforce a strict JSON and schema contract**
   - Classification: Verified correctness defect; parser differentials remain a
     deployment-dependent security risk.
   - Key code: `src/util/Json.cpp:68-102,130-232,272-283,367-373`,

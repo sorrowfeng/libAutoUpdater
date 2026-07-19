@@ -63,6 +63,34 @@ python tools/gc_objects.py publish/updates/objects/sha256 \
 
 To retain the latest N releases, pass every retained release manifest through `--manifest`.
 
+The collector validates every manifest and object-store entry before deleting
+anything. It applies the library's default JSON depth, node, string, number,
+and container limits as well as the manifest schema. Invalid JSON, duplicate
+keys, schema/type errors, malformed object paths, missing referenced objects,
+and size, digest, or shard mismatches fail closed. `--delete` streams and
+verifies the SHA-256 of every retained object before removing the first stale
+object; a dry run verifies declared sizes but does not hash object contents.
+
+The object store must contain exactly two levels of real directories and
+regular files. Symbolic links, Windows junctions, and other reparse points are
+rejected. On Windows this restriction applies to every directory component in
+the absolute path to the store, because Python pathname deletion cannot be made
+relative to a directory handle. The complete path chain is guarded while the
+collector runs; on POSIX, traversal and deletion instead use no-following
+directory-relative operations. Every shard and stale-file identity is checked
+again immediately before use or removal. Empty shard directories may remain
+after collection.
+
+Run deletion in an exclusive maintenance window: do not upload, replace, or
+publish manifests or objects while the collector is running. Directory guards
+prevent path rebinding, but the tool cannot make an uncooperative publisher's
+multi-file changes transactional; a concurrent mutation can therefore stop a
+run after earlier stale objects have already been removed.
+
+When validated manifests contain zero object references, deletion from a
+non-empty store is also refused by default. Use `--allow-empty` together with
+`--delete` only when intentionally removing every object.
+
 ## Notes
 
 - The object filename is the SHA-256 digest. Do not rename object files after upload.

@@ -11,7 +11,7 @@ namespace autoupdater {
 
 namespace {
 
-constexpr int kJournalSchemaVersion = 2;
+constexpr std::uint64_t kJournalSchemaVersion = 2;
 constexpr std::uint64_t kMaxReceiptBytes = 256 * 1024;
 constexpr std::size_t kReadChunkBytes = 64 * 1024;
 constexpr const char* kTerminalReceiptPath = ".autoupdater/journal/terminal.json";
@@ -36,6 +36,14 @@ Result<std::string> requiredString(const util::Json& object, const std::string& 
         return Result<std::string>::fail(receiptError("Apply receipt string field is missing: " + key));
     }
     return Result<std::string>::ok(value->asString());
+}
+
+Result<void> validateReceiptKeys(const util::Json::Object& object) {
+    if (object.size() != 3 || object.find("schemaVersion") == object.end() ||
+        object.find("transactionId") == object.end() || object.find("planDigest") == object.end()) {
+        return Result<void>::fail(receiptError("Terminal apply receipt contains unknown or missing fields"));
+    }
+    return Result<void>::ok();
 }
 
 Result<std::string> readReceipt(IRootedFile& file) {
@@ -79,7 +87,7 @@ Result<std::string> serializeApplyTransactionReceipt(const ApplyTransactionRecei
             return Result<std::string>::fail(receiptError("Invalid terminal apply transaction identity"));
         }
         util::Json::Object object;
-        object.emplace("schemaVersion", static_cast<double>(kJournalSchemaVersion));
+        object.emplace("schemaVersion", kJournalSchemaVersion);
         object.emplace("transactionId", receipt.transactionId);
         object.emplace("planDigest", receipt.planDigest);
         return Result<std::string>::ok(util::Json(std::move(object)).stringify(2));
@@ -102,9 +110,13 @@ Result<ApplyTransactionReceipt> parseApplyTransactionReceipt(const std::string& 
             return Result<ApplyTransactionReceipt>::fail(receiptError("Terminal apply receipt must be an object"));
         }
         const auto* schema = parsed.value().get("schemaVersion");
-        if (!schema || !schema->isNumber() || schema->asNumber() != static_cast<double>(kJournalSchemaVersion)) {
+        if (!schema || !schema->isUnsignedInteger() || schema->asUInt64() != kJournalSchemaVersion) {
             return Result<ApplyTransactionReceipt>::fail(
                 receiptError("Unsupported terminal apply receipt schema version"));
+        }
+        auto keys = validateReceiptKeys(parsed.value().asObject());
+        if (!keys) {
+            return Result<ApplyTransactionReceipt>::fail(keys.error());
         }
         auto transactionId = requiredString(parsed.value(), "transactionId");
         auto planDigest = requiredString(parsed.value(), "planDigest");

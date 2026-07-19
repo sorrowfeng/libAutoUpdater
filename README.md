@@ -220,7 +220,7 @@ See [docs/server-layout.md](docs/server-layout.md) and [docs/content-addressed-s
   "files": [
     {
       "path": "bin/MyApp.exe",
-      "sha256": "9b3f...",
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
       "size": 18432000
     }
   ],

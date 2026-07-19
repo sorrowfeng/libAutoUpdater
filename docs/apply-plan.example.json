@@ -4,7 +4,7 @@
   "fromVersion": "1.3.0",
   "toVersion": "1.4.0",
   "releaseId": "1.4.0+20260601.1",
-  "manifestSha256": "abc...",
+  "manifestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "installDir": "C:/Program Files/MyApp",
   "stagingDir": "C:/Program Files/MyApp/.autoupdater/staging/1.4.0",
   "backupDir": "C:/Program Files/MyApp/.autoupdater/backup/1.3.0-to-1.4.0",
@@ -16,7 +16,7 @@
       "type": "replace",
       "source": "bin/MyApp.exe",
       "target": "bin/MyApp.exe",
-      "sha256": "9b3f...",
+      "sha256": "9b920c148faf74af60cc7e010b832542a011426c1b2ac3e185c1f0a2d46b1fd4",
       "size": 18432000
     },
     {
@@ -26,4 +26,3 @@
     }
   ]
 }
-

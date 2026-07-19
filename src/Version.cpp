@@ -1,8 +1,10 @@
 #include "libAutoUpdater/Version.h"
 
 #include <algorithm>
-#include <cctype>
-#include <sstream>
+#include <charconv>
+#include <iterator>
+#include <stdexcept>
+#include <system_error>
 
 #ifndef LIBAUTOUPDATER_VERSION
 #define LIBAUTOUPDATER_VERSION "0.0.0"
@@ -12,13 +14,17 @@ namespace autoupdater {
 
 namespace {
 
-bool isIdentifierChar(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '-';
+bool isAsciiDigit(char value) noexcept {
+    return value >= '0' && value <= '9';
+}
+
+bool isIdentifierChar(char value) noexcept {
+    return isAsciiDigit(value) || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
+           value == '-';
 }
 
 bool isNumericIdentifier(const std::string& text) {
-    return !text.empty() &&
-           std::all_of(text.begin(), text.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+    return !text.empty() && std::all_of(text.begin(), text.end(), isAsciiDigit);
 }
 
 std::vector<std::string> split(const std::string& text, char delimiter) {
@@ -35,9 +41,9 @@ std::vector<std::string> split(const std::string& text, char delimiter) {
     return parts;
 }
 
-bool validDotIdentifiers(const std::string& text, bool allowEmpty) {
+bool validDotIdentifiers(const std::string& text, bool rejectNumericLeadingZeroes) {
     if (text.empty()) {
-        return allowEmpty;
+        return false;
     }
     for (const auto& part : split(text, '.')) {
         if (part.empty()) {
@@ -46,7 +52,7 @@ bool validDotIdentifiers(const std::string& text, bool allowEmpty) {
         if (!std::all_of(part.begin(), part.end(), isIdentifierChar)) {
             return false;
         }
-        if (isNumericIdentifier(part) && part.size() > 1 && part.front() == '0') {
+        if (rejectNumericLeadingZeroes && isNumericIdentifier(part) && part.size() > 1 && part.front() == '0') {
             return false;
         }
     }
@@ -76,14 +82,24 @@ Result<int> parseNumber(const std::string& text) {
     if (text.size() > 1 && text.front() == '0') {
         return Result<int>::fail({ErrorCode::VersionParseFailed, "Version number segment has leading zero"});
     }
-    if (!std::all_of(text.begin(), text.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
+    if (!std::all_of(text.begin(), text.end(), isAsciiDigit)) {
         return Result<int>::fail({ErrorCode::VersionParseFailed, "Version number segment is not numeric"});
     }
-    try {
-        return Result<int>::ok(std::stoi(text));
-    } catch (...) {
+    int value = 0;
+    const auto converted = std::from_chars(text.data(), text.data() + text.size(), value, 10);
+    if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size()) {
         return Result<int>::fail({ErrorCode::VersionParseFailed, "Version number segment is out of range"});
     }
+    return Result<int>::ok(value);
+}
+
+std::string decimalText(int value) {
+    char buffer[32]{};
+    const auto converted = std::to_chars(std::begin(buffer), std::end(buffer), value, 10);
+    if (converted.ec != std::errc{}) {
+        throw std::runtime_error("Failed to serialize version number");
+    }
+    return std::string(buffer, converted.ptr);
 }
 
 int comparePrerelease(const std::string& lhs, const std::string& rhs) noexcept {
@@ -157,7 +173,7 @@ Result<Version> Version::parse(const std::string& text) noexcept {
         if (dash != std::string::npos) {
             core = coreAndPrerelease.substr(0, dash);
             prerelease = coreAndPrerelease.substr(dash + 1);
-            if (!validDotIdentifiers(prerelease, false)) {
+            if (!validDotIdentifiers(prerelease, true)) {
                 return Result<Version>::fail({ErrorCode::VersionParseFailed, "Invalid prerelease identifiers"});
             }
         }
@@ -187,15 +203,14 @@ Result<Version> Version::parse(const std::string& text) noexcept {
 }
 
 std::string Version::toString() const {
-    std::ostringstream stream;
-    stream << major_ << '.' << minor_ << '.' << patch_;
+    auto text = decimalText(major_) + '.' + decimalText(minor_) + '.' + decimalText(patch_);
     if (!prerelease_.empty()) {
-        stream << '-' << prerelease_;
+        text += '-' + prerelease_;
     }
     if (!buildMetadata_.empty()) {
-        stream << '+' << buildMetadata_;
+        text += '+' + buildMetadata_;
     }
-    return stream.str();
+    return text;
 }
 
 bool operator==(const Version& lhs, const Version& rhs) noexcept {

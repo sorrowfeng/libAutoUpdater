@@ -7,6 +7,8 @@
 
 namespace {
 
+const std::string kSha256(64, 'a');
+
 autoupdater::Result<autoupdater::Manifest>
 parseManifestTargets(std::vector<autoupdater::ManifestFile> files, std::vector<std::string> remove = {}) {
     autoupdater::Manifest manifest;
@@ -35,7 +37,7 @@ void testManifestParsing() {
       "baseUrl": "file:///tmp/release",
       "mandatory": true,
       "files": [
-        {"path": "bin/app.exe", "sha256": "abc", "size": 3}
+        {"path": "bin/app.exe", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 3}
       ],
       "remove": ["old/file.txt"]
     })json";
@@ -53,7 +55,7 @@ void testManifestRejectsPathTraversal() {
       "schemaVersion": 1,
       "version": "1.0.0",
       "files": [
-        {"path": "../evil", "sha256": "abc", "size": 3}
+        {"path": "../evil", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 3}
       ]
     })json";
 
@@ -64,48 +66,48 @@ void testManifestRejectsPathTraversal() {
 
 void testManifestRejectsConflictingManagedTargets() {
     requireTargetConflict(parseManifestTargets({
-        {"objects/first.bin", "bin/app.exe", "hash", 4},
-        {"objects/second.bin", "bin/app.exe", "hash", 4},
+        {"objects/first.bin", "bin/app.exe", kSha256, 4},
+        {"objects/second.bin", "bin/app.exe", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({
-        {"objects/first.bin", "Bin/App.exe", "hash", 4},
-        {"objects/second.bin", "bin/app.EXE", "hash", 4},
+        {"objects/first.bin", "Bin/App.exe", kSha256, 4},
+        {"objects/second.bin", "bin/app.EXE", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({}, {"obsolete.dll", "obsolete.dll"}));
 
     requireTargetConflict(parseManifestTargets(
-        {{"objects/app.bin", "bin/app.exe", "hash", 4}}, {"bin/app.exe"}));
+        {{"objects/app.bin", "bin/app.exe", kSha256, 4}}, {"bin/app.exe"}));
 
     requireTargetConflict(parseManifestTargets({
-        {"bin/app.exe", "", "hash", 4},
-        {"objects/app.bin", "bin/app.exe", "hash", 4},
+        {"bin/app.exe", "", kSha256, 4},
+        {"objects/app.bin", "bin/app.exe", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({
-        {"objects/directory", "bin", "hash", 4},
-        {"objects/child.bin", "bin/app.exe", "hash", 4},
+        {"objects/directory", "bin", kSha256, 4},
+        {"objects/child.bin", "bin/app.exe", kSha256, 4},
     }));
     requireTargetConflict(parseManifestTargets({
-        {"objects/child.bin", "bin/app.exe", "hash", 4},
-        {"objects/directory", "bin", "hash", 4},
+        {"objects/child.bin", "bin/app.exe", kSha256, 4},
+        {"objects/directory", "bin", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({
-        {"objects/parent.bin", "a", "hash", 4},
-        {"objects/interloper.bin", "a-variant", "hash", 4},
-        {"objects/child.bin", "a/child", "hash", 4},
+        {"objects/parent.bin", "a", kSha256, 4},
+        {"objects/interloper.bin", "a-variant", kSha256, 4},
+        {"objects/child.bin", "a/child", kSha256, 4},
     }));
 }
 
 void testManifestRejectsReservedUpdaterTargetsFromEveryTargetForm() {
     requireTargetConflict(parseManifestTargets({
-        {".autoupdater/staging/payload.bin", "", "hash", 4},
+        {".autoupdater/staging/payload.bin", "", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({
-        {"objects/payload.bin", ".AUToupdater/staging/payload.bin", "hash", 4},
+        {"objects/payload.bin", ".AUToupdater/staging/payload.bin", kSha256, 4},
     }));
 
     requireTargetConflict(parseManifestTargets({}, {".autoupdater/journal/active.json"}));
@@ -113,8 +115,8 @@ void testManifestRejectsReservedUpdaterTargetsFromEveryTargetForm() {
 
 void testManifestAllowsSharedSourceForDistinctManagedTargets() {
     const auto manifest = parseManifestTargets({
-        {"objects/shared.bin", "bin/first.exe", "same-hash", 9},
-        {"objects/shared.bin", "bin/second.exe", "same-hash", 9},
+        {"objects/shared.bin", "bin/first.exe", kSha256, 9},
+        {"objects/shared.bin", "bin/second.exe", kSha256, 9},
     });
 
     LAU_REQUIRE(manifest);
@@ -125,10 +127,10 @@ void testManifestAllowsSharedSourceForDistinctManagedTargets() {
 
 void testManifestAllowsNonConflictingTargetPrefixesAndSiblings() {
     const auto manifest = parseManifestTargets({
-        {"objects/a.bin", "a", "hash", 4},
-        {"objects/ab.bin", "ab", "hash", 4},
-        {"objects/first.bin", "shared/first.bin", "hash", 4},
-        {"objects/second.bin", "shared/second.bin", "hash", 4},
+        {"objects/a.bin", "a", kSha256, 4},
+        {"objects/ab.bin", "ab", kSha256, 4},
+        {"objects/first.bin", "shared/first.bin", kSha256, 4},
+        {"objects/second.bin", "shared/second.bin", kSha256, 4},
     });
 
     LAU_REQUIRE(manifest);

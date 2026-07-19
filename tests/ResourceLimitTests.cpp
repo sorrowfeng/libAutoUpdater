@@ -202,7 +202,7 @@ autoupdater::UrlPolicy networkPolicy() {
 
 std::string smallManifest(std::uint64_t size = 0) {
     return std::string(
-               R"json({"schemaVersion":1,"version":"1.0.0","files":[{"path":"app.bin","sha256":"00","size":)json") +
+               R"json({"schemaVersion":1,"version":"1.0.0","files":[{"path":"app.bin","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":)json") +
            std::to_string(size) + "}]}";
 }
 
@@ -439,7 +439,7 @@ void testManifestAndSignatureResourceLimits() {
 
         autoupdater::ManifestEnvelope envelope;
         envelope.manifest.version = nextVersion.value();
-        envelope.sha256 = "00";
+        envelope.sha256 = std::string(64, '0');
 
         autoupdater::UpdateDecision decision;
         autoupdater::ApplyOperation first;
@@ -468,6 +468,7 @@ void testManifestAndSignatureResourceLimits() {
         operation.type = autoupdater::ApplyOperationType::Replace;
         operation.source = "app.bin";
         operation.target = "app.bin";
+        operation.sha256 = std::string(64, 'a');
         operation.size = autoupdater::ResourceLimits{}.maxArtifactBytes + 1;
         plan.operations.push_back(std::move(operation));
 

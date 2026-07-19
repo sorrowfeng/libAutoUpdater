@@ -18,12 +18,15 @@ add_executable(libAutoUpdater_tests
     RootedFileSystemTests.cpp
     StateStoreTests.cpp
     UpdaterTests.cpp
+    JsonContractTests.cpp
     FuzzSmokeTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/src)
 target_include_directories(libAutoUpdater_tests PRIVATE ${libAutoUpdater_SOURCE_DIR}/updater)
+target_compile_definitions(libAutoUpdater_tests PRIVATE
+    LIBAUTOUPDATER_JSON_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt")
 libautoupdater_apply_project_warnings(libAutoUpdater_tests)
 
 add_executable(libAutoUpdater_process_launcher_helper process_launcher_helper.cpp)
@@ -57,6 +60,17 @@ endif()
 add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME libAutoUpdater_gc_objects_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/gc_objects_tests.py
+            --gc ${libAutoUpdater_SOURCE_DIR}/tools/gc_objects.py
+            --json-corpus ${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/gc-objects-validation)
+endif()
+
 if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)
     add_test(
         NAME libAutoUpdater_apply_plan_handoff
