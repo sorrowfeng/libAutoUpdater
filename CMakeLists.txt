@@ -81,6 +81,7 @@ set(LIBAUTOUPDATER_PUBLIC_HEADERS
     include/libAutoUpdater/Version.h
     include/libAutoUpdater/interfaces/IEventDispatcher.h
     include/libAutoUpdater/interfaces/IFileSystem.h
+    include/libAutoUpdater/interfaces/IRootedFileSystem.h
     include/libAutoUpdater/interfaces/IHashProvider.h
     include/libAutoUpdater/interfaces/INetworkClient.h
     include/libAutoUpdater/interfaces/IProcessLauncher.h
@@ -111,6 +112,12 @@ set(LIBAUTOUPDATER_SOURCES
     src/util/PathUtil.cpp
     src/util/Sha256.cpp
     src/util/UrlUtil.cpp)
+
+if(WIN32)
+    list(APPEND LIBAUTOUPDATER_SOURCES src/default/RootedFileSystemWindows.cpp)
+else()
+    list(APPEND LIBAUTOUPDATER_SOURCES src/default/RootedFileSystemPosix.cpp)
+endif()
 
 add_library(libAutoUpdater ${LIBAUTOUPDATER_PUBLIC_HEADERS} ${LIBAUTOUPDATER_SOURCES})
 add_library(libAutoUpdater::libAutoUpdater ALIAS libAutoUpdater)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Result.h"
+#include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -27,6 +28,9 @@ class IFileSystem {
     virtual Result<void> removeAll(const std::filesystem::path& path) noexcept = 0;
     virtual Result<std::string> readText(const std::filesystem::path& path) noexcept = 0;
     virtual Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept = 0;
+    virtual Result<std::unique_ptr<IRootedDirectory>>
+    openRoot(const std::filesystem::path& path, RootAccess access, bool create,
+             RootedDirectoryCreationMode directoryMode = RootedDirectoryCreationMode::Private) noexcept = 0;
 };
 
 std::shared_ptr<IFileSystem> createDefaultFileSystem();

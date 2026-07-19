@@ -15,6 +15,10 @@ class Sha256HashProvider final : public IHashProvider {
     Result<std::string> sha256Bytes(std::string_view data) noexcept override {
         return Result<std::string>::ok(util::sha256Bytes(data));
     }
+
+    Result<std::string> sha256Stream(IRootedFile& file) noexcept override {
+        return util::sha256RootedFile(file);
+    }
 };
 
 } // namespace

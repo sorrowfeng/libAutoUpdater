@@ -7,10 +7,8 @@ namespace autoupdater {
 
 namespace {
 
-std::filesystem::path temporaryDownloadPath(const std::filesystem::path& target) {
-    auto path = target;
-    path += ".download";
-    return path;
+std::string temporaryDownloadPath(const std::string& target) {
+    return target + ".download";
 }
 
 } // namespace
@@ -23,21 +21,36 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
         totalBytes += download.file.size;
     }
 
+    auto stagingRoot = fileSystem.openRoot(config.tempDir, RootAccess::ReadWrite, true);
+    if (!stagingRoot) {
+        return Result<void>::fail(stagingRoot.error());
+    }
+
     std::uint64_t completedBeforeFile = 0;
     for (const auto& download : decision.downloads) {
         if (cancel.isCancelled()) {
             return Result<void>::fail({ErrorCode::Cancelled, "Download cancelled"});
         }
 
-        const auto parent = download.stagingPath.parent_path();
-        auto mkdir = fileSystem.createDirectories(parent);
-        if (!mkdir) {
-            return mkdir;
-        }
+        const auto finalRelativePath = download.file.path;
+        const auto tempRelativePath = temporaryDownloadPath(finalRelativePath);
 
-        if (fileSystem.exists(download.stagingPath)) {
-            auto hash = hashProvider.sha256File(download.stagingPath);
-            if (hash && hash.value() == download.file.sha256) {
+        auto existing = stagingRoot.value()->openRegularFile(finalRelativePath, RootedFileOpenMode::ReadOnly);
+        if (!existing) {
+            return Result<void>::fail(existing.error());
+        }
+        RootedEntryExpectation finalExpectation = RootedEntryExpectation::missing();
+        if (existing.value().exists()) {
+            auto existingMetadata = existing.value().file->metadata();
+            if (!existingMetadata) {
+                return Result<void>::fail(existingMetadata.error());
+            }
+            finalExpectation = RootedEntryExpectation::matching(existingMetadata.value());
+            auto hash = hashProvider.sha256Stream(*existing.value().file);
+            if (!hash) {
+                return Result<void>::fail(hash.error());
+            }
+            if (existingMetadata.value().size == download.file.size && hash.value() == download.file.sha256) {
                 completedBeforeFile += download.file.size;
                 if (progress) {
                     progress({completedBeforeFile, totalBytes, download.file.path});
@@ -45,6 +58,7 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                 continue;
             }
         }
+        existing.value().file.reset();
 
         Error lastError{ErrorCode::DownloadFailed, "Download failed"};
         bool success = false;
@@ -53,31 +67,47 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                 return Result<void>::fail({ErrorCode::Cancelled, "Download cancelled"});
             }
 
-            const auto tempPath = temporaryDownloadPath(download.stagingPath);
+            auto temporary = stagingRoot.value()->openRegularFile(tempRelativePath, RootedFileOpenMode::OpenOrCreate);
+            if (!temporary) {
+                return Result<void>::fail(temporary.error());
+            }
+            auto tempMetadata = temporary.value().file->metadata();
+            if (!tempMetadata) {
+                return Result<void>::fail(tempMetadata.error());
+            }
             std::optional<DownloadResumeInfo> resume;
-            if (config.network.enableResume && fileSystem.exists(tempPath)) {
-                auto tempSize = fileSystem.fileSize(tempPath);
-                if (tempSize && tempSize.value() > 0) {
-                    DownloadResumeState resumeState;
-                    resumeState.key = download.url;
-                    resumeState.offset = tempSize.value();
-                    resumeState.sha256 = download.file.sha256;
-                    if (stateStore) {
-                        auto loaded = stateStore->loadDownloadResume(download.url);
-                        if (loaded && loaded.value() && loaded.value()->sha256 == download.file.sha256) {
-                            resumeState = loaded.value().value();
-                            resumeState.offset = tempSize.value();
-                        }
+            if (config.network.enableResume && tempMetadata.value().size > 0) {
+                DownloadResumeState resumeState;
+                resumeState.key = download.url;
+                resumeState.offset = tempMetadata.value().size;
+                resumeState.sha256 = download.file.sha256;
+                if (stateStore) {
+                    auto loaded = stateStore->loadDownloadResume(download.url);
+                    if (loaded && loaded.value() && loaded.value()->sha256 == download.file.sha256) {
+                        resumeState = loaded.value().value();
+                        resumeState.offset = tempMetadata.value().size;
                     }
-                    resume = DownloadResumeInfo{resumeState.offset, resumeState.etag, resumeState.lastModified};
                 }
+                resume = DownloadResumeInfo{resumeState.offset, resumeState.etag, resumeState.lastModified};
             }
             if (!resume) {
-                fileSystem.remove(tempPath);
+                auto truncated = temporary.value().file->truncate(0);
+                if (!truncated) {
+                    return truncated;
+                }
+                auto rewound = temporary.value().file->seek(0);
+                if (!rewound) {
+                    return rewound;
+                }
+            } else {
+                auto positioned = temporary.value().file->seek(resume->offset);
+                if (!positioned) {
+                    return positioned;
+                }
             }
 
             auto result = network.downloadToFile(
-                download.url, tempPath, config.network, resume,
+                download.url, *temporary.value().file, config.network, resume,
                 [&](const Progress& current) {
                     if (progress) {
                         Progress aggregate;
@@ -90,44 +120,60 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                 cancel);
             if (!result) {
                 lastError = result.error();
-                if (config.network.enableResume && stateStore && fileSystem.exists(tempPath)) {
-                    auto tempSize = fileSystem.fileSize(tempPath);
-                    if (tempSize && tempSize.value() > 0) {
-                        DownloadResumeState state;
-                        state.key = download.url;
-                        state.offset = tempSize.value();
-                        state.sha256 = download.file.sha256;
-                        if (resume) {
-                            state.etag = resume->etag;
-                            state.lastModified = resume->lastModified;
-                        }
-                        stateStore->saveDownloadResume(state);
+                auto failedMetadata = temporary.value().file->metadata();
+                if (config.network.enableResume && stateStore && failedMetadata && failedMetadata.value().size > 0) {
+                    DownloadResumeState state;
+                    state.key = download.url;
+                    state.offset = failedMetadata.value().size;
+                    state.sha256 = download.file.sha256;
+                    if (resume) {
+                        state.etag = resume->etag;
+                        state.lastModified = resume->lastModified;
                     }
+                    stateStore->saveDownloadResume(state);
                 }
             } else {
+                auto flushed = temporary.value().file->flush();
+                if (!flushed) {
+                    lastError = flushed.error();
+                    continue;
+                }
+                auto completedMetadata = temporary.value().file->metadata();
+                if (!completedMetadata) {
+                    lastError = completedMetadata.error();
+                    continue;
+                }
                 if (stateStore) {
                     DownloadResumeState state;
                     state.key = download.url;
-                    state.offset = result.value().bytesWritten;
+                    state.offset = completedMetadata.value().size;
                     state.etag = result.value().etag;
                     state.lastModified = result.value().lastModified;
                     state.sha256 = download.file.sha256;
                     stateStore->saveDownloadResume(state);
                 }
-                auto hash = hashProvider.sha256File(tempPath);
+                auto hash = hashProvider.sha256Stream(*temporary.value().file);
                 if (!hash) {
                     lastError = hash.error();
-                } else if (hash.value() != download.file.sha256) {
+                } else if (completedMetadata.value().size != download.file.size ||
+                           hash.value() != download.file.sha256) {
                     lastError = {ErrorCode::HashMismatch, "Downloaded file SHA-256 mismatch: " + download.file.path};
-                    fileSystem.remove(tempPath);
+                    temporary.value().file.reset();
+                    auto removed = stagingRoot.value()->removeRegularFile(
+                        tempRelativePath, RootedEntryExpectation::matching(completedMetadata.value()));
+                    if (!removed) {
+                        lastError = removed.error();
+                    }
                     if (stateStore) {
                         stateStore->clearDownloadResume(download.url);
                     }
                 } else {
-                    auto replaced = fileSystem.renameOrReplace(tempPath, download.stagingPath);
+                    auto replaced = stagingRoot.value()->replaceWithOpenedFile(*temporary.value().file,
+                                                                               finalRelativePath, finalExpectation);
                     if (!replaced) {
                         lastError = replaced.error();
                     } else {
+                        temporary.value().file.reset();
                         if (stateStore) {
                             stateStore->clearDownloadResume(download.url);
                         }

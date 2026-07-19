@@ -15,6 +15,28 @@ bool startsWith(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool isWindowsDeviceName(const std::string& segment) {
+    const auto dot = segment.find('.');
+    auto base = segment.substr(0, dot);
+    std::transform(base.begin(), base.end(), base.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || base == "CLOCK$") {
+        return true;
+    }
+    if (base.size() == 4 && base[3] >= '1' && base[3] <= '9') {
+        return base.compare(0, 3, "COM") == 0 || base.compare(0, 3, "LPT") == 0;
+    }
+    return false;
+}
+
+bool isUnsafePortableSegment(const std::string& segment) {
+    if (segment.empty() || segment == "." || segment == ".." || segment.back() == '.' || segment.back() == ' ' ||
+        segment.find(':') != std::string::npos || isWindowsDeviceName(segment)) {
+        return true;
+    }
+    return std::any_of(segment.begin(), segment.end(), [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; });
+}
+
 } // namespace
 
 std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept {
@@ -49,7 +71,7 @@ Result<void> validateManagedPath(const std::string& path) noexcept {
     while (start <= path.size()) {
         const auto end = path.find('/', start);
         const auto part = path.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (part.empty() || part == "." || part == "..") {
+        if (isUnsafePortableSegment(part)) {
             return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path contains unsafe segment"});
         }
         if (end == std::string::npos) {

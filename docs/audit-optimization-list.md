@@ -34,7 +34,7 @@ likelihood of affecting production update flows.
     - Tests cover traversal, absolute paths, UNC paths, separators, NUL,
       overlong values, and empty operation lists.
 
-- [ ] **AU-002 — Enforce filesystem containment without following links**
+- [x] **AU-002 — Enforce filesystem containment without following links**
   - Classification: Verified security issue; medium severity, potentially high
     when the helper runs with elevated privileges; CWE-59.
   - Key code: `src/util/PathUtil.cpp:37-85`,

@@ -132,7 +132,7 @@ Result<std::string> readLocalText(const std::string& url, CancellationToken& can
     }
 }
 
-Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesystem::path& target,
+Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& target,
                                        const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                        CancellationToken& cancel) {
     auto source = localPathFromUrl(url);
@@ -146,22 +146,12 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesy
         if (ec) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
         }
-        if (!target.parent_path().empty()) {
-            std::filesystem::create_directories(target.parent_path(), ec);
-            if (ec) {
-                return Result<DownloadResult>::fail({ErrorCode::FileSystemError, ec.message()});
-            }
-        }
-
         std::ifstream input(source.value(), std::ios::binary);
         if (resume && resume->offset > 0) {
             input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
         }
-        const auto outputMode =
-            (resume && resume->offset > 0) ? (std::ios::binary | std::ios::app) : (std::ios::binary | std::ios::trunc);
-        std::ofstream output(target, outputMode);
-        if (!input || !output) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local download streams"});
+        if (!input) {
+            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
         }
 
         std::array<char, 64 * 1024> buffer{};
@@ -173,12 +163,18 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, const std::filesy
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
             const auto count = input.gcount();
             if (count > 0) {
-                output.write(buffer.data(), count);
+                auto write = target.write(buffer.data(), static_cast<std::size_t>(count));
+                if (!write) {
+                    return Result<DownloadResult>::fail(write.error());
+                }
                 written += static_cast<std::uint64_t>(count);
                 if (progress) {
-                    progress({written, static_cast<std::uint64_t>(total), util::pathToUtf8(target)});
+                    progress({written, static_cast<std::uint64_t>(total), {}});
                 }
             }
+        }
+        if (input.bad()) {
+            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
         }
 
         DownloadResult result;
@@ -314,7 +310,7 @@ Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CancellationToken&
 
 Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken& cancel, ProgressCallback progress,
                                        const std::string& currentFile, std::uint64_t initialBytes,
-                                       std::uint64_t expectedBytes, std::ofstream* output,
+                                       std::uint64_t expectedBytes, IRootedFile* output,
                                        const std::vector<char>& initialBody = {}) {
     std::vector<char> bytes;
     std::array<UInt8, 64 * 1024> buffer{};
@@ -323,9 +319,9 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken
 
     const auto consume = [&](const char* data, std::size_t count) -> Result<void> {
         if (output) {
-            output->write(data, static_cast<std::streamsize>(count));
-            if (!*output) {
-                return Result<void>::fail({ErrorCode::DownloadFailed, "Failed to write target file"});
+            auto written = output->write(data, count);
+            if (!written) {
+                return written;
             }
         } else {
             bytes.insert(bytes.end(), data, data + count);
@@ -419,8 +415,7 @@ class CfNetworkClient final : public INetworkClient {
         }
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
-                                          const NetworkOptions& options,
+    Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
                                           const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
@@ -428,14 +423,6 @@ class CfNetworkClient final : public INetworkClient {
         }
 
         try {
-            std::error_code ec;
-            if (!target.parent_path().empty()) {
-                std::filesystem::create_directories(target.parent_path(), ec);
-                if (ec) {
-                    return Result<DownloadResult>::fail({ErrorCode::FileSystemError, ec.message()});
-                }
-            }
-
             auto request = makeRequest(url);
             if (!request) {
                 return Result<DownloadResult>::fail(request.error());
@@ -453,7 +440,14 @@ class CfNetworkClient final : public INetworkClient {
 
             const auto status = CFHTTPMessageGetResponseStatusCode(response.value().headers.get());
             if (options.enableResume && resume && resume->offset > 0 && status == 200) {
-                std::filesystem::remove(target, ec);
+                auto truncated = target.truncate(0);
+                if (!truncated) {
+                    return Result<DownloadResult>::fail(truncated.error());
+                }
+                auto rewound = target.seek(0);
+                if (!rewound) {
+                    return Result<DownloadResult>::fail(rewound.error());
+                }
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
             }
             if (status >= 400) {
@@ -461,18 +455,10 @@ class CfNetworkClient final : public INetworkClient {
                     {ErrorCode::DownloadFailed, "HTTP error " + std::to_string(status)});
             }
 
-            const auto outputMode = (options.enableResume && resume && resume->offset > 0)
-                                        ? (std::ios::binary | std::ios::app)
-                                        : (std::ios::binary | std::ios::trunc);
-            std::ofstream output(target, outputMode);
-            if (!output) {
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
-            }
-
             const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
             auto bytes =
-                readResponse(stream.value().get(), cancel, std::move(progress), util::pathToUtf8(target), initialBytes,
-                             contentLength(response.value().headers.get()), &output, response.value().bufferedBody);
+                readResponse(stream.value().get(), cancel, std::move(progress), {}, initialBytes,
+                             contentLength(response.value().headers.get()), &target, response.value().bufferedBody);
             if (!bytes) {
                 const auto code =
                     bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;
@@ -481,10 +467,9 @@ class CfNetworkClient final : public INetworkClient {
 
             DownloadResult result;
             result.bytesWritten = initialBytes;
-            std::error_code sizeError;
-            const auto finalSize = std::filesystem::file_size(target, sizeError);
-            if (!sizeError) {
-                result.bytesWritten = finalSize;
+            auto metadata = target.metadata();
+            if (metadata) {
+                result.bytesWritten = metadata.value().size;
             }
             result.etag = queryHeader(response.value().headers.get(), CFSTR("ETag"));
             result.lastModified = queryHeader(response.value().headers.get(), CFSTR("Last-Modified"));

@@ -1,7 +1,5 @@
 #include "LocalSnapshotBuilder.h"
 
-#include "util/PathUtil.h"
-
 #include <set>
 
 namespace autoupdater {
@@ -10,6 +8,10 @@ Result<LocalSnapshot> buildLocalSnapshot(const Config& config, const Manifest& m
                                          IHashProvider& hashProvider) {
     LocalSnapshot snapshot;
     std::set<std::string> seen;
+    auto root = fileSystem.openRoot(config.installDir, RootAccess::ReadOnly, false);
+    if (!root) {
+        return Result<LocalSnapshot>::fail(root.error());
+    }
 
     for (const auto& file : manifest.files) {
         const auto localPath = file.localPath.empty() ? file.path : file.localPath;
@@ -17,25 +19,24 @@ Result<LocalSnapshot> buildLocalSnapshot(const Config& config, const Manifest& m
             continue;
         }
 
-        auto fullPath = util::safeJoin(config.installDir, localPath);
-        if (!fullPath) {
-            return Result<LocalSnapshot>::fail(fullPath.error());
-        }
-
         LocalFileInfo info;
         info.path = localPath;
-        info.exists = fileSystem.exists(fullPath.value()) && fileSystem.isRegularFile(fullPath.value());
-        if (info.exists) {
-            auto hash = hashProvider.sha256File(fullPath.value());
+        auto opened = root.value()->openRegularFile(localPath, RootedFileOpenMode::ReadOnly);
+        if (!opened) {
+            return Result<LocalSnapshot>::fail(opened.error());
+        }
+        info.exists = opened.value().exists();
+        if (opened.value().exists()) {
+            auto hash = hashProvider.sha256Stream(*opened.value().file);
             if (!hash) {
                 return Result<LocalSnapshot>::fail(hash.error());
             }
-            auto size = fileSystem.fileSize(fullPath.value());
-            if (!size) {
-                return Result<LocalSnapshot>::fail(size.error());
+            auto metadata = opened.value().file->metadata();
+            if (!metadata) {
+                return Result<LocalSnapshot>::fail(metadata.error());
             }
             info.sha256 = hash.value();
-            info.size = size.value();
+            info.size = metadata.value().size;
         }
         snapshot.files.push_back(std::move(info));
     }

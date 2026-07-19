@@ -9,6 +9,7 @@ add_executable(libAutoUpdater_tests
     HashTests.cpp
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp
+    RootedFileSystemTests.cpp
     StateStoreTests.cpp
     UpdaterTests.cpp
     FuzzSmokeTests.cpp)

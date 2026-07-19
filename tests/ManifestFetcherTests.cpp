@@ -23,7 +23,7 @@ class FakeNetworkClient final : public autoupdater::INetworkClient {
     }
 
     autoupdater::Result<autoupdater::DownloadResult>
-    downloadToFile(const std::string&, const std::filesystem::path&, const autoupdater::NetworkOptions&,
+    downloadToFile(const std::string&, autoupdater::IRootedFile&, const autoupdater::NetworkOptions&,
                    const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::DownloadResult>::fail(

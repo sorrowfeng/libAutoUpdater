@@ -3,6 +3,7 @@
 #include "libAutoUpdater/Config.h"
 #include "libAutoUpdater/Result.h"
 #include "libAutoUpdater/Types.h"
+#include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -34,7 +35,7 @@ class INetworkClient {
     virtual Result<std::string> getText(const std::string& url, const NetworkOptions& options,
                                         CancellationToken& cancel) noexcept = 0;
 
-    virtual Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
+    virtual Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target,
                                                   const NetworkOptions& options,
                                                   const std::optional<DownloadResumeInfo>& resume,
                                                   ProgressCallback progress, CancellationToken& cancel) noexcept = 0;

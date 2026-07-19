@@ -46,9 +46,9 @@ class BasicNetworkClient final : public INetworkClient {
         }
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
-                                          const NetworkOptions&, const std::optional<DownloadResumeInfo>& resume,
-                                          ProgressCallback progress, CancellationToken& cancel) noexcept override {
+    Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions&,
+                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
+                                          CancellationToken& cancel) noexcept override {
         auto source = localPathFromUrl(url);
         if (!source) {
             return Result<DownloadResult>::fail(source.error());
@@ -59,23 +59,12 @@ class BasicNetworkClient final : public INetworkClient {
             if (ec) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
             }
-            if (!target.parent_path().empty()) {
-                std::filesystem::create_directories(target.parent_path(), ec);
-                if (ec) {
-                    return Result<DownloadResult>::fail({ErrorCode::FileSystemError, ec.message()});
-                }
-            }
-
             std::ifstream input(source.value(), std::ios::binary);
             if (resume && resume->offset > 0) {
                 input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
             }
-            const auto outputMode = (resume && resume->offset > 0) ? (std::ios::binary | std::ios::app)
-                                                                   : (std::ios::binary | std::ios::trunc);
-            std::ofstream output(target, outputMode);
-            if (!input || !output) {
-                return Result<DownloadResult>::fail(
-                    {ErrorCode::DownloadFailed, "Failed to open local download streams"});
+            if (!input) {
+                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
             }
 
             std::array<char, 64 * 1024> buffer{};
@@ -87,12 +76,18 @@ class BasicNetworkClient final : public INetworkClient {
                 input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
                 const auto count = input.gcount();
                 if (count > 0) {
-                    output.write(buffer.data(), count);
+                    auto write = target.write(buffer.data(), static_cast<std::size_t>(count));
+                    if (!write) {
+                        return Result<DownloadResult>::fail(write.error());
+                    }
                     written += static_cast<std::uint64_t>(count);
                     if (progress) {
-                        progress({written, static_cast<std::uint64_t>(total), util::pathToUtf8(target)});
+                        progress({written, static_cast<std::uint64_t>(total), {}});
                     }
                 }
+            }
+            if (input.bad()) {
+                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
             }
 
             DownloadResult result;

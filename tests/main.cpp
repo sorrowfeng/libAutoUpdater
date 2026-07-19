@@ -16,6 +16,11 @@ void testApplyExecutorRequiresWritableJournal();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
+void testApplyExecutorRejectsSourceTargetBackupLinks();
+void testRootedFileSystemPinsHandlesAndRejectsSwaps();
+void testLocalSnapshotUsesOneOpenedFileHandle();
+void testDownloadExecutorContainsSwapsAndHardLinks();
+void testApplyExecutorUsesSafePosixPermissions();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
@@ -38,6 +43,11 @@ int main() {
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},
+        {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
+        {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
+        {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},
+        {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},
+        {"ApplyExecutorUsesSafePosixPermissions", testApplyExecutorUsesSafePosixPermissions},
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},

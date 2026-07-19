@@ -41,9 +41,39 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnve
     plan.operations = decision.operations;
 
     const auto planPath = config.tempDir / "apply-plan.json";
-    auto write = fileSystem.writeText(planPath, plan.toJson());
+    auto root = fileSystem.openRoot(config.tempDir, RootAccess::ReadWrite, true);
+    if (!root) {
+        return Result<WrittenApplyPlan>::fail(root.error());
+    }
+    auto existing = root.value()->openRegularFile("apply-plan.json", RootedFileOpenMode::ReadOnly);
+    if (!existing) {
+        return Result<WrittenApplyPlan>::fail(existing.error());
+    }
+    RootedEntryExpectation expectation = RootedEntryExpectation::missing();
+    if (existing.value().exists()) {
+        auto metadata = existing.value().file->metadata();
+        if (!metadata) {
+            return Result<WrittenApplyPlan>::fail(metadata.error());
+        }
+        expectation = RootedEntryExpectation::matching(metadata.value());
+    }
+    existing.value().file.reset();
+    auto temporary = root.value()->createAtomicReplacement("apply-plan.json");
+    if (!temporary) {
+        return Result<WrittenApplyPlan>::fail(temporary.error());
+    }
+    const auto json = plan.toJson();
+    auto write = temporary.value()->file().write(json.data(), json.size());
     if (!write) {
         return Result<WrittenApplyPlan>::fail(write.error());
+    }
+    auto flushed = temporary.value()->file().flush();
+    if (!flushed) {
+        return Result<WrittenApplyPlan>::fail(flushed.error());
+    }
+    auto committed = temporary.value()->commit(expectation);
+    if (!committed) {
+        return Result<WrittenApplyPlan>::fail(committed.error());
     }
 
     WrittenApplyPlan written;

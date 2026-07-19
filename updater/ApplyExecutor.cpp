@@ -1,16 +1,15 @@
 #include "ApplyExecutor.h"
 
+#include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
+#include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 #include "util/Json.h"
-#include "util/PathUtil.h"
 #include "util/Sha256.h"
 
-#include <algorithm>
-#include <atomic>
+#include <array>
 #include <chrono>
-#include <fstream>
-#include <random>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -21,9 +20,7 @@
 #else
 #include <cerrno>
 #include <csignal>
-#include <fcntl.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -34,244 +31,111 @@ namespace {
 struct AppliedOperation {
     ApplyOperation operation;
     bool backupExists = false;
+    RootedEntryExpectation expectedCurrent = RootedEntryExpectation::missing();
 };
 
-struct LockCleanup {
-    std::filesystem::path path;
-    LockCleanup() = default;
-    explicit LockCleanup(std::filesystem::path value) : path(std::move(value)) {}
-    LockCleanup(const LockCleanup&) = delete;
-    LockCleanup& operator=(const LockCleanup&) = delete;
-    LockCleanup(LockCleanup&& other) noexcept : path(std::move(other.path)) {
-        other.path.clear();
-    }
-    LockCleanup& operator=(LockCleanup&& other) noexcept {
-        if (this != &other) {
-            path = std::move(other.path);
-            other.path.clear();
-        }
-        return *this;
-    }
-    ~LockCleanup() {
-        if (!path.empty()) {
-            std::error_code ec;
-            std::filesystem::remove_all(path, ec);
-        }
-    }
-};
+std::filesystem::perms sanitizedFilePermissions(std::filesystem::perms permissions) {
+    constexpr auto allowed = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                             std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
+                             std::filesystem::perms::group_write | std::filesystem::perms::group_exec |
+                             std::filesystem::perms::others_read | std::filesystem::perms::others_write |
+                             std::filesystem::perms::others_exec;
+    return permissions & allowed;
+}
 
-Result<void> createDirectories(const std::filesystem::path& path) {
-    std::error_code ec;
-    std::filesystem::create_directories(path, ec);
-    if (ec) {
-        return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
+std::filesystem::perms defaultInstalledFilePermissions() {
+    // ApplyPlan does not yet carry a signed mode field. New files therefore
+    // receive a non-executable safe default instead of inheriting mutable
+    // staging permissions.
+    return std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+           std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+}
+
+Result<RootedEntryExpectation> expectationFor(const RootedOpenResult& opened) {
+    if (!opened.exists()) {
+        return Result<RootedEntryExpectation>::ok(RootedEntryExpectation::missing());
+    }
+    auto metadata = opened.file->metadata();
+    if (!metadata) {
+        return Result<RootedEntryExpectation>::fail(metadata.error());
+    }
+    return Result<RootedEntryExpectation>::ok(RootedEntryExpectation::matching(metadata.value()));
+}
+
+Result<void> copyRootedFile(IRootedFile& source, IRootedFile& destination) {
+    auto sourceStart = source.seek(0);
+    if (!sourceStart) {
+        return sourceStart;
+    }
+    auto cleared = destination.truncate(0);
+    if (!cleared) {
+        return cleared;
+    }
+    auto destinationStart = destination.seek(0);
+    if (!destinationStart) {
+        return destinationStart;
+    }
+
+    std::array<unsigned char, 64 * 1024> buffer{};
+    for (;;) {
+        auto read = source.read(buffer.data(), buffer.size());
+        if (!read) {
+            return Result<void>::fail(read.error());
+        }
+        if (read.value() == 0) {
+            break;
+        }
+        auto written = destination.write(buffer.data(), read.value());
+        if (!written) {
+            return written;
+        }
     }
     return Result<void>::ok();
 }
 
-Result<void> copyReplacing(const std::filesystem::path& from, const std::filesystem::path& to) {
-    auto dirs = createDirectories(to.parent_path());
-    if (!dirs) {
-        return dirs;
+Result<void> copyPermissions(IRootedFile& source, IRootedFile& destination) {
+    auto metadata = source.metadata();
+    if (!metadata) {
+        return Result<void>::fail(metadata.error());
     }
-    std::error_code ec;
-    std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
+    return destination.setPermissions(sanitizedFilePermissions(metadata.value().permissions));
+}
+
+Result<void> verifySameContent(IRootedFile& source, IRootedFile& destination, IHashProvider& hashProvider) {
+    auto sourceMetadata = source.metadata();
+    if (!sourceMetadata) {
+        return Result<void>::fail(sourceMetadata.error());
     }
-#ifndef _WIN32
-    std::filesystem::permissions(to, std::filesystem::status(from, ec).permissions(), ec);
-#endif
+    auto destinationMetadata = destination.metadata();
+    if (!destinationMetadata) {
+        return Result<void>::fail(destinationMetadata.error());
+    }
+    if (sourceMetadata.value().size != destinationMetadata.value().size) {
+        return Result<void>::fail({ErrorCode::HashMismatch, "Rooted file copy size mismatch"});
+    }
+    auto sourceHash = hashProvider.sha256Stream(source);
+    if (!sourceHash) {
+        return Result<void>::fail(sourceHash.error());
+    }
+    auto destinationHash = hashProvider.sha256Stream(destination);
+    if (!destinationHash) {
+        return Result<void>::fail(destinationHash.error());
+    }
+    if (sourceHash.value() != destinationHash.value()) {
+        return Result<void>::fail({ErrorCode::HashMismatch, "Rooted file copy SHA-256 mismatch"});
+    }
     return Result<void>::ok();
 }
 
-Result<void> systemFailure(const std::string& action, int code) {
-#ifdef _WIN32
-    return Result<void>::fail({ErrorCode::FileSystemError,
-                               action + ": " + std::system_category().message(code)});
-#else
-    return Result<void>::fail({ErrorCode::FileSystemError,
-                               action + ": " + std::generic_category().message(code)});
-#endif
-}
-
-std::filesystem::path journalTemporaryPath(const std::filesystem::path& path) {
-    static std::atomic<std::uint64_t> sequence{0};
-    std::random_device random;
-    std::string seed = util::pathToUtf8(path);
-    seed.append(std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    seed.append(std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
-    seed.append(std::to_string(random()));
-    seed.append(std::to_string(random()));
-    return std::filesystem::path(path).concat(".tmp." + util::sha256Bytes(seed).substr(0, 24));
-}
-
-Result<void> atomicWriteFile(const std::filesystem::path& path, const std::string& contents) {
-    const auto temporaryPath = journalTemporaryPath(path);
-
-#ifdef _WIN32
-    HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        return systemFailure("Failed to create journal temporary file", static_cast<int>(GetLastError()));
+Result<void> verifyExpectedContent(IRootedFile& file, const ApplyOperation& operation, IHashProvider& hashProvider) {
+    auto metadata = file.metadata();
+    if (!metadata) {
+        return Result<void>::fail(metadata.error());
     }
-
-    std::size_t offset = 0;
-    while (offset < contents.size()) {
-        const auto remaining = contents.size() - offset;
-        const auto chunk =
-            static_cast<DWORD>(std::min<std::size_t>(remaining, static_cast<std::size_t>(MAXDWORD)));
-        DWORD written = 0;
-        if (!WriteFile(file, contents.data() + offset, chunk, &written, nullptr) || written == 0) {
-            const auto error = GetLastError();
-            CloseHandle(file);
-            DeleteFileW(temporaryPath.c_str());
-            return systemFailure("Failed to write journal temporary file", static_cast<int>(error));
-        }
-        offset += written;
+    if (metadata.value().size != operation.size) {
+        return Result<void>::fail({ErrorCode::HashMismatch, "Installed file size mismatch: " + operation.target});
     }
-
-    if (!FlushFileBuffers(file)) {
-        const auto error = GetLastError();
-        CloseHandle(file);
-        DeleteFileW(temporaryPath.c_str());
-        return systemFailure("Failed to flush journal temporary file", static_cast<int>(error));
-    }
-    if (!CloseHandle(file)) {
-        const auto error = GetLastError();
-        DeleteFileW(temporaryPath.c_str());
-        return systemFailure("Failed to close journal temporary file", static_cast<int>(error));
-    }
-    if (!MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        const auto error = GetLastError();
-        DeleteFileW(temporaryPath.c_str());
-        return systemFailure("Failed to replace transaction journal", static_cast<int>(error));
-    }
-#else
-    int flags = O_WRONLY | O_CREAT | O_EXCL;
-#ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-    flags |= O_NOFOLLOW;
-#endif
-    const int file = ::open(temporaryPath.c_str(), flags, S_IRUSR | S_IWUSR);
-    if (file < 0) {
-        return systemFailure("Failed to create journal temporary file", errno);
-    }
-
-    std::size_t offset = 0;
-    while (offset < contents.size()) {
-        const auto written = ::write(file, contents.data() + offset, contents.size() - offset);
-        if (written < 0 && errno == EINTR) {
-            continue;
-        }
-        if (written <= 0) {
-            const auto error = errno;
-            ::close(file);
-            ::unlink(temporaryPath.c_str());
-            return systemFailure("Failed to write journal temporary file", error);
-        }
-        offset += static_cast<std::size_t>(written);
-    }
-
-    if (::fsync(file) != 0) {
-        const auto error = errno;
-        ::close(file);
-        ::unlink(temporaryPath.c_str());
-        return systemFailure("Failed to flush journal temporary file", error);
-    }
-    if (::close(file) != 0) {
-        const auto error = errno;
-        ::unlink(temporaryPath.c_str());
-        return systemFailure("Failed to close journal temporary file", error);
-    }
-    if (::rename(temporaryPath.c_str(), path.c_str()) != 0) {
-        const auto error = errno;
-        ::unlink(temporaryPath.c_str());
-        return systemFailure("Failed to replace transaction journal", error);
-    }
-
-    int directoryFlags = O_RDONLY;
-#ifdef O_CLOEXEC
-    directoryFlags |= O_CLOEXEC;
-#endif
-#ifdef O_DIRECTORY
-    directoryFlags |= O_DIRECTORY;
-#endif
-    const int directory = ::open(path.parent_path().c_str(), directoryFlags);
-    if (directory < 0) {
-        return systemFailure("Failed to open journal directory for flush", errno);
-    }
-    if (::fsync(directory) != 0) {
-        const auto error = errno;
-        ::close(directory);
-        return systemFailure("Failed to flush journal directory", error);
-    }
-    if (::close(directory) != 0) {
-        return systemFailure("Failed to close journal directory", errno);
-    }
-#endif
-
-    return Result<void>::ok();
-}
-
-std::filesystem::path joinChecked(const std::filesystem::path& root, const std::string& relative) {
-    auto joined = util::safeJoin(root, relative);
-    if (!joined) {
-        return {};
-    }
-    return joined.value();
-}
-
-Result<void> writeJournal(const ApplyPlan& plan, const std::vector<AppliedOperation>& applied,
-                          const std::string& state) {
-    try {
-        const auto journalDir = plan.installDir / ".autoupdater" / "journal";
-        auto dirs = createDirectories(journalDir);
-        if (!dirs) {
-            return dirs;
-        }
-        auto fileName = transactionJournalFileName(plan);
-        if (!fileName) {
-            return Result<void>::fail(fileName.error());
-        }
-
-        std::ostringstream output;
-        output << "{\n";
-        output << "  \"state\": \"" << util::jsonEscape(state) << "\",\n";
-        output << "  \"toVersion\": \"" << util::jsonEscape(plan.toVersion) << "\",\n";
-        output << "  \"appliedCount\": " << applied.size() << "\n";
-        output << "}\n";
-        return atomicWriteFile(journalDir / fileName.value(), output.str());
-    } catch (...) {
-        return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write transaction journal"});
-    }
-}
-
-void rollback(const ApplyPlan& plan, const std::vector<AppliedOperation>& applied) {
-    for (auto it = applied.rbegin(); it != applied.rend(); ++it) {
-        const auto target = joinChecked(plan.installDir, it->operation.target);
-        const auto backup = joinChecked(plan.backupDir, it->operation.target);
-        if (target.empty() || backup.empty()) {
-            continue;
-        }
-        std::error_code ec;
-        if (it->backupExists && std::filesystem::exists(backup, ec)) {
-            std::filesystem::create_directories(target.parent_path(), ec);
-            std::filesystem::copy_file(backup, target, std::filesystem::copy_options::overwrite_existing, ec);
-        } else {
-            std::filesystem::remove(target, ec);
-        }
-    }
-}
-
-Result<void> verifyReplace(const ApplyPlan& plan, const ApplyOperation& operation, IHashProvider& hashProvider) {
-    const auto target = joinChecked(plan.installDir, operation.target);
-    if (target.empty()) {
-        return Result<void>::fail({ErrorCode::PathTraversalRejected, "Invalid apply target"});
-    }
-    auto hash = hashProvider.sha256File(target);
+    auto hash = hashProvider.sha256Stream(file);
     if (!hash) {
         return Result<void>::fail(hash.error());
     }
@@ -279,6 +143,140 @@ Result<void> verifyReplace(const ApplyPlan& plan, const ApplyOperation& operatio
         return Result<void>::fail({ErrorCode::HashMismatch, "Installed file SHA-256 mismatch: " + operation.target});
     }
     return Result<void>::ok();
+}
+
+Result<void> writeJournal(const ApplyPlan& plan, IRootedDirectory& installRoot,
+                          const std::vector<AppliedOperation>& applied, const std::string& state) {
+    try {
+        auto fileName = transactionJournalFileName(plan);
+        if (!fileName) {
+            return Result<void>::fail(fileName.error());
+        }
+        const auto relativePath = ".autoupdater/journal/" + fileName.value();
+        auto existing = installRoot.openRegularFile(relativePath, RootedFileOpenMode::ReadOnly);
+        if (!existing) {
+            return Result<void>::fail(existing.error());
+        }
+        auto expectation = expectationFor(existing.value());
+        if (!expectation) {
+            return Result<void>::fail(expectation.error());
+        }
+        existing.value().file.reset();
+
+        std::ostringstream output;
+        output << "{\n";
+        output << "  \"state\": \"" << util::jsonEscape(state) << "\",\n";
+        output << "  \"toVersion\": \"" << util::jsonEscape(plan.toVersion) << "\",\n";
+        output << "  \"appliedCount\": " << applied.size() << "\n";
+        output << "}\n";
+        const auto contents = output.str();
+
+        auto temporary = installRoot.createAtomicReplacement(relativePath);
+        if (!temporary) {
+            return Result<void>::fail(temporary.error());
+        }
+        auto written = temporary.value()->file().write(contents.data(), contents.size());
+        if (!written) {
+            return written;
+        }
+        auto flushed = temporary.value()->file().flush();
+        if (!flushed) {
+            return flushed;
+        }
+        return temporary.value()->commit(expectation.value());
+    } catch (...) {
+        return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write transaction journal"});
+    }
+}
+
+Result<void> createBackup(IRootedDirectory& backupRoot, const std::string& target, IRootedFile& source,
+                          IHashProvider& hashProvider) {
+    auto existing = backupRoot.openRegularFile(target, RootedFileOpenMode::ReadOnly);
+    if (!existing) {
+        return Result<void>::fail(existing.error());
+    }
+    if (existing.value().exists()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Refusing to overwrite an existing update backup"});
+    }
+
+    auto temporary = backupRoot.createAtomicReplacement(target);
+    if (!temporary) {
+        return Result<void>::fail(temporary.error());
+    }
+    auto copied = copyRootedFile(source, temporary.value()->file());
+    if (!copied) {
+        return copied;
+    }
+    auto permissions = copyPermissions(source, temporary.value()->file());
+    if (!permissions) {
+        return permissions;
+    }
+    auto flushed = temporary.value()->file().flush();
+    if (!flushed) {
+        return flushed;
+    }
+    auto verified = verifySameContent(source, temporary.value()->file(), hashProvider);
+    if (!verified) {
+        return verified;
+    }
+    return temporary.value()->commit(RootedEntryExpectation::missing());
+}
+
+Result<void> rollback(IRootedDirectory& installRoot, IRootedDirectory& backupRoot,
+                      const std::vector<AppliedOperation>& applied, IHashProvider& hashProvider) {
+    for (auto it = applied.rbegin(); it != applied.rend(); ++it) {
+        if (it->backupExists) {
+            auto backup = backupRoot.openRegularFile(it->operation.target, RootedFileOpenMode::ReadOnly);
+            if (!backup) {
+                return Result<void>::fail(backup.error());
+            }
+            if (!backup.value().exists()) {
+                return Result<void>::fail({ErrorCode::ApplyFailed, "Required rollback backup is missing"});
+            }
+            auto temporary = installRoot.createAtomicReplacement(it->operation.target,
+                                                                 RootedDirectoryCreationMode::InstalledContent);
+            if (!temporary) {
+                return Result<void>::fail(temporary.error());
+            }
+            auto copied = copyRootedFile(*backup.value().file, temporary.value()->file());
+            if (!copied) {
+                return copied;
+            }
+            auto permissions = copyPermissions(*backup.value().file, temporary.value()->file());
+            if (!permissions) {
+                return permissions;
+            }
+            auto flushed = temporary.value()->file().flush();
+            if (!flushed) {
+                return flushed;
+            }
+            auto verified = verifySameContent(*backup.value().file, temporary.value()->file(), hashProvider);
+            if (!verified) {
+                return verified;
+            }
+            auto committed = temporary.value()->commit(it->expectedCurrent);
+            if (!committed) {
+                return committed;
+            }
+        } else if (it->expectedCurrent.kind == RootedEntryExpectationKind::Identity) {
+            auto removed = installRoot.removeRegularFile(it->operation.target, it->expectedCurrent);
+            if (!removed) {
+                return removed;
+            }
+        }
+    }
+    return Result<void>::ok();
+}
+
+Result<void> failAfterRollback(const Error& original, IRootedDirectory& installRoot, IRootedDirectory& backupRoot,
+                               const std::vector<AppliedOperation>& applied, IHashProvider& hashProvider) {
+    auto rolledBack = rollback(installRoot, backupRoot, applied, hashProvider);
+    if (!rolledBack) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, original.message + "; rollback failed: " + rolledBack.error().message});
+    }
+    return Result<void>::fail(original);
 }
 
 Result<void> restart(const ApplyPlan& plan) {
@@ -296,25 +294,13 @@ Result<void> restart(const ApplyPlan& plan) {
     return launcher->launch(request);
 }
 
-Result<LockCleanup> acquireUpdateLock(const std::filesystem::path& installDir) {
-    const auto stateDir = installDir / ".autoupdater";
-    auto dirs = createDirectories(stateDir);
-    if (!dirs) {
-        return Result<LockCleanup>::fail(dirs.error());
+bool hasReplaceOperation(const ApplyPlan& plan) {
+    for (const auto& operation : plan.operations) {
+        if (operation.type == ApplyOperationType::Replace) {
+            return true;
+        }
     }
-
-    const auto lockPath = stateDir / "update.lock";
-    std::error_code ec;
-    if (!std::filesystem::create_directory(lockPath, ec)) {
-        return Result<LockCleanup>::fail({ErrorCode::ApplyFailed, "Another update appears to be running"});
-    }
-    if (ec) {
-        return Result<LockCleanup>::fail({ErrorCode::FileSystemError, ec.message()});
-    }
-
-    std::ofstream metadata(lockPath / "owner.txt", std::ios::binary | std::ios::trunc);
-    metadata << "autoupdater_apply\n";
-    return Result<LockCleanup>::ok(LockCleanup(lockPath));
+    return false;
 }
 
 } // namespace
@@ -359,87 +345,156 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
     std::vector<AppliedOperation> applied;
     try {
-        auto lock = acquireUpdateLock(plan.installDir);
+        auto fileSystem = createDefaultFileSystem();
+        auto hashProvider = createDefaultHashProvider();
+
+        auto installRoot = fileSystem->openRoot(plan.installDir, RootAccess::ReadWrite, true,
+                                                RootedDirectoryCreationMode::InstalledContent);
+        if (!installRoot) {
+            return Result<void>::fail(installRoot.error());
+        }
+        auto backupRoot = fileSystem->openRoot(plan.backupDir, RootAccess::ReadWrite, true);
+        if (!backupRoot) {
+            return Result<void>::fail(backupRoot.error());
+        }
+
+        std::unique_ptr<IRootedDirectory> stagingRoot;
+        if (hasReplaceOperation(plan)) {
+            auto openedStaging = fileSystem->openRoot(plan.stagingDir, RootAccess::ReadOnly, false);
+            if (!openedStaging) {
+                return Result<void>::fail(openedStaging.error());
+            }
+            stagingRoot = std::move(openedStaging.value());
+        }
+
+        auto lock = installRoot.value()->acquireExclusiveLock(".autoupdater/update.lock");
         if (!lock) {
             return Result<void>::fail(lock.error());
         }
-        auto lockCleanup = std::move(lock.value());
 
-        auto backupDirs = createDirectories(plan.backupDir);
-        if (!backupDirs) {
-            return backupDirs;
-        }
-        auto hashProvider = createDefaultHashProvider();
-
-        auto initialJournal = writeJournal(plan, applied, "applying");
+        auto initialJournal = writeJournal(plan, *installRoot.value(), applied, "applying");
         if (!initialJournal) {
             return initialJournal;
         }
 
         for (const auto& operation : plan.operations) {
-            const auto target = joinChecked(plan.installDir, operation.target);
-            if (target.empty()) {
-                rollback(plan, applied);
-                return Result<void>::fail({ErrorCode::PathTraversalRejected, "Invalid apply target"});
+            auto target = installRoot.value()->openRegularFile(operation.target, RootedFileOpenMode::ReadOnly);
+            if (!target) {
+                return failAfterRollback(target.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                         *hashProvider);
             }
-            const auto backup = joinChecked(plan.backupDir, operation.target);
-            if (backup.empty()) {
-                rollback(plan, applied);
-                return Result<void>::fail({ErrorCode::PathTraversalRejected, "Invalid backup target"});
+            auto targetExpectation = expectationFor(target.value());
+            if (!targetExpectation) {
+                return failAfterRollback(targetExpectation.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                         *hashProvider);
+            }
+            std::optional<std::filesystem::perms> targetPermissions;
+            if (target.value().exists()) {
+                auto targetMetadata = target.value().file->metadata();
+                if (!targetMetadata) {
+                    return failAfterRollback(targetMetadata.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                targetPermissions = targetMetadata.value().permissions;
             }
 
             AppliedOperation appliedOperation;
             appliedOperation.operation = operation;
-            std::error_code ec;
-            appliedOperation.backupExists = std::filesystem::exists(target, ec);
-            if (appliedOperation.backupExists) {
-                auto copied = copyReplacing(target, backup);
-                if (!copied) {
-                    rollback(plan, applied);
-                    return copied;
+            appliedOperation.backupExists = target.value().exists();
+            appliedOperation.expectedCurrent = targetExpectation.value();
+
+            if (target.value().exists()) {
+                auto backedUp =
+                    createBackup(*backupRoot.value(), operation.target, *target.value().file, *hashProvider);
+                if (!backedUp) {
+                    return failAfterRollback(backedUp.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
                 }
             }
+            target.value().file.reset();
             applied.push_back(std::move(appliedOperation));
 
             if (operation.type == ApplyOperationType::Replace) {
-                const auto source = joinChecked(plan.stagingDir, operation.source);
-                if (source.empty()) {
-                    rollback(plan, applied);
-                    return Result<void>::fail({ErrorCode::PathTraversalRejected, "Invalid apply source"});
+                auto source = stagingRoot->openRegularFile(operation.source, RootedFileOpenMode::ReadOnly);
+                if (!source) {
+                    return failAfterRollback(source.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
                 }
-                auto copied = copyReplacing(source, target);
+                if (!source.value().exists()) {
+                    return failAfterRollback({ErrorCode::FileSystemError, "Staged update file is missing"},
+                                             *installRoot.value(), *backupRoot.value(), applied, *hashProvider);
+                }
+                auto sourceVerified = verifyExpectedContent(*source.value().file, operation, *hashProvider);
+                if (!sourceVerified) {
+                    return failAfterRollback(sourceVerified.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+
+                auto temporary = installRoot.value()->createAtomicReplacement(
+                    operation.target, RootedDirectoryCreationMode::InstalledContent);
+                if (!temporary) {
+                    return failAfterRollback(temporary.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                auto copied = copyRootedFile(*source.value().file, temporary.value()->file());
                 if (!copied) {
-                    rollback(plan, applied);
-                    return copied;
+                    return failAfterRollback(copied.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
                 }
-                auto verified = verifyReplace(plan, operation, *hashProvider);
+                auto permissions =
+                    targetPermissions
+                        ? temporary.value()->file().setPermissions(sanitizedFilePermissions(*targetPermissions))
+                        : temporary.value()->file().setPermissions(defaultInstalledFilePermissions());
+                if (!permissions) {
+                    return failAfterRollback(permissions.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                auto flushed = temporary.value()->file().flush();
+                if (!flushed) {
+                    return failAfterRollback(flushed.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                auto verified = verifyExpectedContent(temporary.value()->file(), operation, *hashProvider);
                 if (!verified) {
-                    rollback(plan, applied);
-                    return verified;
+                    return failAfterRollback(verified.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
                 }
-            } else if (operation.type == ApplyOperationType::Remove) {
-                std::filesystem::remove(target, ec);
-                if (ec) {
-                    rollback(plan, applied);
-                    return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
+                auto installedMetadata = temporary.value()->file().metadata();
+                if (!installedMetadata) {
+                    return failAfterRollback(installedMetadata.error(), *installRoot.value(), *backupRoot.value(),
+                                             applied, *hashProvider);
                 }
+                auto committed = temporary.value()->commit(applied.back().expectedCurrent);
+                if (!committed) {
+                    return failAfterRollback(committed.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                applied.back().expectedCurrent = RootedEntryExpectation::matching(installedMetadata.value());
+                temporary.value().reset();
+            } else if (operation.type == ApplyOperationType::Remove &&
+                       targetExpectation.value().kind == RootedEntryExpectationKind::Identity) {
+                auto removed = installRoot.value()->removeRegularFile(operation.target, applied.back().expectedCurrent);
+                if (!removed) {
+                    return failAfterRollback(removed.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                             *hashProvider);
+                }
+                applied.back().expectedCurrent = RootedEntryExpectation::missing();
             }
 
-            auto journal = writeJournal(plan, applied, "applying");
+            auto journal = writeJournal(plan, *installRoot.value(), applied, "applying");
             if (!journal) {
-                rollback(plan, applied);
-                return journal;
+                return failAfterRollback(journal.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                         *hashProvider);
             }
         }
 
-        auto completedJournal = writeJournal(plan, applied, "complete");
+        auto completedJournal = writeJournal(plan, *installRoot.value(), applied, "complete");
         if (!completedJournal) {
-            rollback(plan, applied);
-            return completedJournal;
+            return failAfterRollback(completedJournal.error(), *installRoot.value(), *backupRoot.value(), applied,
+                                     *hashProvider);
         }
         return restart(plan);
     } catch (...) {
-        rollback(plan, applied);
         return Result<void>::fail({ErrorCode::ApplyFailed, "Unexpected apply failure"});
     }
 }

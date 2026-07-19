@@ -9,6 +9,8 @@
 
 namespace autoupdater {
 
+class IRootedFile;
+
 /// Hash abstraction for file and byte SHA-256 calculations.
 class IHashProvider {
   public:
@@ -16,6 +18,7 @@ class IHashProvider {
 
     virtual Result<std::string> sha256File(const std::filesystem::path& path) noexcept = 0;
     virtual Result<std::string> sha256Bytes(std::string_view data) noexcept = 0;
+    virtual Result<std::string> sha256Stream(IRootedFile& file) noexcept = 0;
 };
 
 std::shared_ptr<IHashProvider> createDefaultHashProvider();

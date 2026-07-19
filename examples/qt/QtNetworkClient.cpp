@@ -1,9 +1,6 @@
 #include "QtNetworkClient.h"
 
-#include "util/PathUtil.h"
-
 #include <QEventLoop>
-#include <QFile>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
@@ -43,28 +40,11 @@ autoupdater::Result<std::string> QtNetworkClient::getText(const std::string& url
 }
 
 autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile(
-    const std::string& url, const std::filesystem::path& target, const autoupdater::NetworkOptions& options,
+    const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions& options,
     const std::optional<autoupdater::DownloadResumeInfo>& resume, autoupdater::ProgressCallback progress,
     autoupdater::CancellationToken& cancel) noexcept {
     try {
-        std::error_code ec;
-        if (!target.parent_path().empty()) {
-            std::filesystem::create_directories(target.parent_path(), ec);
-        }
-        if (ec) {
-            return autoupdater::Result<autoupdater::DownloadResult>::fail(
-                {autoupdater::ErrorCode::FileSystemError, ec.message()});
-        }
-
         const bool appending = options.enableResume && resume && resume->offset > 0;
-        QFile file(QString::fromStdString(autoupdater::util::pathToUtf8(target)));
-        const auto mode =
-            appending ? (QIODevice::WriteOnly | QIODevice::Append) : (QIODevice::WriteOnly | QIODevice::Truncate);
-        if (!file.open(mode)) {
-            return autoupdater::Result<autoupdater::DownloadResult>::fail(
-                {autoupdater::ErrorCode::DownloadFailed, "Failed to open target"});
-        }
-
         QNetworkRequest request(QUrl(QString::fromStdString(url)));
         if (appending) {
             QByteArray range("bytes=");
@@ -83,9 +63,15 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         timer.setSingleShot(true);
         auto* reply = manager_.get(request);
         std::uint64_t written = appending ? resume->offset : 0;
+        autoupdater::Error writeError;
         QObject::connect(reply, &QNetworkReply::readyRead, [&] {
             const auto data = reply->readAll();
-            file.write(data);
+            auto result = target.write(data.constData(), static_cast<std::size_t>(data.size()));
+            if (!result) {
+                writeError = result.error();
+                reply->abort();
+                return;
+            }
             written += static_cast<std::uint64_t>(data.size());
         });
         QObject::connect(reply, &QNetworkReply::downloadProgress, [&](qint64 received, qint64 total) {
@@ -93,7 +79,7 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
                 const auto base = appending ? resume->offset : 0;
                 progress({base + static_cast<std::uint64_t>(received),
                           total > 0 ? base + static_cast<std::uint64_t>(total) : 0,
-                          autoupdater::util::pathToUtf8(target)});
+                          {}});
             }
         });
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -110,6 +96,10 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
                 {autoupdater::ErrorCode::Cancelled, "Operation cancelled"});
         }
         if (reply->error() != QNetworkReply::NoError) {
+            if (!writeError.ok()) {
+                reply->deleteLater();
+                return autoupdater::Result<autoupdater::DownloadResult>::fail(writeError);
+            }
             const auto message = reply->errorString().toStdString();
             reply->deleteLater();
             return autoupdater::Result<autoupdater::DownloadResult>::fail(
@@ -117,8 +107,16 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         }
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (appending && status == 200) {
-            file.close();
-            QFile::remove(QString::fromStdString(autoupdater::util::pathToUtf8(target)));
+            auto truncated = target.truncate(0);
+            if (!truncated) {
+                reply->deleteLater();
+                return autoupdater::Result<autoupdater::DownloadResult>::fail(truncated.error());
+            }
+            auto rewound = target.seek(0);
+            if (!rewound) {
+                reply->deleteLater();
+                return autoupdater::Result<autoupdater::DownloadResult>::fail(rewound.error());
+            }
             reply->deleteLater();
             return autoupdater::Result<autoupdater::DownloadResult>::fail(
                 {autoupdater::ErrorCode::DownloadFailed, "Server ignored Range request"});

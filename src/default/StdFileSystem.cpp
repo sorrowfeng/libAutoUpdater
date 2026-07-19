@@ -1,5 +1,7 @@
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 
+#include "default/RootedFileSystemFactory.h"
+
 #include <fstream>
 #include <sstream>
 
@@ -146,6 +148,12 @@ class StdFileSystem final : public IFileSystem {
         } catch (...) {
             return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write file"});
         }
+    }
+
+    Result<std::unique_ptr<IRootedDirectory>> openRoot(const std::filesystem::path& path, RootAccess access,
+                                                       bool create,
+                                                       RootedDirectoryCreationMode directoryMode) noexcept override {
+        return openDefaultRootedDirectory(path, access, create, directoryMode);
     }
 };
 

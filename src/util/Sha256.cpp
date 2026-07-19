@@ -1,5 +1,7 @@
 #include "util/Sha256.h"
 
+#include "libAutoUpdater/interfaces/IRootedFileSystem.h"
+
 #include <array>
 #include <fstream>
 #include <iomanip>
@@ -180,6 +182,35 @@ Result<std::string> sha256File(const std::filesystem::path& path) noexcept {
         return Result<std::string>::ok(toHex(sha.final()));
     } catch (...) {
         return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to hash file"});
+    }
+}
+
+Result<std::string> sha256RootedFile(autoupdater::IRootedFile& file) noexcept {
+    try {
+        auto rewound = file.seek(0);
+        if (!rewound) {
+            return Result<std::string>::fail(rewound.error());
+        }
+
+        Sha256 sha;
+        std::array<unsigned char, 64 * 1024> buffer{};
+        for (;;) {
+            auto read = file.read(buffer.data(), buffer.size());
+            if (!read) {
+                return Result<std::string>::fail(read.error());
+            }
+            if (read.value() == 0) {
+                break;
+            }
+            sha.update(buffer.data(), read.value());
+        }
+        auto reset = file.seek(0);
+        if (!reset) {
+            return Result<std::string>::fail(reset.error());
+        }
+        return Result<std::string>::ok(toHex(sha.final()));
+    } catch (...) {
+        return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to hash rooted file"});
     }
 }
 

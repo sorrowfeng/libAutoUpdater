@@ -27,13 +27,14 @@ struct TextContext {
 };
 
 struct FileContext {
-    std::ofstream* output = nullptr;
+    IRootedFile* output = nullptr;
     ProgressCallback progress;
     std::string currentFile;
     std::uint64_t downloaded = 0;
     std::uint64_t total = 0;
     std::string etag;
     std::string lastModified;
+    Error writeError;
     CancellationToken* cancel = nullptr;
 };
 
@@ -53,7 +54,11 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
         return 0;
     }
     const auto bytes = size * nmemb;
-    context->output->write(ptr, static_cast<std::streamsize>(bytes));
+    auto written = context->output->write(ptr, bytes);
+    if (!written) {
+        context->writeError = written.error();
+        return 0;
+    }
     context->downloaded += static_cast<std::uint64_t>(bytes);
     if (context->progress) {
         context->progress({context->downloaded, context->total, context->currentFile});
@@ -128,37 +133,19 @@ class CurlNetworkClient final : public INetworkClient {
         return Result<std::string>::ok(std::move(context.data));
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url, const std::filesystem::path& target,
-                                          const NetworkOptions& options,
+    Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
                                           const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         ensureCurlGlobalInit();
         try {
-            std::error_code ec;
-            if (!target.parent_path().empty()) {
-                std::filesystem::create_directories(target.parent_path(), ec);
-                if (ec) {
-                    return Result<DownloadResult>::fail({ErrorCode::FileSystemError, ec.message()});
-                }
-            }
-
-            const auto outputMode = (options.enableResume && resume && resume->offset > 0)
-                                        ? (std::ios::binary | std::ios::app)
-                                        : (std::ios::binary | std::ios::trunc);
-            std::ofstream output(target, outputMode);
-            if (!output) {
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open target file"});
-            }
-
             CURL* curl = curl_easy_init();
             if (!curl) {
                 return Result<DownloadResult>::fail({ErrorCode::NetworkError, "curl_easy_init failed"});
             }
 
             FileContext context;
-            context.output = &output;
+            context.output = &target;
             context.progress = std::move(progress);
-            context.currentFile = util::pathToUtf8(target);
             context.downloaded = resume ? resume->offset : 0;
             context.cancel = &cancel;
 
@@ -202,11 +189,20 @@ class CurlNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
             }
             if (code != CURLE_OK) {
+                if (!context.writeError.ok()) {
+                    return Result<DownloadResult>::fail(context.writeError);
+                }
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, curl_easy_strerror(code)});
             }
             if (resume && resume->offset > 0 && response == 200) {
-                std::error_code ec;
-                std::filesystem::remove(target, ec);
+                auto truncated = target.truncate(0);
+                if (!truncated) {
+                    return Result<DownloadResult>::fail(truncated.error());
+                }
+                auto rewound = target.seek(0);
+                if (!rewound) {
+                    return Result<DownloadResult>::fail(rewound.error());
+                }
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
             }
             if (response >= 400) {
