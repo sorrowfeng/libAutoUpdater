@@ -55,7 +55,19 @@ Check:
 - `updaterExecutable` points to `autoupdater_apply`.
 - `apply-plan.json` was written.
 - The installation directory allows replacement.
-- No stale `.autoupdater/update.lock` remains.
+- No other updater process is actively operating on the same installation.
+
+An ordinary `.autoupdater/update.lock` file is expected to remain on disk. Its
+presence does not mean the lock is held, and its contents are not used as PID
+evidence. Do not delete or replace this regular file to clear contention;
+doing so while a POSIX updater is active can break mutual exclusion. The
+kernel releases the actual lock automatically when its process exits.
+
+Very old releases created `update.lock` as a directory. The current updater
+fails closed when that legacy marker exists because it has no trustworthy PID
+or process-start identity. Confirm that no old updater is running before
+manually moving or removing such a directory, then retry with the current
+updater.
 
 ## Python Command Fails on Windows
 

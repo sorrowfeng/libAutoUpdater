@@ -704,7 +704,22 @@ Lock location:
 install/.autoupdater/update.lock
 ```
 
-The current implementation uses an atomic lock directory. Future platform-specific implementations may use a Windows named mutex or POSIX `flock`.
+The marker is a persistent regular file; its existence or contents do not
+represent ownership. POSIX holds a non-blocking exclusive `flock` on the opened
+file descriptor. Windows opens the same rooted file with a zero share mask and
+keeps that handle open. Both locks are released by the kernel when the holder
+closes the object or terminates, including forced termination, so PID files and
+stale-lock deletion are unnecessary and PID reuse cannot retain ownership.
+
+The updater acquires this lock before reading or recovering transaction
+journals and holds it through rollback, terminal replay, apply, and restart
+handoff. Installation roots must therefore reside on a filesystem that honors
+the platform locking primitive. Never delete or replace a regular
+`update.lock` marker to break contention: on POSIX that could allow a second
+process to lock a different inode while the first updater is still active.
+Legacy releases used a directory at this path. Because those directories carry
+no trustworthy owner identity, the updater treats one as an active conflict and
+requires operator verification before manual migration.
 
 ## 11. CMake Targets
 

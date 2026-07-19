@@ -84,6 +84,10 @@ class IRootedTemporaryFile {
 
 class IRootedLock {
   public:
+    /// Holds a non-blocking, cross-process kernel lock for this object's
+    /// lifetime. Destroying the object or terminating the owning process must
+    /// release ownership; the on-disk marker may remain and does not by itself
+    /// indicate that the lock is held.
     virtual ~IRootedLock() = default;
 };
 
@@ -106,6 +110,8 @@ class IRootedDirectory {
     /// the target from durable transaction evidence before retrying.
     virtual Result<void> removeRegularFile(const std::string& relativePath,
                                            const RootedEntryExpectation& expectation) noexcept = 0;
+    /// Attempts to acquire an exclusive lock without waiting. Active
+    /// contention is reported as ApplyFailed.
     virtual Result<std::unique_ptr<IRootedLock>> acquireExclusiveLock(const std::string& relativePath) noexcept = 0;
 };
 

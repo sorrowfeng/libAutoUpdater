@@ -395,6 +395,10 @@ int expectBlocked(const std::filesystem::path& helper, const std::filesystem::pa
     return runChild(helper, {"--expect-blocked", pathArgument(planPath)});
 }
 
+int expectLockBlocked(const std::filesystem::path& helper, const std::filesystem::path& planPath) {
+    return runChild(helper, {"--expect-lock-blocked", pathArgument(planPath)});
+}
+
 std::filesystem::path activeJournal(const std::filesystem::path& installDir) {
     return installDir / ".autoupdater" / "journal" / "active.json";
 }
@@ -650,6 +654,43 @@ void testReplaceAndJournalBoundaries(const std::filesystem::path& helper) {
         requireActiveJournalCleared(plan, boundary.name);
         LAU_REQUIRE(readFile(target) == (boundary.expectedNewAfterNextStart ? kNewContents : kOldContents));
     }
+}
+
+void testUpdateLockLifecycle(const std::filesystem::path& helper) {
+    TemporaryDirectory temporary("update-lock-lifecycle");
+    const auto plan = replacePlan(temporary, true);
+    const auto planPath = savePlan(temporary, plan);
+    const auto target = plan.installDir / "bin/app.txt";
+    const auto lockPath = plan.installDir / ".autoupdater" / "update.lock";
+
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto installRoot = fileSystem->openRoot(plan.installDir, autoupdater::RootAccess::ReadWrite, true,
+                                            autoupdater::RootedDirectoryCreationMode::InstalledContent);
+    LAU_REQUIRE(installRoot);
+    auto held = installRoot.value()->acquireExclusiveLock(".autoupdater/update.lock");
+    LAU_REQUIRE(held);
+    LAU_REQUIRE(std::filesystem::is_regular_file(lockPath));
+
+    // A second updater must fail before it can create or recover a journal.
+    LAU_REQUIRE(expectLockBlocked(helper, planPath) == 0);
+    LAU_REQUIRE(!std::filesystem::exists(activeJournal(plan.installDir)));
+    LAU_REQUIRE(readFile(target) == kOldContents);
+    held.value().reset();
+
+    // Forced termination bypasses all destructors. The next process must still
+    // acquire the kernel lock while reusing the persistent regular marker.
+    LAU_REQUIRE(crashAt(helper, planPath, "journal.active.after", false) == kCrashExitCode);
+    LAU_REQUIRE(std::filesystem::is_regular_file(lockPath));
+    requireActiveJournalState(plan, true, "update lock owner crash");
+
+    // Lock ownership is never inferred from marker contents. A live PID paired
+    // with deliberately wrong start identity models PID reuse and must not turn
+    // an unlocked marker into a permanent lock.
+    writeFile(lockPath, "pid=" + std::to_string(processId()) + "\nstart=definitely-not-this-process\n");
+    LAU_REQUIRE(recover(helper, planPath) == 0);
+    requireActiveJournalCleared(plan, "update lock crash recovery");
+    LAU_REQUIRE(std::filesystem::is_regular_file(lockPath));
+    LAU_REQUIRE(readFile(target) == kOldContents);
 }
 
 void testRemoveBoundaries(const std::filesystem::path& helper) {
@@ -1523,6 +1564,7 @@ void testApplyExecutorRecoversAfterForcedTermination() {
     LAU_REQUIRE(!error);
 
     testReplaceAndJournalBoundaries(helper);
+    testUpdateLockLifecycle(helper);
     testRemoveBoundaries(helper);
     testRollbackReplaceBoundaries(helper);
     testRollbackRemoveBoundaries(helper);

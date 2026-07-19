@@ -187,7 +187,7 @@ likelihood of affecting production update flows.
     - Strictly parse and bound PID and timeout arguments.
     - Implement Windows argument quoting according to the CRT rules.
 
-- [ ] **AU-012 — Replace the crash-persistent directory lock**
+- [x] **AU-012 — Replace the crash-persistent directory lock**
   - Classification: Verified medium-impact availability defect.
   - Key code: `updater/ApplyExecutor.cpp:157-175`.
   - Completion criteria:

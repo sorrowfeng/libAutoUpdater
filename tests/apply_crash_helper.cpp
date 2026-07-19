@@ -174,6 +174,20 @@ int runBlocked(const autoupdater::ApplyPlan& plan) {
     return kUnexpectedRecoveryExitCode;
 }
 
+int runLockBlocked(const autoupdater::ApplyPlan& plan) {
+    const auto result = autoupdater::updater::executeApplyPlanWithDependencies(plan, dependencies());
+    if (!result && result.error().code == autoupdater::ErrorCode::ApplyFailed &&
+        result.error().message == "Another update appears to be running") {
+        return 0;
+    }
+    std::cerr << "apply was not rejected by the active update lock";
+    if (!result) {
+        std::cerr << ": " << autoupdater::toString(result.error().code) << ": " << result.error().message;
+    }
+    std::cerr << "\n";
+    return kUnexpectedRecoveryExitCode;
+}
+
 int runRecovery(const autoupdater::ApplyPlan& plan, const std::filesystem::path& launchMarker = {},
                 bool expectOperatorIntervention = false, bool failLaunch = false) {
     const auto result =
@@ -227,7 +241,8 @@ void printUsage() {
                  "  libAutoUpdater_apply_crash_helper --recover-marker <plan.json> <marker>\n"
                  "  libAutoUpdater_apply_crash_helper --recover-marker-fail <plan.json> <marker>\n"
                  "  libAutoUpdater_apply_crash_helper --recover-intervention <plan.json> <marker>\n"
-                 "  libAutoUpdater_apply_crash_helper --expect-blocked <plan.json>\n";
+                 "  libAutoUpdater_apply_crash_helper --expect-blocked <plan.json>\n"
+                 "  libAutoUpdater_apply_crash_helper --expect-lock-blocked <plan.json>\n";
 }
 
 } // namespace
@@ -278,6 +293,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "--expect-blocked" && argc == 3) {
         return runBlocked(plan.value());
+    }
+    if (mode == "--expect-lock-blocked" && argc == 3) {
+        return runLockBlocked(plan.value());
     }
     printUsage();
     return 64;
