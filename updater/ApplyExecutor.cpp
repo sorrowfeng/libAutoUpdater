@@ -1,18 +1,17 @@
 #include "ApplyExecutor.h"
 
+#include "ApplyJournal.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
 #include "libAutoUpdater/interfaces/IRootedFileSystem.h"
-#include "util/Json.h"
 #include "util/PathUtil.h"
-#include "util/Sha256.h"
 
 #include <array>
 #include <chrono>
 #include <limits>
 #include <optional>
-#include <sstream>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -30,10 +29,12 @@ namespace autoupdater::updater {
 
 namespace {
 
-struct AppliedOperation {
-    ApplyOperation operation;
-    bool backupExists = false;
-    RootedEntryExpectation expectedCurrent = RootedEntryExpectation::missing();
+constexpr std::size_t kNoOperation = (std::numeric_limits<std::size_t>::max)();
+
+struct ObservedFile {
+    bool exists = false;
+    RootedFileMetadata metadata;
+    std::string sha256;
 };
 
 Result<void> consumePlanTextBudget(const std::string& value, const ResourceLimits& limits,
@@ -41,7 +42,7 @@ Result<void> consumePlanTextBudget(const std::string& value, const ResourceLimit
     if (value.size() > limits.json.maxStringBytes) {
         return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan string exceeds its byte limit"});
     }
-    if (value.size() > limits.maxApplyPlanBytes - consumedBytes) {
+    if (consumedBytes > limits.maxApplyPlanBytes || value.size() > limits.maxApplyPlanBytes - consumedBytes) {
         return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan exceeds its byte limit"});
     }
     consumedBytes += static_cast<std::uint64_t>(value.size());
@@ -86,7 +87,8 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
                 {ErrorCode::ResourceLimitExceeded, "Apply operation exceeds the artifact byte limit"});
         }
         if (operation.type == ApplyOperationType::Replace) {
-            if (operation.size > limits.maxTotalArtifactBytes - totalArtifactBytes) {
+            if (totalArtifactBytes > limits.maxTotalArtifactBytes ||
+                operation.size > limits.maxTotalArtifactBytes - totalArtifactBytes) {
                 return Result<void>::fail(
                     {ErrorCode::ResourceLimitExceeded, "Apply operations exceed the total artifact byte limit"});
             }
@@ -106,22 +108,16 @@ std::filesystem::perms sanitizedFilePermissions(std::filesystem::perms permissio
 }
 
 std::filesystem::perms defaultInstalledFilePermissions() {
-    // ApplyPlan does not yet carry a signed mode field. New files therefore
-    // receive a non-executable safe default instead of inheriting mutable
-    // staging permissions.
     return std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
            std::filesystem::perms::group_read | std::filesystem::perms::others_read;
 }
 
-Result<RootedEntryExpectation> expectationFor(const RootedOpenResult& opened) {
-    if (!opened.exists()) {
-        return Result<RootedEntryExpectation>::ok(RootedEntryExpectation::missing());
-    }
-    auto metadata = opened.file->metadata();
-    if (!metadata) {
-        return Result<RootedEntryExpectation>::fail(metadata.error());
-    }
-    return Result<RootedEntryExpectation>::ok(RootedEntryExpectation::matching(metadata.value()));
+bool permissionsKnown(std::filesystem::perms permissions) {
+    return permissions != std::filesystem::perms::unknown;
+}
+
+std::uint32_t permissionBits(std::filesystem::perms permissions) {
+    return static_cast<std::uint32_t>(sanitizedFilePermissions(permissions));
 }
 
 Result<void> copyRootedFile(IRootedFile& source, IRootedFile& destination) {
@@ -163,103 +159,133 @@ Result<void> copyPermissions(IRootedFile& source, IRootedFile& destination) {
     return destination.setPermissions(sanitizedFilePermissions(metadata.value().permissions));
 }
 
-Result<void> verifySameContent(IRootedFile& source, IRootedFile& destination, IHashProvider& hashProvider) {
-    auto sourceMetadata = source.metadata();
-    if (!sourceMetadata) {
-        return Result<void>::fail(sourceMetadata.error());
+Result<ObservedFile> observeFile(IRootedDirectory& root, const std::string& path, IHashProvider& hashProvider) {
+    auto opened = root.openRegularFile(path, RootedFileOpenMode::ReadOnly);
+    if (!opened) {
+        return Result<ObservedFile>::fail(opened.error());
     }
-    auto destinationMetadata = destination.metadata();
-    if (!destinationMetadata) {
-        return Result<void>::fail(destinationMetadata.error());
+    if (!opened.value().exists()) {
+        return Result<ObservedFile>::ok({});
     }
-    if (sourceMetadata.value().size != destinationMetadata.value().size) {
-        return Result<void>::fail({ErrorCode::HashMismatch, "Rooted file copy size mismatch"});
+    auto metadata = opened.value().file->metadata();
+    if (!metadata) {
+        return Result<ObservedFile>::fail(metadata.error());
     }
-    auto sourceHash = hashProvider.sha256Stream(source);
-    if (!sourceHash) {
-        return Result<void>::fail(sourceHash.error());
+    auto hash = hashProvider.sha256Stream(*opened.value().file);
+    if (!hash) {
+        return Result<ObservedFile>::fail(hash.error());
     }
-    auto destinationHash = hashProvider.sha256Stream(destination);
-    if (!destinationHash) {
-        return Result<void>::fail(destinationHash.error());
-    }
-    if (sourceHash.value() != destinationHash.value()) {
-        return Result<void>::fail({ErrorCode::HashMismatch, "Rooted file copy SHA-256 mismatch"});
-    }
-    return Result<void>::ok();
+    ObservedFile observed;
+    observed.exists = true;
+    observed.metadata = metadata.value();
+    observed.sha256 = hash.value();
+    return Result<ObservedFile>::ok(std::move(observed));
 }
 
-Result<void> verifyExpectedContent(IRootedFile& file, const ApplyOperation& operation, IHashProvider& hashProvider) {
+Result<void> verifyEvidence(IRootedFile& file, std::uint64_t expectedSize, const std::string& expectedHash,
+                            IHashProvider& hashProvider, const std::string& context) {
     auto metadata = file.metadata();
     if (!metadata) {
         return Result<void>::fail(metadata.error());
     }
-    if (metadata.value().size != operation.size) {
-        return Result<void>::fail({ErrorCode::HashMismatch, "Installed file size mismatch: " + operation.target});
+    if (metadata.value().size != expectedSize) {
+        return Result<void>::fail({ErrorCode::HashMismatch, context + " size mismatch"});
     }
     auto hash = hashProvider.sha256Stream(file);
     if (!hash) {
         return Result<void>::fail(hash.error());
     }
-    if (hash.value() != operation.sha256) {
-        return Result<void>::fail({ErrorCode::HashMismatch, "Installed file SHA-256 mismatch: " + operation.target});
+    if (hash.value() != expectedHash) {
+        return Result<void>::fail({ErrorCode::HashMismatch, context + " SHA-256 mismatch"});
     }
     return Result<void>::ok();
 }
 
-Result<void> writeJournal(const ApplyPlan& plan, IRootedDirectory& installRoot,
-                          const std::vector<AppliedOperation>& applied, const std::string& state) {
-    try {
-        auto fileName = transactionJournalFileName(plan);
-        if (!fileName) {
-            return Result<void>::fail(fileName.error());
-        }
-        const auto relativePath = ".autoupdater/journal/" + fileName.value();
-        auto existing = installRoot.openRegularFile(relativePath, RootedFileOpenMode::ReadOnly);
-        if (!existing) {
-            return Result<void>::fail(existing.error());
-        }
-        auto expectation = expectationFor(existing.value());
-        if (!expectation) {
-            return Result<void>::fail(expectation.error());
-        }
-        existing.value().file.reset();
-
-        std::ostringstream output;
-        output << "{\n";
-        output << "  \"state\": \"" << util::jsonEscape(state) << "\",\n";
-        output << "  \"toVersion\": \"" << util::jsonEscape(plan.toVersion) << "\",\n";
-        output << "  \"appliedCount\": " << applied.size() << "\n";
-        output << "}\n";
-        const auto contents = output.str();
-
-        auto temporary = installRoot.createAtomicReplacement(relativePath);
-        if (!temporary) {
-            return Result<void>::fail(temporary.error());
-        }
-        auto written = temporary.value()->file().write(contents.data(), contents.size());
-        if (!written) {
-            return written;
-        }
-        auto flushed = temporary.value()->file().flush();
-        if (!flushed) {
-            return flushed;
-        }
-        return temporary.value()->commit(expectation.value());
-    } catch (...) {
-        return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write transaction journal"});
-    }
+bool matchesEvidence(const ObservedFile& file, std::uint64_t size, const std::string& hash) {
+    return file.exists && file.metadata.size == size && file.sha256 == hash;
 }
 
-Result<void> createBackup(IRootedDirectory& backupRoot, const std::string& target, IRootedFile& source,
-                          IHashProvider& hashProvider) {
+bool matchesInstalled(const ObservedFile& file, const ApplyOperation& operation) {
+    if (operation.type == ApplyOperationType::Remove) {
+        return !file.exists;
+    }
+    return matchesEvidence(file, operation.size, operation.sha256);
+}
+
+bool matchesOriginal(const ObservedFile& file, const ApplyJournalOperation& record) {
+    if (!record.originalExists) {
+        return !file.exists;
+    }
+    return matchesEvidence(file, record.originalSize, record.originalSha256) &&
+           (!record.originalPermissionsKnown ||
+            permissionBits(file.metadata.permissions) == record.originalPermissions);
+}
+
+Result<void> verifyOriginalEvidence(IRootedFile& file, const ApplyJournalOperation& record, IHashProvider& hashProvider,
+                                    const std::string& context) {
+    auto verified = verifyEvidence(file, record.originalSize, record.originalSha256, hashProvider, context);
+    if (!verified) {
+        return verified;
+    }
+    if (record.originalPermissionsKnown) {
+        auto metadata = file.metadata();
+        if (!metadata) {
+            return Result<void>::fail(metadata.error());
+        }
+        if (!permissionsKnown(metadata.value().permissions) ||
+            permissionBits(metadata.value().permissions) != record.originalPermissions) {
+            return Result<void>::fail({ErrorCode::SecurityPolicyViolation, context + " permissions mismatch"});
+        }
+    }
+    return Result<void>::ok();
+}
+
+JournalError toJournalError(const Error& error) {
+    return {toString(error.code), error.message};
+}
+
+Error combinedError(const Error& primary, std::string_view context, const Error& secondary) {
+    return {ErrorCode::ApplyFailed, primary.message + "; " + std::string(context) + ": " + secondary.message};
+}
+
+Result<void> copyToReplacement(IRootedDirectory& targetRoot, const std::string& target,
+                               RootedDirectoryCreationMode directoryMode, IRootedFile& source,
+                               const RootedEntryExpectation& expectation, std::uint64_t expectedSize,
+                               const std::string& expectedHash, IHashProvider& hashProvider) {
+    auto temporary = targetRoot.createAtomicReplacement(target, directoryMode);
+    if (!temporary) {
+        return Result<void>::fail(temporary.error());
+    }
+    auto copied = copyRootedFile(source, temporary.value()->file());
+    if (!copied) {
+        return copied;
+    }
+    auto permissions = copyPermissions(source, temporary.value()->file());
+    if (!permissions) {
+        return permissions;
+    }
+    auto verified = verifyEvidence(temporary.value()->file(), expectedSize, expectedHash, hashProvider,
+                                   "Prepared rooted replacement");
+    if (!verified) {
+        return verified;
+    }
+    return temporary.value()->commit(expectation);
+}
+
+Result<void> ensureBackup(IRootedDirectory& backupRoot, const std::string& target, IRootedFile& source,
+                          const ApplyJournalOperation& record, IHashProvider& hashProvider) {
     auto existing = backupRoot.openRegularFile(target, RootedFileOpenMode::ReadOnly);
     if (!existing) {
         return Result<void>::fail(existing.error());
     }
     if (existing.value().exists()) {
-        return Result<void>::fail(
-            {ErrorCode::SecurityPolicyViolation, "Refusing to overwrite an existing update backup"});
+        auto verified =
+            verifyOriginalEvidence(*existing.value().file, record, hashProvider, "Existing rollback backup");
+        if (!verified) {
+            return Result<void>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Existing rollback backup does not match the journal"});
+        }
+        return Result<void>::ok();
     }
 
     auto temporary = backupRoot.createAtomicReplacement(target);
@@ -274,86 +300,23 @@ Result<void> createBackup(IRootedDirectory& backupRoot, const std::string& targe
     if (!permissions) {
         return permissions;
     }
-    auto flushed = temporary.value()->file().flush();
-    if (!flushed) {
-        return flushed;
-    }
-    auto verified = verifySameContent(source, temporary.value()->file(), hashProvider);
+    auto verified = verifyOriginalEvidence(temporary.value()->file(), record, hashProvider, "Prepared rollback backup");
     if (!verified) {
         return verified;
     }
-    return temporary.value()->commit(RootedEntryExpectation::missing());
-}
-
-Result<void> rollback(IRootedDirectory& installRoot, IRootedDirectory& backupRoot,
-                      const std::vector<AppliedOperation>& applied, IHashProvider& hashProvider) {
-    for (auto it = applied.rbegin(); it != applied.rend(); ++it) {
-        if (it->backupExists) {
-            auto backup = backupRoot.openRegularFile(it->operation.target, RootedFileOpenMode::ReadOnly);
-            if (!backup) {
-                return Result<void>::fail(backup.error());
-            }
-            if (!backup.value().exists()) {
-                return Result<void>::fail({ErrorCode::ApplyFailed, "Required rollback backup is missing"});
-            }
-            auto temporary = installRoot.createAtomicReplacement(it->operation.target,
-                                                                 RootedDirectoryCreationMode::InstalledContent);
-            if (!temporary) {
-                return Result<void>::fail(temporary.error());
-            }
-            auto copied = copyRootedFile(*backup.value().file, temporary.value()->file());
-            if (!copied) {
-                return copied;
-            }
-            auto permissions = copyPermissions(*backup.value().file, temporary.value()->file());
-            if (!permissions) {
-                return permissions;
-            }
-            auto flushed = temporary.value()->file().flush();
-            if (!flushed) {
-                return flushed;
-            }
-            auto verified = verifySameContent(*backup.value().file, temporary.value()->file(), hashProvider);
-            if (!verified) {
-                return verified;
-            }
-            auto committed = temporary.value()->commit(it->expectedCurrent);
-            if (!committed) {
-                return committed;
-            }
-        } else if (it->expectedCurrent.kind == RootedEntryExpectationKind::Identity) {
-            auto removed = installRoot.removeRegularFile(it->operation.target, it->expectedCurrent);
-            if (!removed) {
-                return removed;
-            }
-        }
+    auto committed = temporary.value()->commit(RootedEntryExpectation::missing());
+    if (!committed) {
+        return committed;
     }
-    return Result<void>::ok();
-}
-
-Result<void> failAfterRollback(const Error& original, IRootedDirectory& installRoot, IRootedDirectory& backupRoot,
-                               const std::vector<AppliedOperation>& applied, IHashProvider& hashProvider) {
-    auto rolledBack = rollback(installRoot, backupRoot, applied, hashProvider);
-    if (!rolledBack) {
-        return Result<void>::fail(
-            {ErrorCode::ApplyFailed, original.message + "; rollback failed: " + rolledBack.error().message});
+    temporary.value().reset();
+    auto durable = backupRoot.openRegularFile(target, RootedFileOpenMode::ReadOnly);
+    if (!durable) {
+        return Result<void>::fail(durable.error());
     }
-    return Result<void>::fail(original);
-}
-
-Result<void> restart(const ApplyPlan& plan) {
-    if (plan.restartCommand.empty()) {
-        return Result<void>::ok();
+    if (!durable.value().exists()) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Rollback backup disappeared after commit"});
     }
-    auto launcher = createDefaultProcessLauncher();
-    ProcessLaunchRequest request;
-    request.executable = plan.restartCommand.front();
-    request.workingDirectory = plan.installDir;
-    request.detached = true;
-    for (std::size_t i = 1; i < plan.restartCommand.size(); ++i) {
-        request.arguments.push_back(plan.restartCommand[i]);
-    }
-    return launcher->launch(request);
+    return verifyOriginalEvidence(*durable.value().file, record, hashProvider, "Committed rollback backup");
 }
 
 bool hasReplaceOperation(const ApplyPlan& plan) {
@@ -365,19 +328,1038 @@ bool hasReplaceOperation(const ApplyPlan& plan) {
     return false;
 }
 
-} // namespace
-
-Result<std::string> transactionJournalFileName(const ApplyPlan& plan) noexcept {
-    try {
-        auto valid = validateApplyPlanResources(plan, ResourceLimits{});
-        if (!valid) {
-            return Result<std::string>::fail(valid.error());
-        }
-        return Result<std::string>::ok(util::sha256Bytes(plan.toJson()) + ".json");
-    } catch (...) {
-        return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to create transaction identifier"});
+Result<void> launchRestart(const ApplyPlan& plan, IProcessLauncher& launcher) {
+    if (plan.restartCommand.empty()) {
+        return Result<void>::ok();
     }
+    ProcessLaunchRequest request;
+    request.executable = plan.restartCommand.front();
+    request.workingDirectory = plan.installDir;
+    request.detached = true;
+    for (std::size_t index = 1; index < plan.restartCommand.size(); ++index) {
+        request.arguments.push_back(plan.restartCommand[index]);
+    }
+    return launcher.launch(request);
 }
+
+class ApplyTransaction final {
+  public:
+    ApplyTransaction(const ApplyPlan& plan, IRootedDirectory& installRoot, IRootedDirectory& backupRoot,
+                     IRootedDirectory* stagingRoot, IHashProvider& hashProvider, IProcessLauncher& processLauncher,
+                     ResourceLimits limits, const ApplyExecutionHooks& hooks, std::string transactionId,
+                     std::string planDigest, ApplyJournalSummary summary = {})
+        : plan_(plan), installRoot_(installRoot), backupRoot_(backupRoot), stagingRoot_(stagingRoot),
+          hashProvider_(hashProvider), processLauncher_(processLauncher), limits_(std::move(limits)), hooks_(hooks),
+          transactionId_(std::move(transactionId)), planDigest_(std::move(planDigest)), journal_(installRoot_, limits_),
+          summary_(std::move(summary)) {}
+
+    Result<void> start() {
+        const auto planJson = plan_.toJson();
+        auto snapshot = journal_.writePlanSnapshot(transactionId_, planDigest_, planJson);
+        if (!snapshot) {
+            return snapshot;
+        }
+        auto boundary = checkpoint("journal.plan.after", kNoOperation);
+        if (!boundary) {
+            return boundary;
+        }
+
+        summary_.transactionId = transactionId_;
+        summary_.planDigest = planDigest_;
+        summary_.fileState = JournalFileState::Prepared;
+        summary_.operationCount = plan_.operations.size();
+        summary_.restartState =
+            plan_.restartCommand.empty() ? JournalRestartState::NotRequested : JournalRestartState::NotAttempted;
+        auto prepared = persistSummary("journal.prepared.after");
+        if (!prepared) {
+            return prepared;
+        }
+
+        // Build and durably verify every rollback record before publishing the
+        // active pointer. If preparation is interrupted, no install target has
+        // been modified and the unique orphan transaction can be ignored.
+        for (std::size_t index = 0; index < plan_.operations.size(); ++index) {
+            auto operationPrepared = prepareOne(index, plan_.operations[index]);
+            if (!operationPrepared) {
+                return operationPrepared;
+            }
+        }
+        boundary = checkpoint("journal.preparation_complete.after", kNoOperation);
+        if (!boundary) {
+            return boundary;
+        }
+
+        auto active = journal_.writeActive({transactionId_, planDigest_});
+        if (!active) {
+            return active;
+        }
+        active_ = true;
+        boundary = checkpoint("journal.active.after", kNoOperation);
+        if (!boundary) {
+            return failAndRollback(boundary.error());
+        }
+
+        summary_.fileState = JournalFileState::Applying;
+        auto applying = persistSummary("journal.applying.after");
+        if (!applying) {
+            return failAndRollback(applying.error());
+        }
+
+        for (std::size_t index = 0; index < plan_.operations.size(); ++index) {
+            auto applied = applyOne(index, plan_.operations[index]);
+            if (!applied) {
+                return failAndRollback(applied.error());
+            }
+        }
+
+        summary_.fileState = JournalFileState::FilesApplied;
+        auto filesApplied = persistSummary("journal.files_applied.after");
+        if (!filesApplied) {
+            return failAndRollback(filesApplied.error());
+        }
+        return finishRestart();
+    }
+
+    Result<void> recover() {
+        active_ = true;
+        if (summary_.fileState == JournalFileState::Complete) {
+            auto verified = verifyAppliedState();
+            if (!verified) {
+                const Error terminalError{ErrorCode::ApplyFailed,
+                                          "Completed file installation did not survive durable reconciliation: " +
+                                              verified.error().message};
+                return recordTerminalReconciliationFailure(terminalError);
+            }
+            const auto restartFailure = completedRestartFailure();
+            auto cleared = publishTerminalAndClear();
+            if (!cleared) {
+                return cleared;
+            }
+            if (restartFailure) {
+                return Result<void>::fail(*restartFailure);
+            }
+            return Result<void>::ok();
+        }
+        if (summary_.fileState == JournalFileState::RolledBack) {
+            auto reconciled = rollbackAll();
+            if (!reconciled) {
+                return recordRollbackFailure({ErrorCode::ApplyFailed, "Failed to reconcile a completed rollback"},
+                                             reconciled.error());
+            }
+            auto cleared = clearActive();
+            if (!cleared) {
+                return cleared;
+            }
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "The previous incomplete apply transaction was rolled back"});
+        }
+        if (summary_.fileState == JournalFileState::FilesApplied) {
+            auto verified = verifyAppliedState();
+            if (!verified) {
+                const Error reconciliationError{ErrorCode::ApplyFailed,
+                                                "Recovered file installation did not match its durable journal: " +
+                                                    verified.error().message};
+                if (restartMayHaveStarted()) {
+                    return recordTerminalReconciliationFailure(reconciliationError);
+                }
+                return recoverByRollback(reconciliationError);
+            }
+            return finishRestart();
+        }
+
+        if (restartMayHaveStarted()) {
+            return recordTerminalReconciliationFailure(
+                {ErrorCode::ApplyFailed, "Apply journal cannot safely roll back after the restart may have started"});
+        }
+
+        const Error interrupted{ErrorCode::ApplyFailed,
+                                "Recovered an incomplete apply transaction and restored its prior file state"};
+        return recoverByRollback(interrupted);
+    }
+
+    Result<void> replayTerminal() {
+        if (summary_.fileState != JournalFileState::Complete) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Terminal receipt points to an incomplete transaction"});
+        }
+        auto verified = verifyAppliedState();
+        if (!verified) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed,
+                 "Terminal transaction no longer matches installed files: " + verified.error().message});
+        }
+        const auto restartFailure = completedRestartFailure();
+        if (restartFailure) {
+            return Result<void>::fail(*restartFailure);
+        }
+        return Result<void>::ok();
+    }
+
+  private:
+    bool restartMayHaveStarted() const noexcept {
+        return summary_.restartState == JournalRestartState::Intent ||
+               summary_.restartState == JournalRestartState::Launched ||
+               summary_.restartState == JournalRestartState::OutcomeUnknown;
+    }
+
+    Result<void> recordTerminalReconciliationFailure(const Error& error) {
+        summary_.applyError = toJournalError(error);
+        if (summary_.restartState == JournalRestartState::Intent) {
+            summary_.restartState = JournalRestartState::OutcomeUnknown;
+            summary_.restartError = {toString(ErrorCode::ApplyLaunchFailed),
+                                     "Restart intent was interrupted before terminal file reconciliation"};
+        }
+        auto recorded = persistSummary("journal.terminal_reconciliation_failed.after");
+        if (!recorded) {
+            return Result<void>::fail(
+                combinedError(error, "failed to persist terminal reconciliation failure", recorded.error()));
+        }
+        // A restarted application may still be running. Keep the active
+        // pointer and require operator intervention instead of replacing its
+        // files underneath it.
+        return Result<void>::fail(error);
+    }
+
+    Result<void> recoverByRollback(const Error& interrupted) {
+        summary_.fileState = JournalFileState::RollingBack;
+        summary_.rollbackError = {};
+        if (summary_.applyError.empty()) {
+            summary_.applyError = toJournalError(interrupted);
+        }
+        auto marked = persistSummary("journal.rollback_summary.after");
+        if (!marked) {
+            return Result<void>::fail(combinedError(interrupted, "failed to persist recovery intent", marked.error()));
+        }
+        auto rolledBack = rollbackAll();
+        if (!rolledBack) {
+            return recordRollbackFailure(interrupted, rolledBack.error());
+        }
+        summary_.fileState = JournalFileState::RolledBack;
+        summary_.rollbackError = {};
+        auto completed = persistSummary("journal.rolled_back.after");
+        if (!completed) {
+            return Result<void>::fail(
+                combinedError(interrupted, "failed to persist recovered rollback", completed.error()));
+        }
+        auto cleared = clearActive();
+        if (!cleared) {
+            return Result<void>::fail(
+                combinedError(interrupted, "failed to clear recovered transaction", cleared.error()));
+        }
+        return Result<void>::fail(interrupted);
+    }
+
+    Result<void> checkpoint(std::string_view name, std::size_t operationIndex) const {
+        if (!hooks_.checkpoint) {
+            return Result<void>::ok();
+        }
+        try {
+            if (hooks_.checkpoint(name, operationIndex) == ApplyFaultAction::Fail) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed, "Injected apply failure at transaction boundary: " + std::string(name)});
+            }
+            return Result<void>::ok();
+        } catch (...) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "Apply transaction checkpoint threw an exception: " + std::string(name)});
+        }
+    }
+
+    Result<void> persistSummary(std::string_view boundaryName) {
+        auto saved = journal_.writeSummary(summary_);
+        if (!saved) {
+            return saved;
+        }
+        return checkpoint(boundaryName, kNoOperation);
+    }
+
+    Result<void> persistOperation(ApplyJournalOperation& record, std::string_view boundaryName) {
+        auto saved = journal_.writeOperation(record);
+        if (!saved) {
+            return saved;
+        }
+        return checkpoint(boundaryName, record.index);
+    }
+
+    Result<void> failOperation(ApplyJournalOperation& record, const Error& error) {
+        record.error = toJournalError(error);
+        auto saved = journal_.writeOperation(record);
+        if (!saved) {
+            return Result<void>::fail(combinedError(error, "failed to record operation error", saved.error()));
+        }
+        auto boundary = checkpoint("journal.operation_error.after", record.index);
+        if (!boundary) {
+            return Result<void>::fail(combinedError(error, "operation error checkpoint failed", boundary.error()));
+        }
+        return Result<void>::fail(error);
+    }
+
+    Result<void> prepareOne(std::size_t index, const ApplyOperation& operation) {
+        auto operationId = applyOperationId(transactionId_, index, operation);
+        if (!operationId) {
+            return Result<void>::fail(operationId.error());
+        }
+        auto original = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!original) {
+            return Result<void>::fail(original.error());
+        }
+
+        ApplyJournalOperation record;
+        record.transactionId = transactionId_;
+        record.index = index;
+        record.operationId = operationId.value();
+        record.intent = operation.type == ApplyOperationType::Replace ? "replace" : "remove";
+        record.originalExists = original.value().exists;
+        const bool alreadyApplied = matchesInstalled(original.value(), operation);
+        if (record.originalExists) {
+            record.originalIdentity = original.value().metadata.identity;
+            record.originalSize = original.value().metadata.size;
+            record.originalSha256 = original.value().sha256;
+            record.originalPermissionsKnown = permissionsKnown(original.value().metadata.permissions);
+            if (record.originalPermissionsKnown) {
+                record.originalPermissions = permissionBits(original.value().metadata.permissions);
+            }
+            record.backupState = alreadyApplied ? JournalBackupState::NotRequired : JournalBackupState::Intent;
+        } else {
+            record.backupState = JournalBackupState::NotRequired;
+        }
+        if (alreadyApplied) {
+            record.applyState = JournalApplyState::Complete;
+            record.installedIdentity = original.value().exists ? original.value().metadata.identity : std::string();
+            record.rollbackState = JournalRollbackState::NotRequired;
+        }
+        auto recorded = persistOperation(record, "journal.operation_initial.after");
+        if (!recorded) {
+            return failOperation(record, recorded.error());
+        }
+
+        if (alreadyApplied) {
+            return Result<void>::ok();
+        }
+
+        if (record.originalExists) {
+            if (record.originalSize > limits_.maxArtifactBytes ||
+                preparedBackupBytes_ > limits_.maxTotalArtifactBytes ||
+                record.originalSize > limits_.maxTotalArtifactBytes - preparedBackupBytes_) {
+                return failOperation(record,
+                                     {ErrorCode::ResourceLimitExceeded, "Rollback backup exceeds its byte budget"});
+            }
+            preparedBackupBytes_ += record.originalSize;
+            auto boundary = checkpoint("backup.before", index);
+            if (!boundary) {
+                return failOperation(record, boundary.error());
+            }
+            auto source = installRoot_.openRegularFile(operation.target, RootedFileOpenMode::ReadOnly);
+            if (!source) {
+                return failOperation(record, source.error());
+            }
+            if (!source.value().exists()) {
+                return failOperation(record,
+                                     {ErrorCode::SecurityPolicyViolation, "Managed target disappeared before backup"});
+            }
+            auto metadata = source.value().file->metadata();
+            if (!metadata) {
+                return failOperation(record, metadata.error());
+            }
+            if (metadata.value().identity != record.originalIdentity) {
+                return failOperation(
+                    record, {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before backup"});
+            }
+            auto backup = ensureBackup(backupRoot_, operation.target, *source.value().file, record, hashProvider_);
+            if (!backup) {
+                return failOperation(record, backup.error());
+            }
+            boundary = checkpoint("backup.after", index);
+            if (!boundary) {
+                return failOperation(record, boundary.error());
+            }
+            record.backupState = JournalBackupState::Durable;
+            recorded = persistOperation(record, "journal.backup_durable.after");
+            if (!recorded) {
+                return failOperation(record, recorded.error());
+            }
+        }
+
+        return Result<void>::ok();
+    }
+
+    Result<void> applyOne(std::size_t index, const ApplyOperation& operation) {
+        auto loaded = journal_.readOperation(transactionId_, index);
+        if (!loaded) {
+            return Result<void>::fail(loaded.error());
+        }
+        if (!loaded.value()) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Prepared apply operation record is missing"});
+        }
+        auto record = std::move(*loaded.value());
+        auto operationId = applyOperationId(transactionId_, index, operation);
+        if (!operationId) {
+            return Result<void>::fail(operationId.error());
+        }
+        if (record.operationId != operationId.value()) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Prepared apply operation identity mismatch"});
+        }
+
+        auto original = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!original) {
+            return failOperation(record, original.error());
+        }
+        if (!matchesOriginal(original.value(), record) ||
+            (record.originalExists && original.value().metadata.identity != record.originalIdentity)) {
+            return failOperation(
+                record, {ErrorCode::SecurityPolicyViolation, "Managed target changed after transaction preparation"});
+        }
+        if (record.applyState == JournalApplyState::Complete &&
+            record.rollbackState == JournalRollbackState::NotRequired) {
+            if (!matchesInstalled(original.value(), operation)) {
+                return failOperation(record, {ErrorCode::HashMismatch, "Idempotent apply target changed"});
+            }
+            return Result<void>::ok();
+        }
+        if (record.applyState != JournalApplyState::Pending ||
+            record.rollbackState != JournalRollbackState::NotStarted ||
+            (record.originalExists && record.backupState != JournalBackupState::Durable)) {
+            return failOperation(record, {ErrorCode::ApplyFailed, "Prepared apply operation state is inconsistent"});
+        }
+
+        const auto expectation = record.originalExists ? RootedEntryExpectation::matching(original.value().metadata)
+                                                       : RootedEntryExpectation::missing();
+        if (operation.type == ApplyOperationType::Replace) {
+            return applyReplacement(record, operation, expectation, original.value());
+        }
+        return applyRemoval(record, operation, expectation);
+    }
+
+    Result<void> applyReplacement(ApplyJournalOperation& record, const ApplyOperation& operation,
+                                  const RootedEntryExpectation& expectation, const ObservedFile& original) {
+        if (!stagingRoot_) {
+            return failOperation(record, {ErrorCode::FileSystemError, "Staging root is unavailable"});
+        }
+        auto source = stagingRoot_->openRegularFile(operation.source, RootedFileOpenMode::ReadOnly);
+        if (!source) {
+            return failOperation(record, source.error());
+        }
+        if (!source.value().exists()) {
+            return failOperation(record, {ErrorCode::FileSystemError, "Staged update file is missing"});
+        }
+        auto sourceVerified =
+            verifyEvidence(*source.value().file, operation.size, operation.sha256, hashProvider_, "Staged update file");
+        if (!sourceVerified) {
+            return failOperation(record, sourceVerified.error());
+        }
+
+        auto temporary =
+            installRoot_.createAtomicReplacement(operation.target, RootedDirectoryCreationMode::InstalledContent);
+        if (!temporary) {
+            return failOperation(record, temporary.error());
+        }
+        auto copied = copyRootedFile(*source.value().file, temporary.value()->file());
+        if (!copied) {
+            return failOperation(record, copied.error());
+        }
+        auto permissions =
+            original.exists
+                ? temporary.value()->file().setPermissions(sanitizedFilePermissions(original.metadata.permissions))
+                : temporary.value()->file().setPermissions(defaultInstalledFilePermissions());
+        if (!permissions) {
+            return failOperation(record, permissions.error());
+        }
+        auto prepared = verifyEvidence(temporary.value()->file(), operation.size, operation.sha256, hashProvider_,
+                                       "Prepared installed file");
+        if (!prepared) {
+            return failOperation(record, prepared.error());
+        }
+
+        record.applyState = JournalApplyState::Intent;
+        auto intent = persistOperation(record, "journal.apply_intent.after");
+        if (!intent) {
+            return failOperation(record, intent.error());
+        }
+        auto boundary = checkpoint("replace.before", record.index);
+        if (!boundary) {
+            return failOperation(record, boundary.error());
+        }
+        auto committed = temporary.value()->commit(expectation);
+        if (!committed) {
+            return failOperation(record, committed.error());
+        }
+        temporary.value().reset();
+        boundary = checkpoint("replace.after", record.index);
+        if (!boundary) {
+            return failOperation(record, boundary.error());
+        }
+
+        auto installed = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!installed) {
+            return failOperation(record, installed.error());
+        }
+        if (!matchesInstalled(installed.value(), operation)) {
+            return failOperation(record,
+                                 {ErrorCode::HashMismatch, "Installed file does not match the signed apply plan"});
+        }
+        record.installedIdentity = installed.value().metadata.identity;
+        record.applyState = JournalApplyState::Complete;
+        record.error = {};
+        auto completed = persistOperation(record, "journal.apply_complete.after");
+        if (!completed) {
+            return failOperation(record, completed.error());
+        }
+        return Result<void>::ok();
+    }
+
+    Result<void> applyRemoval(ApplyJournalOperation& record, const ApplyOperation& operation,
+                              const RootedEntryExpectation& expectation) {
+        record.applyState = JournalApplyState::Intent;
+        auto intent = persistOperation(record, "journal.apply_intent.after");
+        if (!intent) {
+            return failOperation(record, intent.error());
+        }
+        if (record.originalExists) {
+            auto boundary = checkpoint("remove.before", record.index);
+            if (!boundary) {
+                return failOperation(record, boundary.error());
+            }
+            auto removed = installRoot_.removeRegularFile(operation.target, expectation);
+            if (!removed) {
+                return failOperation(record, removed.error());
+            }
+            boundary = checkpoint("remove.after", record.index);
+            if (!boundary) {
+                return failOperation(record, boundary.error());
+            }
+        }
+        auto installed = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!installed) {
+            return failOperation(record, installed.error());
+        }
+        if (installed.value().exists) {
+            return failOperation(record, {ErrorCode::ApplyFailed, "Removed managed target is still present"});
+        }
+        record.installedIdentity.clear();
+        record.applyState = JournalApplyState::Complete;
+        record.error = {};
+        auto completed = persistOperation(record, "journal.apply_complete.after");
+        if (!completed) {
+            return failOperation(record, completed.error());
+        }
+        return Result<void>::ok();
+    }
+
+    Result<std::vector<ApplyJournalOperation>> loadOperationRecords() {
+        if (summary_.operationCount != plan_.operations.size()) {
+            return Result<std::vector<ApplyJournalOperation>>::fail(
+                {ErrorCode::ApplyFailed, "Apply journal operation count does not match its plan snapshot"});
+        }
+        std::vector<ApplyJournalOperation> records;
+        for (std::size_t index = 0; index < plan_.operations.size(); ++index) {
+            auto loaded = journal_.readOperation(transactionId_, index);
+            if (!loaded) {
+                return Result<std::vector<ApplyJournalOperation>>::fail(loaded.error());
+            }
+            if (!loaded.value()) {
+                return Result<std::vector<ApplyJournalOperation>>::fail(
+                    {ErrorCode::ApplyFailed, "Active apply transaction is missing a prepared operation record"});
+            }
+            auto expectedId = applyOperationId(transactionId_, index, plan_.operations[index]);
+            if (!expectedId) {
+                return Result<std::vector<ApplyJournalOperation>>::fail(expectedId.error());
+            }
+            const auto expectedIntent =
+                plan_.operations[index].type == ApplyOperationType::Replace ? "replace" : "remove";
+            if (loaded.value()->operationId != expectedId.value() || loaded.value()->intent != expectedIntent) {
+                return Result<std::vector<ApplyJournalOperation>>::fail(
+                    {ErrorCode::ApplyFailed, "Apply journal operation does not match its plan snapshot"});
+            }
+            records.push_back(std::move(*loaded.value()));
+        }
+        return Result<std::vector<ApplyJournalOperation>>::ok(std::move(records));
+    }
+
+    Result<void> verifyAppliedState() {
+        auto records = loadOperationRecords();
+        if (!records) {
+            return Result<void>::fail(records.error());
+        }
+        if (records.value().size() != plan_.operations.size()) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Applied transaction is missing operation records"});
+        }
+        for (const auto& record : records.value()) {
+            const auto& operation = plan_.operations[record.index];
+            if (record.applyState != JournalApplyState::Complete || !record.error.empty()) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed, "Applied transaction contains an incomplete operation"});
+            }
+            auto target = observeFile(installRoot_, operation.target, hashProvider_);
+            if (!target) {
+                return Result<void>::fail(target.error());
+            }
+            if (!matchesInstalled(target.value(), operation)) {
+                return Result<void>::fail(
+                    {ErrorCode::HashMismatch, "Installed target no longer matches the apply journal"});
+            }
+            if (record.originalExists) {
+                if (record.backupState == JournalBackupState::NotRequired &&
+                    record.rollbackState == JournalRollbackState::NotRequired &&
+                    matchesOriginal(target.value(), record)) {
+                    continue;
+                }
+                if (record.backupState != JournalBackupState::Durable) {
+                    return Result<void>::fail(
+                        {ErrorCode::ApplyFailed, "Applied transaction has no durable backup record"});
+                }
+                auto backup = backupRoot_.openRegularFile(operation.target, RootedFileOpenMode::ReadOnly);
+                if (!backup) {
+                    return Result<void>::fail(backup.error());
+                }
+                if (!backup.value().exists()) {
+                    return Result<void>::fail({ErrorCode::ApplyFailed, "Applied transaction backup is missing"});
+                }
+                auto verified =
+                    verifyOriginalEvidence(*backup.value().file, record, hashProvider_, "Applied transaction backup");
+                if (!verified) {
+                    return verified;
+                }
+            } else if (record.backupState != JournalBackupState::NotRequired) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed, "Applied transaction has an inconsistent backup state"});
+            }
+        }
+        return Result<void>::ok();
+    }
+
+    Result<void> rollbackAll() {
+        auto records = loadOperationRecords();
+        if (!records) {
+            return Result<void>::fail(records.error());
+        }
+        for (auto iterator = records.value().rbegin(); iterator != records.value().rend(); ++iterator) {
+            auto rolledBack = rollbackOne(*iterator, plan_.operations[iterator->index]);
+            if (!rolledBack) {
+                return rolledBack;
+            }
+        }
+        return Result<void>::ok();
+    }
+
+    Result<void> rollbackOne(ApplyJournalOperation& record, const ApplyOperation& operation) {
+        auto target = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!target) {
+            return markRollbackOperationFailed(record, target.error());
+        }
+        if (matchesOriginal(target.value(), record)) {
+            record.rollbackState = record.applyState == JournalApplyState::Pending ? JournalRollbackState::NotRequired
+                                                                                   : JournalRollbackState::Complete;
+            record.error = {};
+            return persistOperation(record, "journal.rollback_complete.after");
+        }
+
+        const bool mutationMayHaveRun = record.applyState != JournalApplyState::Pending;
+        const bool interruptedReplacementGap = mutationMayHaveRun && record.originalExists && !target.value().exists &&
+                                               operation.type == ApplyOperationType::Replace &&
+                                               record.backupState == JournalBackupState::Durable;
+        if (!mutationMayHaveRun || (!matchesInstalled(target.value(), operation) && !interruptedReplacementGap)) {
+            return markRollbackOperationFailed(
+                record, {ErrorCode::SecurityPolicyViolation,
+                         "Managed target no longer matches either the journaled original or installed content"});
+        }
+
+        record.rollbackState = JournalRollbackState::Intent;
+        record.error = {};
+        auto intent = persistOperation(record, "journal.rollback_intent.after");
+        if (!intent) {
+            return intent;
+        }
+
+        if (record.originalExists) {
+            if (record.backupState != JournalBackupState::Durable) {
+                return markRollbackOperationFailed(
+                    record, {ErrorCode::ApplyFailed, "A durable rollback backup was not recorded"});
+            }
+            auto backup = backupRoot_.openRegularFile(operation.target, RootedFileOpenMode::ReadOnly);
+            if (!backup) {
+                return markRollbackOperationFailed(record, backup.error());
+            }
+            if (!backup.value().exists()) {
+                return markRollbackOperationFailed(record,
+                                                   {ErrorCode::ApplyFailed, "Required rollback backup is missing"});
+            }
+            auto verified = verifyOriginalEvidence(*backup.value().file, record, hashProvider_, "Rollback backup");
+            if (!verified) {
+                return markRollbackOperationFailed(record, verified.error());
+            }
+            auto boundary = checkpoint("rollback.replace.before", record.index);
+            if (!boundary) {
+                return markRollbackOperationFailed(record, boundary.error());
+            }
+            const auto expectation = target.value().exists ? RootedEntryExpectation::matching(target.value().metadata)
+                                                           : RootedEntryExpectation::missing();
+            auto restored = copyToReplacement(installRoot_, operation.target,
+                                              RootedDirectoryCreationMode::InstalledContent, *backup.value().file,
+                                              expectation, record.originalSize, record.originalSha256, hashProvider_);
+            if (!restored) {
+                return markRollbackOperationFailed(record, restored.error());
+            }
+            boundary = checkpoint("rollback.replace.after", record.index);
+            if (!boundary) {
+                return markRollbackOperationFailed(record, boundary.error());
+            }
+        } else {
+            auto boundary = checkpoint("rollback.remove.before", record.index);
+            if (!boundary) {
+                return markRollbackOperationFailed(record, boundary.error());
+            }
+            auto removed = installRoot_.removeRegularFile(operation.target,
+                                                          RootedEntryExpectation::matching(target.value().metadata));
+            if (!removed) {
+                return markRollbackOperationFailed(record, removed.error());
+            }
+            boundary = checkpoint("rollback.remove.after", record.index);
+            if (!boundary) {
+                return markRollbackOperationFailed(record, boundary.error());
+            }
+        }
+
+        auto restored = observeFile(installRoot_, operation.target, hashProvider_);
+        if (!restored) {
+            return markRollbackOperationFailed(record, restored.error());
+        }
+        if (!matchesOriginal(restored.value(), record)) {
+            return markRollbackOperationFailed(record,
+                                               {ErrorCode::HashMismatch, "Rollback result does not match the journal"});
+        }
+        record.rollbackState = JournalRollbackState::Complete;
+        record.error = {};
+        return persistOperation(record, "journal.rollback_complete.after");
+    }
+
+    Result<void> markRollbackOperationFailed(ApplyJournalOperation& record, const Error& error) {
+        record.rollbackState = JournalRollbackState::Failed;
+        record.error = toJournalError(error);
+        auto saved = journal_.writeOperation(record);
+        if (!saved) {
+            return Result<void>::fail(combinedError(error, "failed to record rollback error", saved.error()));
+        }
+        auto boundary = checkpoint("journal.rollback_failed.after", record.index);
+        if (!boundary) {
+            return Result<void>::fail(combinedError(error, "rollback error checkpoint failed", boundary.error()));
+        }
+        return Result<void>::fail(error);
+    }
+
+    Result<void> failAndRollback(const Error& original) {
+        if (!active_) {
+            return Result<void>::fail(original);
+        }
+        summary_.applyError = toJournalError(original);
+        summary_.fileState = JournalFileState::RollingBack;
+        summary_.rollbackError = {};
+        auto marked = persistSummary("journal.rollback_summary.after");
+        if (!marked) {
+            return Result<void>::fail(combinedError(original, "failed to persist rollback intent", marked.error()));
+        }
+        auto rolledBack = rollbackAll();
+        if (!rolledBack) {
+            return recordRollbackFailure(original, rolledBack.error());
+        }
+        summary_.fileState = JournalFileState::RolledBack;
+        summary_.rollbackError = {};
+        auto completed = persistSummary("journal.rolled_back.after");
+        if (!completed) {
+            return Result<void>::fail(
+                combinedError(original, "failed to persist rollback completion", completed.error()));
+        }
+        auto cleared = clearActive();
+        if (!cleared) {
+            return Result<void>::fail(
+                combinedError(original, "failed to clear rolled-back transaction", cleared.error()));
+        }
+        return Result<void>::fail(original);
+    }
+
+    Result<void> recordRollbackFailure(const Error& original, const Error& rollbackError) {
+        summary_.fileState = JournalFileState::RecoveryFailed;
+        summary_.rollbackError = toJournalError(rollbackError);
+        auto saved = journal_.writeSummary(summary_);
+        if (!saved) {
+            return Result<void>::fail(combinedError(combinedError(original, "rollback failed", rollbackError),
+                                                    "failed to record rollback failure", saved.error()));
+        }
+        auto boundary = checkpoint("journal.recovery_failed.after", kNoOperation);
+        if (!boundary) {
+            return Result<void>::fail(combinedError(combinedError(original, "rollback failed", rollbackError),
+                                                    "recovery failure checkpoint failed", boundary.error()));
+        }
+        return Result<void>::fail(combinedError(original, "rollback failed", rollbackError));
+    }
+
+    std::optional<Error> completedRestartFailure() const {
+        if (summary_.restartState == JournalRestartState::Failed) {
+            return Error{ErrorCode::ApplyLaunchFailed, summary_.restartError.message.empty()
+                                                           ? "Files were installed but restart failed"
+                                                           : summary_.restartError.message};
+        }
+        if (summary_.restartState == JournalRestartState::OutcomeUnknown ||
+            summary_.restartState == JournalRestartState::Intent) {
+            return Error{ErrorCode::ApplyLaunchFailed,
+                         "Files were installed but the restart outcome is unknown; restart was not repeated"};
+        }
+        return std::nullopt;
+    }
+
+    Result<void> finishRestart() {
+        if (plan_.restartCommand.empty()) {
+            summary_.restartState = JournalRestartState::NotRequested;
+            summary_.fileState = JournalFileState::Complete;
+            auto completed = persistSummary("journal.complete.after");
+            if (!completed) {
+                return completed;
+            }
+            return publishTerminalAndClear();
+        }
+
+        if (summary_.restartState == JournalRestartState::Intent) {
+            summary_.restartState = JournalRestartState::OutcomeUnknown;
+            summary_.restartError = {toString(ErrorCode::ApplyLaunchFailed),
+                                     "Restart intent was interrupted; the process was not launched again"};
+            summary_.fileState = JournalFileState::Complete;
+            auto completed = persistSummary("journal.complete.after");
+            if (!completed) {
+                return completed;
+            }
+            auto cleared = publishTerminalAndClear();
+            if (!cleared) {
+                return cleared;
+            }
+            return Result<void>::fail({ErrorCode::ApplyLaunchFailed, summary_.restartError.message});
+        }
+        if (summary_.restartState == JournalRestartState::Launched) {
+            summary_.fileState = JournalFileState::Complete;
+            auto completed = persistSummary("journal.complete.after");
+            if (!completed) {
+                return completed;
+            }
+            return publishTerminalAndClear();
+        }
+        if (summary_.restartState == JournalRestartState::Failed ||
+            summary_.restartState == JournalRestartState::OutcomeUnknown) {
+            summary_.fileState = JournalFileState::Complete;
+            auto failure = completedRestartFailure();
+            auto completed = persistSummary("journal.complete.after");
+            if (!completed) {
+                return completed;
+            }
+            auto cleared = publishTerminalAndClear();
+            if (!cleared) {
+                return cleared;
+            }
+            return Result<void>::fail(*failure);
+        }
+        if (summary_.restartState != JournalRestartState::NotAttempted) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal restart state is inconsistent"});
+        }
+
+        summary_.restartState = JournalRestartState::Intent;
+        summary_.restartError = {};
+        auto intent = persistSummary("journal.restart_intent.after");
+        if (!intent) {
+            return intent;
+        }
+        auto launched = launchRestart(plan_, processLauncher_);
+        if (!launched) {
+            summary_.restartState = JournalRestartState::Failed;
+            summary_.restartError = toJournalError(launched.error());
+            summary_.fileState = JournalFileState::Complete;
+            auto recorded = persistSummary("journal.restart_failed.after");
+            if (!recorded) {
+                return Result<void>::fail(
+                    combinedError(launched.error(), "failed to record restart failure", recorded.error()));
+            }
+            auto cleared = publishTerminalAndClear();
+            if (!cleared) {
+                return Result<void>::fail(
+                    combinedError(launched.error(), "failed to clear completed transaction", cleared.error()));
+            }
+            return Result<void>::fail(
+                {ErrorCode::ApplyLaunchFailed, "Files were installed but restart failed: " + launched.error().message});
+        }
+        auto boundary = checkpoint("restart.after", kNoOperation);
+        if (!boundary) {
+            return boundary;
+        }
+        summary_.restartState = JournalRestartState::Launched;
+        summary_.fileState = JournalFileState::Complete;
+        auto completed = persistSummary("journal.complete.after");
+        if (!completed) {
+            return completed;
+        }
+        return publishTerminalAndClear();
+    }
+
+    Result<void> publishTerminalAndClear() {
+        auto published = journal_.writeTerminal({transactionId_, planDigest_});
+        if (!published) {
+            return published;
+        }
+        auto boundary = checkpoint("journal.terminal.after", kNoOperation);
+        if (!boundary) {
+            return boundary;
+        }
+        return clearActive();
+    }
+
+    Result<void> clearActive() {
+        auto cleared = journal_.clearActive(transactionId_);
+        if (!cleared) {
+            return cleared;
+        }
+        active_ = false;
+        return checkpoint("journal.active_clear.after", kNoOperation);
+    }
+
+    const ApplyPlan& plan_;
+    IRootedDirectory& installRoot_;
+    IRootedDirectory& backupRoot_;
+    IRootedDirectory* stagingRoot_ = nullptr;
+    IHashProvider& hashProvider_;
+    IProcessLauncher& processLauncher_;
+    ResourceLimits limits_;
+    const ApplyExecutionHooks& hooks_;
+    std::string transactionId_;
+    std::string planDigest_;
+    ApplyJournalStore journal_;
+    ApplyJournalSummary summary_;
+    std::uint64_t preparedBackupBytes_ = 0;
+    bool active_ = false;
+};
+
+Result<void> validateRecoveredSummary(const ApplyPlan& plan, const ActiveTransaction& transaction,
+                                      const ApplyJournalSummary& summary) {
+    if (summary.transactionId != transaction.transactionId || summary.planDigest != transaction.planDigest) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply transaction and journal summary disagree"});
+    }
+    if (summary.operationCount != plan.operations.size()) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Apply journal operation count does not match its plan snapshot"});
+    }
+    const auto completeError = [](const JournalError& error) { return error.code.empty() == error.message.empty(); };
+    if (!completeError(summary.applyError) || !completeError(summary.rollbackError) ||
+        !completeError(summary.restartError)) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal contains an incomplete error record"});
+    }
+
+    const bool restartRequested = !plan.restartCommand.empty();
+    if ((summary.restartState == JournalRestartState::NotRequested) == restartRequested) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Apply journal restart state does not match its plan snapshot"});
+    }
+
+    const bool restartErrorRequired = summary.restartState == JournalRestartState::Failed ||
+                                      summary.restartState == JournalRestartState::OutcomeUnknown;
+    if (summary.restartError.empty() == restartErrorRequired) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal restart error state is inconsistent"});
+    }
+    const bool rollbackErrorRequired = summary.fileState == JournalFileState::RecoveryFailed;
+    if (summary.rollbackError.empty() == rollbackErrorRequired) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal rollback error state is inconsistent"});
+    }
+
+    bool stateCombinationAllowed = false;
+    switch (summary.fileState) {
+    case JournalFileState::Prepared:
+    case JournalFileState::Applying:
+    case JournalFileState::RollingBack:
+    case JournalFileState::RolledBack:
+    case JournalFileState::RecoveryFailed:
+        stateCombinationAllowed = summary.restartState == JournalRestartState::NotRequested ||
+                                  summary.restartState == JournalRestartState::NotAttempted;
+        break;
+    case JournalFileState::FilesApplied:
+        stateCombinationAllowed = summary.restartState == JournalRestartState::NotRequested ||
+                                  summary.restartState == JournalRestartState::NotAttempted ||
+                                  summary.restartState == JournalRestartState::Intent ||
+                                  summary.restartState == JournalRestartState::OutcomeUnknown;
+        break;
+    case JournalFileState::Complete:
+        stateCombinationAllowed = summary.restartState == JournalRestartState::NotRequested ||
+                                  summary.restartState == JournalRestartState::Launched ||
+                                  summary.restartState == JournalRestartState::Failed ||
+                                  summary.restartState == JournalRestartState::OutcomeUnknown;
+        break;
+    }
+    if (!stateCombinationAllowed) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal file and restart states are inconsistent"});
+    }
+    return Result<void>::ok();
+}
+
+Result<void> recoverActiveTransaction(const ApplyPlan& requestedPlan, IRootedDirectory& installRoot,
+                                      const ActiveTransaction& active, ApplyExecutorDependencies& dependencies,
+                                      const ApplyExecutionHooks& hooks) {
+    ApplyJournalStore journal(installRoot, dependencies.limits);
+    auto planJson = journal.readPlanSnapshot(active.transactionId, active.planDigest);
+    if (!planJson) {
+        return Result<void>::fail(planJson.error());
+    }
+    auto recoveryPlan = ApplyPlan::parse(planJson.value(), dependencies.limits);
+    if (!recoveryPlan) {
+        return Result<void>::fail(recoveryPlan.error());
+    }
+    if (recoveryPlan.value().installDir.lexically_normal() != requestedPlan.installDir.lexically_normal()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Active apply journal belongs to a different install directory"});
+    }
+    auto summary = journal.readSummary(active.transactionId);
+    if (!summary) {
+        return Result<void>::fail(summary.error());
+    }
+    auto validSummary = validateRecoveredSummary(recoveryPlan.value(), active, summary.value());
+    if (!validSummary) {
+        return validSummary;
+    }
+    auto backupRoot = dependencies.fileSystem->openRoot(recoveryPlan.value().backupDir, RootAccess::ReadWrite, true);
+    if (!backupRoot) {
+        return Result<void>::fail(backupRoot.error());
+    }
+    ApplyTransaction transaction(recoveryPlan.value(), installRoot, *backupRoot.value(), nullptr,
+                                 *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits, hooks,
+                                 active.transactionId, active.planDigest, summary.value());
+    return transaction.recover();
+}
+
+Result<void> replayTerminalTransaction(const ApplyPlan& requestedPlan, IRootedDirectory& installRoot,
+                                       const ActiveTransaction& terminal, ApplyExecutorDependencies& dependencies,
+                                       const ApplyExecutionHooks& hooks) {
+    ApplyJournalStore journal(installRoot, dependencies.limits);
+    auto planJson = journal.readPlanSnapshot(terminal.transactionId, terminal.planDigest);
+    if (!planJson) {
+        return Result<void>::fail(planJson.error());
+    }
+    auto terminalPlan = ApplyPlan::parse(planJson.value(), dependencies.limits);
+    if (!terminalPlan) {
+        return Result<void>::fail(terminalPlan.error());
+    }
+    if (terminalPlan.value().installDir.lexically_normal() != requestedPlan.installDir.lexically_normal()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Terminal apply receipt belongs to a different install directory"});
+    }
+    auto summary = journal.readSummary(terminal.transactionId);
+    if (!summary) {
+        return Result<void>::fail(summary.error());
+    }
+    auto validSummary = validateRecoveredSummary(terminalPlan.value(), terminal, summary.value());
+    if (!validSummary) {
+        return validSummary;
+    }
+    auto backupRoot = dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadWrite, true);
+    if (!backupRoot) {
+        return Result<void>::fail(backupRoot.error());
+    }
+    ApplyTransaction transaction(terminalPlan.value(), installRoot, *backupRoot.value(), nullptr,
+                                 *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits, hooks,
+                                 terminal.transactionId, terminal.planDigest, summary.value());
+    return transaction.replayTerminal();
+}
+
+} // namespace
 
 Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout) noexcept {
     if (pid == 0) {
@@ -408,164 +1390,82 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 #endif
 }
 
-Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
-    std::vector<AppliedOperation> applied;
+Result<void> executeApplyPlanWithDependencies(const ApplyPlan& plan, ApplyExecutorDependencies dependencies,
+                                              const ApplyExecutionHooks& hooks) noexcept {
     try {
-        auto valid = validateApplyPlanResources(plan, ResourceLimits{});
+        auto valid = validateApplyPlanResources(plan, dependencies.limits);
         if (!valid) {
             return valid;
         }
-        auto fileSystem = createDefaultFileSystem();
-        auto hashProvider = createDefaultHashProvider();
+        if (!dependencies.fileSystem || !dependencies.hashProvider || !dependencies.processLauncher) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "Apply executor dependencies are incomplete"});
+        }
 
-        auto installRoot = fileSystem->openRoot(plan.installDir, RootAccess::ReadWrite, true,
-                                                RootedDirectoryCreationMode::InstalledContent);
+        auto installRoot = dependencies.fileSystem->openRoot(plan.installDir, RootAccess::ReadWrite, true,
+                                                             RootedDirectoryCreationMode::InstalledContent);
         if (!installRoot) {
             return Result<void>::fail(installRoot.error());
         }
-        auto backupRoot = fileSystem->openRoot(plan.backupDir, RootAccess::ReadWrite, true);
-        if (!backupRoot) {
-            return Result<void>::fail(backupRoot.error());
-        }
-
-        std::unique_ptr<IRootedDirectory> stagingRoot;
-        if (hasReplaceOperation(plan)) {
-            auto openedStaging = fileSystem->openRoot(plan.stagingDir, RootAccess::ReadOnly, false);
-            if (!openedStaging) {
-                return Result<void>::fail(openedStaging.error());
-            }
-            stagingRoot = std::move(openedStaging.value());
-        }
-
         auto lock = installRoot.value()->acquireExclusiveLock(".autoupdater/update.lock");
         if (!lock) {
             return Result<void>::fail(lock.error());
         }
 
-        auto initialJournal = writeJournal(plan, *installRoot.value(), applied, "applying");
-        if (!initialJournal) {
-            return initialJournal;
+        ApplyJournalStore journal(*installRoot.value(), dependencies.limits);
+        auto active = journal.loadActive();
+        if (!active) {
+            return Result<void>::fail(active.error());
+        }
+        if (active.value()) {
+            return recoverActiveTransaction(plan, *installRoot.value(), *active.value(), dependencies, hooks);
         }
 
-        for (const auto& operation : plan.operations) {
-            auto target = installRoot.value()->openRegularFile(operation.target, RootedFileOpenMode::ReadOnly);
-            if (!target) {
-                return failAfterRollback(target.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                         *hashProvider);
-            }
-            auto targetExpectation = expectationFor(target.value());
-            if (!targetExpectation) {
-                return failAfterRollback(targetExpectation.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                         *hashProvider);
-            }
-            std::optional<std::filesystem::perms> targetPermissions;
-            if (target.value().exists()) {
-                auto targetMetadata = target.value().file->metadata();
-                if (!targetMetadata) {
-                    return failAfterRollback(targetMetadata.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                targetPermissions = targetMetadata.value().permissions;
-            }
-
-            AppliedOperation appliedOperation;
-            appliedOperation.operation = operation;
-            appliedOperation.backupExists = target.value().exists();
-            appliedOperation.expectedCurrent = targetExpectation.value();
-
-            if (target.value().exists()) {
-                auto backedUp =
-                    createBackup(*backupRoot.value(), operation.target, *target.value().file, *hashProvider);
-                if (!backedUp) {
-                    return failAfterRollback(backedUp.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-            }
-            target.value().file.reset();
-            applied.push_back(std::move(appliedOperation));
-
-            if (operation.type == ApplyOperationType::Replace) {
-                auto source = stagingRoot->openRegularFile(operation.source, RootedFileOpenMode::ReadOnly);
-                if (!source) {
-                    return failAfterRollback(source.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                if (!source.value().exists()) {
-                    return failAfterRollback({ErrorCode::FileSystemError, "Staged update file is missing"},
-                                             *installRoot.value(), *backupRoot.value(), applied, *hashProvider);
-                }
-                auto sourceVerified = verifyExpectedContent(*source.value().file, operation, *hashProvider);
-                if (!sourceVerified) {
-                    return failAfterRollback(sourceVerified.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-
-                auto temporary = installRoot.value()->createAtomicReplacement(
-                    operation.target, RootedDirectoryCreationMode::InstalledContent);
-                if (!temporary) {
-                    return failAfterRollback(temporary.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                auto copied = copyRootedFile(*source.value().file, temporary.value()->file());
-                if (!copied) {
-                    return failAfterRollback(copied.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                auto permissions =
-                    targetPermissions
-                        ? temporary.value()->file().setPermissions(sanitizedFilePermissions(*targetPermissions))
-                        : temporary.value()->file().setPermissions(defaultInstalledFilePermissions());
-                if (!permissions) {
-                    return failAfterRollback(permissions.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                auto flushed = temporary.value()->file().flush();
-                if (!flushed) {
-                    return failAfterRollback(flushed.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                auto verified = verifyExpectedContent(temporary.value()->file(), operation, *hashProvider);
-                if (!verified) {
-                    return failAfterRollback(verified.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                auto installedMetadata = temporary.value()->file().metadata();
-                if (!installedMetadata) {
-                    return failAfterRollback(installedMetadata.error(), *installRoot.value(), *backupRoot.value(),
-                                             applied, *hashProvider);
-                }
-                auto committed = temporary.value()->commit(applied.back().expectedCurrent);
-                if (!committed) {
-                    return failAfterRollback(committed.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                applied.back().expectedCurrent = RootedEntryExpectation::matching(installedMetadata.value());
-                temporary.value().reset();
-            } else if (operation.type == ApplyOperationType::Remove &&
-                       targetExpectation.value().kind == RootedEntryExpectationKind::Identity) {
-                auto removed = installRoot.value()->removeRegularFile(operation.target, applied.back().expectedCurrent);
-                if (!removed) {
-                    return failAfterRollback(removed.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                             *hashProvider);
-                }
-                applied.back().expectedCurrent = RootedEntryExpectation::missing();
-            }
-
-            auto journal = writeJournal(plan, *installRoot.value(), applied, "applying");
-            if (!journal) {
-                return failAfterRollback(journal.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                         *hashProvider);
-            }
+        auto planDigest = applyPlanDigest(plan);
+        if (!planDigest) {
+            return Result<void>::fail(planDigest.error());
+        }
+        auto terminal = journal.loadTerminal();
+        if (!terminal) {
+            return Result<void>::fail(terminal.error());
+        }
+        if (terminal.value() && terminal.value()->planDigest == planDigest.value()) {
+            return replayTerminalTransaction(plan, *installRoot.value(), *terminal.value(), dependencies, hooks);
         }
 
-        auto completedJournal = writeJournal(plan, *installRoot.value(), applied, "complete");
-        if (!completedJournal) {
-            return failAfterRollback(completedJournal.error(), *installRoot.value(), *backupRoot.value(), applied,
-                                     *hashProvider);
+        auto backupRoot = dependencies.fileSystem->openRoot(plan.backupDir, RootAccess::ReadWrite, true);
+        if (!backupRoot) {
+            return Result<void>::fail(backupRoot.error());
         }
-        return restart(plan);
+        std::unique_ptr<IRootedDirectory> stagingRoot;
+        if (hasReplaceOperation(plan)) {
+            auto openedStaging = dependencies.fileSystem->openRoot(plan.stagingDir, RootAccess::ReadOnly, false);
+            if (!openedStaging) {
+                return Result<void>::fail(openedStaging.error());
+            }
+            stagingRoot = std::move(openedStaging.value());
+        }
+        auto transactionId = createApplyTransactionId(planDigest.value());
+        if (!transactionId) {
+            return Result<void>::fail(transactionId.error());
+        }
+        ApplyTransaction transaction(plan, *installRoot.value(), *backupRoot.value(), stagingRoot.get(),
+                                     *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits,
+                                     hooks, transactionId.value(), planDigest.value());
+        return transaction.start();
     } catch (...) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Unexpected apply failure"});
+    }
+}
+
+Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
+    try {
+        ApplyExecutorDependencies dependencies;
+        dependencies.fileSystem = createDefaultFileSystem();
+        dependencies.hashProvider = createDefaultHashProvider();
+        dependencies.processLauncher = createDefaultProcessLauncher();
+        return executeApplyPlanWithDependencies(plan, std::move(dependencies));
+    } catch (...) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Failed to create default apply dependencies"});
     }
 }
 

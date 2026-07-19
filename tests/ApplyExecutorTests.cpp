@@ -1,12 +1,16 @@
 #include "TestCommon.h"
 
 #include "ApplyExecutor.h"
+#include "ApplyJournal.h"
+#include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
+#include "libAutoUpdater/interfaces/IProcessLauncher.h"
 #include "util/Json.h"
 #include "util/PathUtil.h"
 
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -48,21 +52,20 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
 
     for (const auto& releaseId : untrustedReleaseIds) {
         plan.releaseId = releaseId;
-        const auto fileName = autoupdater::updater::transactionJournalFileName(plan);
-        LAU_REQUIRE(fileName);
-        LAU_REQUIRE(fileName.value().size() == 64 + std::string(".json").size());
-        LAU_REQUIRE(fileName.value().substr(64) == ".json");
+        const auto digest = autoupdater::updater::applyPlanDigest(plan);
+        LAU_REQUIRE(digest);
+        LAU_REQUIRE(digest.value().size() == 64);
         for (std::size_t i = 0; i < 64; ++i) {
-            const auto value = fileName.value()[i];
+            const auto value = digest.value()[i];
             LAU_REQUIRE((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f'));
         }
     }
 
     plan.releaseId = "same-release";
-    const auto emptyPlanName = autoupdater::updater::transactionJournalFileName(plan);
+    const auto emptyPlanName = autoupdater::updater::applyPlanDigest(plan);
     LAU_REQUIRE(emptyPlanName);
     plan.operations.push_back({autoupdater::ApplyOperationType::Remove, "", "obsolete.txt", "", 0});
-    const auto changedPlanName = autoupdater::updater::transactionJournalFileName(plan);
+    const auto changedPlanName = autoupdater::updater::applyPlanDigest(plan);
     LAU_REQUIRE(changedPlanName);
     LAU_REQUIRE(emptyPlanName.value() != changedPlanName.value());
     plan.operations.clear();
@@ -87,17 +90,24 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
         LAU_REQUIRE(entry.path().parent_path() == journalDir);
         ++journalCount;
     }
-    LAU_REQUIRE(journalCount == 2);
+    LAU_REQUIRE(journalCount == 5);
 
-    const auto journalName = autoupdater::updater::transactionJournalFileName(plan);
-    LAU_REQUIRE(journalName);
-    const auto journal =
-        autoupdater::util::Json::parse(readFile(journalDir / journalName.value()), autoupdater::ResourceLimits{}.json);
-    LAU_REQUIRE(journal);
-    LAU_REQUIRE(journal.value().get("state") != nullptr);
-    LAU_REQUIRE(journal.value().get("state")->asString() == "complete");
-    LAU_REQUIRE(journal.value().get("toVersion") != nullptr);
-    LAU_REQUIRE(journal.value().get("toVersion")->asString() == plan.toVersion);
+    const auto terminal = autoupdater::updater::parseActiveTransaction(readFile(journalDir / "terminal.json"));
+    LAU_REQUIRE(terminal);
+    const auto planDigest = autoupdater::updater::applyPlanDigest(plan);
+    LAU_REQUIRE(planDigest);
+    LAU_REQUIRE(terminal.value().planDigest == planDigest.value());
+    LAU_REQUIRE(terminal.value().transactionId != terminal.value().planDigest);
+
+    const auto summary = autoupdater::updater::parseApplyJournalSummary(
+        readFile(journalDir / (terminal.value().transactionId + ".json")));
+    LAU_REQUIRE(summary);
+    LAU_REQUIRE(summary.value().fileState == autoupdater::updater::JournalFileState::Complete);
+    LAU_REQUIRE(summary.value().restartState == autoupdater::updater::JournalRestartState::NotRequested);
+    const auto snapshot =
+        autoupdater::ApplyPlan::parse(readFile(journalDir / (terminal.value().transactionId + ".plan.json")));
+    LAU_REQUIRE(snapshot);
+    LAU_REQUIRE(snapshot.value().toVersion == plan.toVersion);
 
     std::filesystem::remove_all(root, ec);
 }
@@ -165,6 +175,80 @@ void testApplyExecutorRollsBackCurrentFailedOperation() {
     LAU_REQUIRE(!result);
     LAU_REQUIRE(readFile(install / "bin/a.txt") == "old-a");
     LAU_REQUIRE(readFile(install / "bin/b.txt") == "old-b");
+
+    const auto limitedInstall = root / "limited-install";
+    const auto limitedStaging = root / "limited-staging";
+    const auto limitedBackup = root / "limited-backup";
+    writeFile(limitedInstall / "large.txt", "large");
+    writeFile(limitedStaging / "large.txt", "new");
+    auto smallHash = hash->sha256Bytes("new");
+    LAU_REQUIRE(smallHash);
+    autoupdater::ApplyPlan limitedPlan;
+    limitedPlan.installDir = limitedInstall;
+    limitedPlan.stagingDir = limitedStaging;
+    limitedPlan.backupDir = limitedBackup;
+    limitedPlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "large.txt", "large.txt", smallHash.value(), 3});
+    autoupdater::updater::ApplyExecutorDependencies dependencies;
+    dependencies.fileSystem = autoupdater::createDefaultFileSystem();
+    dependencies.hashProvider = hash;
+    dependencies.processLauncher = autoupdater::createDefaultProcessLauncher();
+    dependencies.limits.maxArtifactBytes = 4;
+    dependencies.limits.maxTotalArtifactBytes = 8;
+    result = autoupdater::updater::executeApplyPlanWithDependencies(limitedPlan, std::move(dependencies));
+    LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
+    LAU_REQUIRE(readFile(limitedInstall / "large.txt") == "large");
+    LAU_REQUIRE(!std::filesystem::exists(limitedBackup / "large.txt"));
+
+    const auto aggregateInstall = root / "aggregate-install";
+    const auto aggregateStaging = root / "aggregate-staging";
+    const auto aggregateBackup = root / "aggregate-backup";
+    for (const auto* name : {"a.txt", "b.txt"}) {
+        writeFile(aggregateInstall / name, "four");
+        writeFile(aggregateStaging / name, "new");
+    }
+    autoupdater::ApplyPlan aggregatePlan;
+    aggregatePlan.installDir = aggregateInstall;
+    aggregatePlan.stagingDir = aggregateStaging;
+    aggregatePlan.backupDir = aggregateBackup;
+    aggregatePlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "a.txt", "a.txt", smallHash.value(), 3});
+    aggregatePlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "b.txt", "b.txt", smallHash.value(), 3});
+    autoupdater::updater::ApplyExecutorDependencies aggregateDependencies;
+    aggregateDependencies.fileSystem = autoupdater::createDefaultFileSystem();
+    aggregateDependencies.hashProvider = hash;
+    aggregateDependencies.processLauncher = autoupdater::createDefaultProcessLauncher();
+    aggregateDependencies.limits.maxArtifactBytes = 4;
+    aggregateDependencies.limits.maxTotalArtifactBytes = 7;
+    result = autoupdater::updater::executeApplyPlanWithDependencies(aggregatePlan, std::move(aggregateDependencies));
+    LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
+    LAU_REQUIRE(readFile(aggregateInstall / "a.txt") == "four");
+    LAU_REQUIRE(readFile(aggregateInstall / "b.txt") == "four");
+
+    const auto boundaryInstall = root / "boundary-install";
+    const auto boundaryStaging = root / "boundary-staging";
+    const auto boundaryBackup = root / "boundary-backup";
+    for (const auto* name : {"a.txt", "b.txt"}) {
+        writeFile(boundaryInstall / name, "four");
+        writeFile(boundaryStaging / name, "new");
+    }
+    auto boundaryPlan = aggregatePlan;
+    boundaryPlan.installDir = boundaryInstall;
+    boundaryPlan.stagingDir = boundaryStaging;
+    boundaryPlan.backupDir = boundaryBackup;
+    autoupdater::updater::ApplyExecutorDependencies boundaryDependencies;
+    boundaryDependencies.fileSystem = autoupdater::createDefaultFileSystem();
+    boundaryDependencies.hashProvider = hash;
+    boundaryDependencies.processLauncher = autoupdater::createDefaultProcessLauncher();
+    boundaryDependencies.limits.maxArtifactBytes = 4;
+    boundaryDependencies.limits.maxTotalArtifactBytes = 8;
+    result = autoupdater::updater::executeApplyPlanWithDependencies(boundaryPlan, std::move(boundaryDependencies));
+    LAU_REQUIRE(result);
+    LAU_REQUIRE(readFile(boundaryInstall / "a.txt") == "new");
+    LAU_REQUIRE(readFile(boundaryInstall / "b.txt") == "new");
 
     std::filesystem::remove_all(root, ec);
 }

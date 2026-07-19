@@ -1,5 +1,6 @@
 add_executable(autoupdater_apply
     main.cpp
+    ApplyJournal.cpp
     ApplyExecutor.cpp)
 
 target_compile_features(autoupdater_apply PRIVATE cxx_std_17)

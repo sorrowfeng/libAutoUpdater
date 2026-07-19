@@ -679,10 +679,6 @@ struct Updater::Impl {
                 if (!permissions) {
                     return permissions;
                 }
-                auto flushed = temporary.value()->file().flush();
-                if (!flushed) {
-                    return flushed;
-                }
                 auto temporaryMetadata = temporary.value()->file().metadata();
                 if (!temporaryMetadata) {
                     return Result<void>::fail(temporaryMetadata.error());

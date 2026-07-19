@@ -37,6 +37,7 @@ void testApplyExecutorRequiresWritableJournal();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
+void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
@@ -88,6 +89,7 @@ int main() {
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},
+        {"ApplyExecutorRecoversAfterForcedTermination", testApplyExecutorRecoversAfterForcedTermination},
         {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
         {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},

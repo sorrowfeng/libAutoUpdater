@@ -93,7 +93,7 @@ likelihood of affecting production update flows.
       bodies, one-byte-over-limit responses, excessive JSON depth, and resume
       counter overflow.
 
-- [ ] **AU-005 — Make apply, journal, and rollback crash-recoverable**
+- [x] **AU-005 — Make apply, journal, and rollback crash-recoverable**
   - Classification: Verified high-impact correctness and integrity defect.
   - Key code: `updater/ApplyExecutor.cpp:64-123,225-279`.
   - Required work:

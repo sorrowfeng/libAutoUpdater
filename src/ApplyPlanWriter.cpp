@@ -79,10 +79,6 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnve
     if (!write) {
         return Result<WrittenApplyPlan>::fail(write.error());
     }
-    auto flushed = temporary.value()->file().flush();
-    if (!flushed) {
-        return Result<WrittenApplyPlan>::fail(flushed.error());
-    }
     auto committed = temporary.value()->commit(expectation);
     if (!committed) {
         return Result<WrittenApplyPlan>::fail(committed.error());

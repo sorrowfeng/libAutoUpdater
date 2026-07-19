@@ -16,8 +16,10 @@
 #include <cstddef>
 #include <cstring>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -33,6 +35,13 @@ constexpr NTSTATUS kStatusObjectNameNotFound = static_cast<NTSTATUS>(0xC0000034L
 constexpr NTSTATUS kStatusObjectPathNotFound = static_cast<NTSTATUS>(0xC000003AL);
 constexpr NTSTATUS kStatusNoSuchFile = static_cast<NTSTATUS>(0xC000000FL);
 constexpr NTSTATUS kStatusObjectNameCollision = static_cast<NTSTATUS>(0xC0000035L);
+constexpr NTSTATUS kStatusSharingViolation = static_cast<NTSTATUS>(0xC0000043L);
+constexpr NTSTATUS kStatusFileIsADirectory = static_cast<NTSTATUS>(0xC00000BAL);
+constexpr NTSTATUS kStatusInvalidInfoClass = static_cast<NTSTATUS>(0xC0000003L);
+constexpr NTSTATUS kStatusInvalidParameter = static_cast<NTSTATUS>(0xC000000DL);
+constexpr NTSTATUS kStatusNotSupported = static_cast<NTSTATUS>(0xC00000BBL);
+constexpr ULONG_PTR kFileOpened = 1;
+constexpr ULONG_PTR kFileCreated = 2;
 
 using NtCreateFileFunction = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
                                               PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
@@ -219,17 +228,61 @@ Result<std::vector<std::wstring>> managedComponents(const std::string& relativeP
 }
 
 ACCESS_MASK directoryAccess(RootAccess access) {
-    (void)access;
     // Child opens and mutations perform their own ACL checks. The directory
-    // handle is only a namespace anchor and should carry the minimum rights
-    // required by NtCreateFile/NtSetInformationFile relative operations.
-    return FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // handle is a namespace anchor. Writable roots additionally request the
+    // directory rights required to flush their own namespace mutations.
+    auto desired = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    if (access == RootAccess::ReadWrite) {
+        desired |= FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY;
+    }
+    return desired;
 }
 
-Result<Handle> openChildDirectory(HANDLE parent, const std::wstring& name, RootAccess access, bool create) {
+Result<std::string> fileIdentity(HANDLE handle);
+
+std::mutex& directoryDurabilityCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_set<std::string>& directoryDurabilityCache() {
+    static std::unordered_set<std::string> cache;
+    return cache;
+}
+
+Result<void> persistDirectoryBoundary(HANDLE parent, HANDLE child) {
+    auto parentIdentity = fileIdentity(parent);
+    if (!parentIdentity) {
+        return Result<void>::fail(parentIdentity.error());
+    }
+    auto childIdentity = fileIdentity(child);
+    if (!childIdentity) {
+        return Result<void>::fail(childIdentity.error());
+    }
+    const auto key = parentIdentity.value() + ">" + childIdentity.value();
+    {
+        std::lock_guard<std::mutex> lock(directoryDurabilityCacheMutex());
+        if (directoryDurabilityCache().find(key) != directoryDurabilityCache().end()) {
+            return Result<void>::ok();
+        }
+    }
+    if (!FlushFileBuffers(child) || !FlushFileBuffers(parent)) {
+        return windowsFailure("Failed to persist rooted directory boundary");
+    }
+    {
+        std::lock_guard<std::mutex> lock(directoryDurabilityCacheMutex());
+        directoryDurabilityCache().insert(key);
+    }
+    return Result<void>::ok();
+}
+
+Result<Handle> openChildDirectory(HANDLE parent, const std::wstring& name, RootAccess access, bool create,
+                                  bool persistNamespace = false) {
     Handle child;
-    const auto status = createRelative(parent, name, directoryAccess(access), create ? FILE_OPEN_IF : FILE_OPEN,
-                                       FILE_DIRECTORY_FILE, child);
+    IO_STATUS_BLOCK statusBlock{};
+    const auto status =
+        createRelative(parent, name, directoryAccess(access), create ? FILE_OPEN_IF : FILE_OPEN, FILE_DIRECTORY_FILE,
+                       child, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &statusBlock);
     if (status < 0) {
         if (!create && isMissingStatus(status)) {
             return Result<Handle>::ok(Handle());
@@ -239,6 +292,18 @@ Result<Handle> openChildDirectory(HANDLE parent, const std::wstring& name, RootA
     auto checked = ensureDirectoryHandle(child.get(), "Managed directory");
     if (!checked) {
         return Result<Handle>::fail(checked.error());
+    }
+    if (create && persistNamespace) {
+        if (statusBlock.Information != kFileOpened && statusBlock.Information != kFileCreated) {
+            return Result<Handle>::fail({ErrorCode::FileSystemError, "Unexpected rooted directory creation result"});
+        }
+        // Persist an entry even when another process won the missing-to-create
+        // race. The entry may have been created immediately before this open
+        // and therefore cannot yet be assumed durable.
+        auto persisted = persistDirectoryBoundary(parent, child.get());
+        if (!persisted) {
+            return Result<Handle>::fail(persisted.error());
+        }
     }
     return Result<Handle>::ok(std::move(child));
 }
@@ -251,8 +316,9 @@ Result<Handle> traverseParent(HANDLE root, RootAccess access, const std::vector<
     }
     auto current = std::move(currentResult.value());
     for (std::size_t index = 0; index + 1 < components.size(); ++index) {
-        const auto componentAccess = index + 2 == components.size() ? access : RootAccess::ReadOnly;
-        auto next = openChildDirectory(current.get(), components[index], componentAccess, create);
+        const auto componentAccess =
+            create ? RootAccess::ReadWrite : (index + 2 == components.size() ? access : RootAccess::ReadOnly);
+        auto next = openChildDirectory(current.get(), components[index], componentAccess, create, create);
         if (!next) {
             return next;
         }
@@ -273,6 +339,46 @@ Result<std::string> fileIdentity(HANDLE handle) {
     stream << std::hex << std::setfill('0') << std::setw(8) << information.dwVolumeSerialNumber << ':' << std::setw(8)
            << information.nFileIndexHigh << std::setw(8) << information.nFileIndexLow;
     return Result<std::string>::ok(stream.str());
+}
+
+Result<Handle> reopenDirectoryForMutation(HANDLE current, HANDLE parent, const std::wstring& currentName,
+                                          const std::filesystem::path& filesystemRoot) {
+    auto expectedIdentity = fileIdentity(current);
+    if (!expectedIdentity) {
+        return Result<Handle>::fail(expectedIdentity.error());
+    }
+
+    Handle writable;
+    if (parent != INVALID_HANDLE_VALUE && parent != nullptr) {
+        const auto status = createRelative(parent, currentName, directoryAccess(RootAccess::ReadWrite), FILE_OPEN,
+                                           FILE_DIRECTORY_FILE, writable);
+        if (status < 0) {
+            return windowsFailureValue<Handle>("Failed to reopen rooted directory for durable creation",
+                                               statusToError(status));
+        }
+    } else {
+        HANDLE handle = CreateFileW(filesystemRoot.c_str(), directoryAccess(RootAccess::ReadWrite),
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            return windowsFailureValue<Handle>("Failed to reopen filesystem root for durable creation");
+        }
+        writable.reset(handle);
+    }
+
+    auto checked = ensureDirectoryHandle(writable.get(), "Writable rooted directory");
+    if (!checked) {
+        return Result<Handle>::fail(checked.error());
+    }
+    auto actualIdentity = fileIdentity(writable.get());
+    if (!actualIdentity) {
+        return Result<Handle>::fail(actualIdentity.error());
+    }
+    if (actualIdentity.value() != expectedIdentity.value()) {
+        return Result<Handle>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Rooted directory changed while preparing durable creation"});
+    }
+    return Result<Handle>::ok(std::move(writable));
 }
 
 NTSTATUS renameHandleRelative(HANDLE source, HANDLE targetParent, const std::wstring& targetName,
@@ -303,12 +409,54 @@ NTSTATUS renameHandleRelative(HANDLE source, HANDLE targetParent, const std::wst
                                           static_cast<FILE_INFORMATION_CLASS>(10));
 }
 
-std::wstring quarantineName() {
+NTSTATUS replaceHandleRelative(HANDLE source, HANDLE targetParent, const std::wstring& targetName) {
+    const auto& functions = nativeFunctions();
+    if (!functions.ntSetInformationFile || targetName.empty()) {
+        return kStatusNotSupported;
+    }
+
+    struct RenameInformationEx {
+        ULONG flags;
+        HANDLE rootDirectory;
+        ULONG fileNameLength;
+        WCHAR fileName[1];
+    };
+    constexpr ULONG kReplaceIfExists = 0x00000001UL;
+    constexpr ULONG kPosixSemantics = 0x00000002UL;
+    constexpr auto kFileRenameInformationEx = static_cast<FILE_INFORMATION_CLASS>(65);
+    const auto nameBytes = targetName.size() * sizeof(wchar_t);
+    constexpr auto headerBytes = offsetof(RenameInformationEx, fileName);
+    if (nameBytes > ULONG_MAX - headerBytes) {
+        return kStatusInvalidParameter;
+    }
+    const auto bufferBytes = headerBytes + nameBytes;
+    const auto storageElements = (bufferBytes + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+    std::vector<std::max_align_t> storage(storageElements);
+    auto* rename = reinterpret_cast<RenameInformationEx*>(storage.data());
+    std::memset(rename, 0, bufferBytes);
+    rename->flags = kReplaceIfExists | kPosixSemantics;
+    rename->rootDirectory = targetParent;
+    rename->fileNameLength = static_cast<ULONG>(nameBytes);
+    std::memcpy(rename->fileName, targetName.data(), nameBytes);
+
+    IO_STATUS_BLOCK statusBlock{};
+    const auto result = functions.ntSetInformationFile(source, &statusBlock, rename, static_cast<ULONG>(bufferBytes),
+                                                       kFileRenameInformationEx);
+    if (result == kStatusInvalidInfoClass || result == kStatusInvalidParameter || result == kStatusNotSupported) {
+        // The legacy operation is still a single namespace mutation. It may
+        // reject an open destination on older Windows, in which case apply
+        // fails closed without first moving the current target away.
+        return renameHandleRelative(source, targetParent, targetName, true);
+    }
+    return result;
+}
+
+std::wstring removalQuarantineName() {
     static std::atomic<std::uint64_t> sequence{0};
     const auto seed = std::to_string(GetCurrentProcessId()) + ":" +
                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ":" +
                       std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
-    return util::pathFromUtf8(".autoupdater-quarantine-" + util::sha256Bytes(seed).substr(0, 24)).native();
+    return util::pathFromUtf8(".autoupdater-removed-" + util::sha256Bytes(seed).substr(0, 24)).native();
 }
 
 class WindowsRootedDirectory;
@@ -435,8 +583,7 @@ class WindowsRootedFile final : public IRootedFile {
     const std::wstring& name() const noexcept {
         return name_;
     }
-    void markCommitted(std::wstring newName) noexcept {
-        name_ = std::move(newName);
+    void markCommitted() noexcept {
         deleteOnDestroy_ = false;
     }
 
@@ -473,7 +620,10 @@ Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, co
             }
             return windowsFailure("Failed to install a previously missing managed target", statusToError(status));
         }
-        source.markCommitted(targetName);
+        source.markCommitted();
+        if (!FlushFileBuffers(targetParent)) {
+            return windowsFailure("Failed to persist installed managed target");
+        }
         return Result<void>::ok();
     }
 
@@ -498,47 +648,67 @@ Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, co
         return Result<void>::fail(
             {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before commit"});
     }
+    existing.reset();
 
-    std::wstring quarantine;
-    bool quarantinedTarget = false;
-    for (int attempt = 0; attempt < 32; ++attempt) {
-        quarantine = quarantineName();
-        if (quarantine == targetName) {
-            continue;
-        }
-        const auto quarantined = renameHandleRelative(existing.get(), targetParent, quarantine, false);
-        if (quarantined >= 0) {
-            quarantinedTarget = true;
-            break;
-        }
-        if (quarantined != kStatusObjectNameCollision) {
-            return windowsFailure("Failed to quarantine managed target", statusToError(quarantined));
-        }
-        quarantine.clear();
+    // FileRenameInformationEx needs the destination to share delete access.
+    // First taking an exclusive handle above rejects existing competing
+    // writers/deleters; reopen immediately before the single atomic rename and
+    // revalidate identity so a stale expectation is never knowingly applied.
+    const auto guarded = createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+                                        FILE_OPEN, FILE_NON_DIRECTORY_FILE, existing, FILE_SHARE_DELETE);
+    if (guarded < 0) {
+        return windowsFailure("Failed to guard managed target for atomic replacement", statusToError(guarded));
     }
-    if (!quarantinedTarget) {
-        return Result<void>::fail({ErrorCode::FileSystemError, "Failed to allocate a unique quarantine name"});
+    checked = ensureRegularHandle(existing.get(), "Managed target");
+    if (!checked) {
+        return checked;
+    }
+    identity = fileIdentity(existing.get());
+    if (!identity) {
+        return Result<void>::fail(identity.error());
+    }
+    if (identity.value() != expectation.identity) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before atomic replacement"});
     }
 
-    const auto installed = renameHandleRelative(source.handle(), targetParent, targetName, false);
+    const auto installed = replaceHandleRelative(source.handle(), targetParent, targetName);
     if (installed < 0) {
-        const auto installFailure =
-            windowsFailure("Failed to install quarantined managed replacement", statusToError(installed));
-        const auto restored = renameHandleRelative(existing.get(), targetParent, targetName, false);
-        if (restored < 0) {
-            const auto restoreFailure =
-                windowsFailure("Failed to restore quarantined managed target", statusToError(restored));
-            return Result<void>::fail(
-                {ErrorCode::ApplyFailed,
-                 installFailure.error().message + "; target restoration failed: " + restoreFailure.error().message});
-        }
-        return installFailure;
+        return windowsFailure("Failed to atomically replace managed target", statusToError(installed));
     }
 
-    source.markCommitted(targetName);
-    FILE_DISPOSITION_INFO disposition{};
-    disposition.DeleteFile = TRUE;
-    (void)SetFileInformationByHandle(existing.get(), FileDispositionInfo, &disposition, sizeof(disposition));
+    source.markCommitted();
+    FILE_STANDARD_INFO displacedInformation{};
+    if (!GetFileInformationByHandleEx(existing.get(), FileStandardInfo, &displacedInformation,
+                                      sizeof(displacedInformation))) {
+        return windowsFailure("Failed to verify displaced managed target");
+    }
+    if (!displacedInformation.DeletePending) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Managed target changed during atomic replacement"});
+    }
+
+    Handle namedInstalled;
+    const auto namedStatus = createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN,
+                                            FILE_NON_DIRECTORY_FILE, namedInstalled);
+    if (namedStatus < 0) {
+        return windowsFailure("Failed to verify atomically installed target", statusToError(namedStatus));
+    }
+    auto sourceIdentity = fileIdentity(source.handle());
+    if (!sourceIdentity) {
+        return Result<void>::fail(sourceIdentity.error());
+    }
+    auto namedIdentity = fileIdentity(namedInstalled.get());
+    if (!namedIdentity) {
+        return Result<void>::fail(namedIdentity.error());
+    }
+    if (sourceIdentity.value() != namedIdentity.value()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Installed target changed during atomic replacement"});
+    }
+    if (!FlushFileBuffers(targetParent)) {
+        return windowsFailure("Failed to persist atomically replaced managed target");
+    }
     return Result<void>::ok();
 }
 
@@ -562,13 +732,7 @@ class WindowsTemporaryFile final : public IRootedTemporaryFile {
 class WindowsLock final : public IRootedLock {
   public:
     explicit WindowsLock(Handle handle) : handle_(std::move(handle)) {}
-    ~WindowsLock() override {
-        if (handle_) {
-            FILE_DISPOSITION_INFO disposition{};
-            disposition.DeleteFile = TRUE;
-            SetFileInformationByHandle(handle_.get(), FileDispositionInfo, &disposition, sizeof(disposition));
-        }
-    }
+    ~WindowsLock() override = default;
 
   private:
     Handle handle_;
@@ -770,10 +934,32 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 return Result<void>::fail(
                     {ErrorCode::SecurityPolicyViolation, "Managed remove target identity changed"});
             }
+            bool quarantined = false;
+            for (int attempt = 0; attempt < 32; ++attempt) {
+                const auto quarantine = removalQuarantineName();
+                const auto renamed = renameHandleRelative(file.get(), parent.value().get(), quarantine, false);
+                if (renamed >= 0) {
+                    quarantined = true;
+                    break;
+                }
+                if (renamed != kStatusObjectNameCollision) {
+                    return windowsFailure("Failed to quarantine managed removal target", statusToError(renamed));
+                }
+            }
+            if (!quarantined) {
+                return Result<void>::fail(
+                    {ErrorCode::FileSystemError, "Failed to allocate a managed removal quarantine name"});
+            }
+            if (!FlushFileBuffers(parent.value().get())) {
+                return windowsFailure("Failed to persist managed removal namespace change");
+            }
             FILE_DISPOSITION_INFO disposition{};
             disposition.DeleteFile = TRUE;
             if (!SetFileInformationByHandle(file.get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
-                return windowsFailure("Failed to remove managed file");
+                // The requested target name is already durably absent. Report
+                // cleanup failure so the journal can reconcile; the uniquely
+                // named private quarantine may safely remain for later GC.
+                return windowsFailure("Failed to clean managed removal quarantine");
             }
             return Result<void>::ok();
         } catch (...) {
@@ -796,16 +982,20 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 return Result<std::unique_ptr<IRootedLock>>::fail(parent.error());
             }
             Handle lock;
-            const auto status = createRelative(parent.value().get(), components.value().back(),
-                                               directoryAccess(RootAccess::ReadWrite) | DELETE, FILE_CREATE,
-                                               FILE_DIRECTORY_FILE, lock, 0);
-            if (status == kStatusObjectNameCollision) {
+            const auto status =
+                createRelative(parent.value().get(), components.value().back(), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                               FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE, lock, 0);
+            if (status == kStatusSharingViolation || status == kStatusFileIsADirectory) {
                 return Result<std::unique_ptr<IRootedLock>>::fail(
                     {ErrorCode::ApplyFailed, "Another update appears to be running"});
             }
             if (status < 0) {
-                return windowsFailureValue<std::unique_ptr<IRootedLock>>("Failed to create update lock",
+                return windowsFailureValue<std::unique_ptr<IRootedLock>>("Failed to open update lock",
                                                                          statusToError(status));
+            }
+            auto regular = ensureRegularHandle(lock.get(), "update lock");
+            if (!regular) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(regular.error());
             }
             auto result = std::make_unique<WindowsLock>(std::move(lock));
             return Result<std::unique_ptr<IRootedLock>>::ok(std::move(result));
@@ -821,6 +1011,10 @@ class WindowsRootedDirectory final : public IRootedDirectory {
 };
 
 Result<void> WindowsTemporaryFile::commit(const RootedEntryExpectation& expectation) noexcept {
+    auto flushed = file_->flush();
+    if (!flushed) {
+        return flushed;
+    }
     return root_.replaceWithOpenedFile(*file_, target_, expectation);
 }
 
@@ -860,9 +1054,39 @@ Result<Handle> openRootPath(const std::filesystem::path& path, RootAccess access
         return Result<Handle>::fail(checked.error());
     }
 
+    Handle parent;
+    std::wstring currentName;
+    bool creating = false;
     for (std::size_t index = 0; index < components.size(); ++index) {
-        const auto componentAccess = index + 1 == components.size() ? access : RootAccess::ReadOnly;
-        auto next = openChildDirectory(current.get(), components[index], componentAccess, create);
+        if (!creating) {
+            const auto componentAccess = index + 1 == components.size() ? access : RootAccess::ReadOnly;
+            auto existing = openChildDirectory(current.get(), components[index], componentAccess, false);
+            if (!existing) {
+                return existing;
+            }
+            if (existing.value()) {
+                parent = std::move(current);
+                current = std::move(existing.value());
+                currentName = components[index];
+                continue;
+            }
+            if (!create) {
+                return Result<Handle>::fail({ErrorCode::FileSystemError, "Rooted filesystem path does not exist"});
+            }
+
+            auto writableParent = reopenDirectoryForMutation(current.get(), parent.get(), currentName, rootPath);
+            if (!writableParent) {
+                return writableParent;
+            }
+            current = std::move(writableParent.value());
+            parent.reset();
+            creating = true;
+        }
+
+        // Once the first missing component is found, keep every newly opened
+        // directory writable so each following namespace boundary can be
+        // durably created relative to its already-pinned parent handle.
+        auto next = openChildDirectory(current.get(), components[index], RootAccess::ReadWrite, true, true);
         if (!next) {
             return next;
         }

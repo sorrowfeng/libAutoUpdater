@@ -38,6 +38,8 @@ class IRootedFile {
     virtual Result<void> write(const void* data, std::size_t size) noexcept = 0;
     virtual Result<void> seek(std::uint64_t offset) noexcept = 0;
     virtual Result<void> truncate(std::uint64_t size) noexcept = 0;
+    /// Persist file contents and the metadata required to reproduce them using
+    /// the strongest durability barrier supported by the backing filesystem.
     virtual Result<void> flush() noexcept = 0;
     virtual Result<RootedFileMetadata> metadata() noexcept = 0;
     virtual Result<void> setPermissions(std::filesystem::perms permissions) noexcept = 0;
@@ -74,6 +76,9 @@ class IRootedTemporaryFile {
     virtual ~IRootedTemporaryFile() = default;
 
     virtual IRootedFile& file() noexcept = 0;
+    /// Atomically publish the prepared file and persist the affected namespace.
+    /// A failure may be reported after the namespace mutation became visible;
+    /// transaction callers must reopen and reconcile the target before retrying.
     virtual Result<void> commit(const RootedEntryExpectation& expectation) noexcept = 0;
 };
 
@@ -96,6 +101,9 @@ class IRootedDirectory {
         RootedDirectoryCreationMode directoryMode = RootedDirectoryCreationMode::Private) noexcept = 0;
     virtual Result<void> replaceWithOpenedFile(IRootedFile& source, const std::string& relativePath,
                                                const RootedEntryExpectation& expectation) noexcept = 0;
+    /// Remove the expected entry and persist the affected namespace. A failure
+    /// may be reported after removal became visible, so callers must reconcile
+    /// the target from durable transaction evidence before retrying.
     virtual Result<void> removeRegularFile(const std::string& relativePath,
                                            const RootedEntryExpectation& expectation) noexcept = 0;
     virtual Result<std::unique_ptr<IRootedLock>> acquireExclusiveLock(const std::string& relativePath) noexcept = 0;

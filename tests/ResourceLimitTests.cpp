@@ -21,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -240,10 +241,11 @@ void testNetworkResourceLimits() {
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
     }
-    for (auto response : {autoupdater::test::textResponse("12345"),
-                          autoupdater::test::ScriptedResponse{200, {{"Content-Length", "1"}}, "12345"},
-                          autoupdater::test::ScriptedResponse{200, {{"Transfer-Encoding", "chunked"}}, "12345"},
-                          autoupdater::test::ScriptedResponse{200, {{"Content-Length", "5"}}, {}}}) {
+    for (auto response :
+         {autoupdater::test::textResponse("12345"),
+          autoupdater::test::ScriptedResponse{200, {{"Content-Length", "1"}}, "12345", std::nullopt, {}},
+          autoupdater::test::ScriptedResponse{200, {{"Transfer-Encoding", "chunked"}}, "12345", std::nullopt, {}},
+          autoupdater::test::ScriptedResponse{200, {{"Content-Length", "5"}}, {}, std::nullopt, {}}}) {
         auto policy = networkPolicy();
         autoupdater::test::ScriptedNetworkClient network;
         network.queueText(url, std::move(response));

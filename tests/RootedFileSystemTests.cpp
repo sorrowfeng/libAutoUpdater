@@ -1181,6 +1181,53 @@ void testApplyExecutorUsesSafePosixPermissions() {
     LAU_REQUIRE(!std::filesystem::exists(install / "bin/readonly"));
     LAU_REQUIRE(readFile(backup / "bin/readonly") == "remove-me");
 
+    const auto rollbackInstall = root / "rollback-install";
+    const auto rollbackStaging = root / "rollback-staging";
+    const auto rollbackBackup = root / "rollback-backup";
+    writeFile(rollbackInstall / "bin/app", "rollback-old");
+    writeFile(rollbackStaging / "bin/app", "rollback-new");
+    const auto rollbackMode =
+        std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec;
+    std::filesystem::permissions(rollbackInstall / "bin/app", rollbackMode, std::filesystem::perm_options::replace);
+    auto rollbackHash = hash->sha256Bytes("rollback-new");
+    LAU_REQUIRE(rollbackHash);
+    autoupdater::ApplyPlan rollbackPlan;
+    rollbackPlan.installDir = rollbackInstall;
+    rollbackPlan.stagingDir = rollbackStaging;
+    rollbackPlan.backupDir = rollbackBackup;
+    rollbackPlan.releaseId = "permission-rollback";
+    rollbackPlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app", rollbackHash.value(), 12});
+    rollbackPlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "missing", "missing", rollbackHash.value(), 12});
+    auto rollbackResult = autoupdater::updater::executeApplyPlan(rollbackPlan);
+    LAU_REQUIRE(!rollbackResult);
+    LAU_REQUIRE(readFile(rollbackInstall / "bin/app") == "rollback-old");
+    LAU_REQUIRE((std::filesystem::status(rollbackInstall / "bin/app").permissions() & modeMask) == rollbackMode);
+    LAU_REQUIRE((std::filesystem::status(rollbackBackup / "bin/app").permissions() & modeMask) == rollbackMode);
+
+    const auto mismatchInstall = root / "mismatch-install";
+    const auto mismatchStaging = root / "mismatch-staging";
+    const auto mismatchBackup = root / "mismatch-backup";
+    writeFile(mismatchInstall / "bin/app", "rollback-old");
+    writeFile(mismatchStaging / "bin/app", "rollback-new");
+    writeFile(mismatchBackup / "bin/app", "rollback-old");
+    std::filesystem::permissions(mismatchInstall / "bin/app", rollbackMode, std::filesystem::perm_options::replace);
+    std::filesystem::permissions(mismatchBackup / "bin/app", std::filesystem::perms::owner_read,
+                                 std::filesystem::perm_options::replace);
+    autoupdater::ApplyPlan mismatchPlan;
+    mismatchPlan.installDir = mismatchInstall;
+    mismatchPlan.stagingDir = mismatchStaging;
+    mismatchPlan.backupDir = mismatchBackup;
+    mismatchPlan.releaseId = "permission-mismatch";
+    mismatchPlan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app", rollbackHash.value(), 12});
+    auto mismatchResult = autoupdater::updater::executeApplyPlan(mismatchPlan);
+    LAU_REQUIRE(!mismatchResult);
+    LAU_REQUIRE(mismatchResult.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+    LAU_REQUIRE(readFile(mismatchInstall / "bin/app") == "rollback-old");
+    LAU_REQUIRE((std::filesystem::status(mismatchInstall / "bin/app").permissions() & modeMask) == rollbackMode);
+
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 #endif

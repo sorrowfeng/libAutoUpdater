@@ -7,6 +7,7 @@
 
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #if defined(__linux__)
@@ -25,9 +26,11 @@
 #include <chrono>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -94,6 +97,82 @@ Result<void> posixFailure(const std::string& action, int code = errno) {
 
 template <class T> Result<T> posixFailureValue(const std::string& action, int code = errno) {
     return Result<T>::fail({ErrorCode::FileSystemError, action + ": " + std::generic_category().message(code)});
+}
+
+Result<void> syncDescriptor(int descriptor, const std::string& action) {
+    for (;;) {
+        if (::fsync(descriptor) == 0) {
+            return Result<void>::ok();
+        }
+        if (errno != EINTR) {
+            return posixFailure(action);
+        }
+    }
+}
+
+Result<void> syncFileDescriptor(int descriptor, const std::string& action) {
+#if defined(__APPLE__) && defined(F_FULLFSYNC)
+    for (;;) {
+        if (::fcntl(descriptor, F_FULLFSYNC) == 0) {
+            return Result<void>::ok();
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        // Some Apple-backed filesystems do not implement F_FULLFSYNC. Retain
+        // the strongest barrier the filesystem exposes instead of making
+        // updates unusable on those volumes.
+        if (errno != EINVAL && errno != ENOTSUP) {
+            return posixFailure(action);
+        }
+        break;
+    }
+#endif
+    return syncDescriptor(descriptor, action);
+}
+
+Result<void> syncDirectory(int descriptor, const std::string& context) {
+    return syncDescriptor(descriptor, "Failed to persist " + context + " directory");
+}
+
+Result<std::string> directoryDurabilityKey(int parent, int child) {
+    struct stat parentStatus{};
+    struct stat childStatus{};
+    if (::fstat(parent, &parentStatus) != 0 || ::fstat(child, &childStatus) != 0) {
+        return posixFailureValue<std::string>("Failed to identify rooted directory durability boundary");
+    }
+    std::ostringstream stream;
+    stream << static_cast<std::uintmax_t>(parentStatus.st_dev) << ':'
+           << static_cast<std::uintmax_t>(parentStatus.st_ino) << ':' << static_cast<std::uintmax_t>(childStatus.st_dev)
+           << ':' << static_cast<std::uintmax_t>(childStatus.st_ino) << ':';
+#if defined(__APPLE__)
+    stream << static_cast<std::intmax_t>(childStatus.st_ctimespec.tv_sec) << ':'
+           << static_cast<std::intmax_t>(childStatus.st_ctimespec.tv_nsec);
+#else
+    stream << static_cast<std::intmax_t>(childStatus.st_ctim.tv_sec) << ':'
+           << static_cast<std::intmax_t>(childStatus.st_ctim.tv_nsec);
+#endif
+    return Result<std::string>::ok(stream.str());
+}
+
+std::mutex& durabilityCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_set<std::string>& durabilityCache() {
+    static std::unordered_set<std::string> cache;
+    return cache;
+}
+
+bool directoryBoundaryWasSynced(const std::string& key) {
+    std::lock_guard<std::mutex> lock(durabilityCacheMutex());
+    return durabilityCache().find(key) != durabilityCache().end();
+}
+
+void rememberSyncedDirectoryBoundary(std::string key) {
+    std::lock_guard<std::mutex> lock(durabilityCacheMutex());
+    durabilityCache().insert(std::move(key));
 }
 
 int closeOnExecFlag() {
@@ -215,6 +294,21 @@ Result<FileDescriptor> openChildDirectory(int parent, const std::string& name, b
     if (created && ::fchmod(result.get(), directoryPermissions(directoryMode)) != 0) {
         return posixFailureValue<FileDescriptor>("Failed to secure rooted directory component");
     }
+    auto durabilityKey = directoryDurabilityKey(parent, result.get());
+    if (!durabilityKey) {
+        return Result<FileDescriptor>::fail(durabilityKey.error());
+    }
+    if (create && (created || !directoryBoundaryWasSynced(durabilityKey.value()))) {
+        auto childSynced = syncDirectory(result.get(), "writable rooted component");
+        if (!childSynced) {
+            return Result<FileDescriptor>::fail(childSynced.error());
+        }
+        auto parentSynced = syncDirectory(parent, "rooted component parent");
+        if (!parentSynced) {
+            return Result<FileDescriptor>::fail(parentSynced.error());
+        }
+        rememberSyncedDirectoryBoundary(std::move(durabilityKey.value()));
+    }
     return Result<FileDescriptor>::ok(std::move(result));
 }
 
@@ -252,6 +346,21 @@ Result<bool> sameDirectory(int left, int right) {
         return posixFailureValue<bool>("Failed to compare rooted directory identity");
     }
     return Result<bool>::ok(leftStatus.st_dev == rightStatus.st_dev && leftStatus.st_ino == rightStatus.st_ino);
+}
+
+Result<void> syncNamespaceMutation(int primaryParent, int secondaryParent, const std::string& context) {
+    auto primarySynced = syncDirectory(primaryParent, context + " primary parent");
+    if (!primarySynced) {
+        return primarySynced;
+    }
+    auto sameParent = sameDirectory(primaryParent, secondaryParent);
+    if (!sameParent) {
+        return Result<void>::fail(sameParent.error());
+    }
+    if (sameParent.value()) {
+        return Result<void>::ok();
+    }
+    return syncDirectory(secondaryParent, context + " secondary parent");
 }
 
 bool sameIdentity(const struct stat& left, const struct stat& right) noexcept {
@@ -303,11 +412,14 @@ Result<void> verifyEntryIdentity(int parent, const std::string& name, const std:
 }
 
 Result<void> removeEntryWithIdentity(int parent, const std::string& name, const std::string& identity,
-                                     const std::string& context) {
+                                     const std::string& context, bool* removed = nullptr) {
+    if (removed) {
+        *removed = false;
+    }
     struct stat status{};
     if (::fstatat(parent, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         if (errno == ENOENT) {
-            return Result<void>::ok();
+            return syncDirectory(parent, context + " parent");
         }
         return posixFailure("Failed to inspect " + context);
     }
@@ -317,7 +429,10 @@ Result<void> removeEntryWithIdentity(int parent, const std::string& name, const 
     if (::unlinkat(parent, name.c_str(), 0) != 0) {
         return posixFailure("Failed to remove " + context);
     }
-    return Result<void>::ok();
+    if (removed) {
+        *removed = true;
+    }
+    return syncDirectory(parent, context + " parent");
 }
 
 Result<void> renameNoReplace(int sourceParent, const std::string& sourceName, int targetParent,
@@ -334,11 +449,11 @@ Result<void> renameNoReplace(int sourceParent, const std::string& sourceName, in
     errno = ENOTSUP;
 #endif
     if (result == 0) {
-        return Result<void>::ok();
+        return syncNamespaceMutation(targetParent, sourceParent, context);
     }
 #elif defined(__APPLE__)
     if (::renameatx_np(sourceParent, sourceName.c_str(), targetParent, targetName.c_str(), RENAME_EXCL) == 0) {
-        return Result<void>::ok();
+        return syncNamespaceMutation(targetParent, sourceParent, context);
     }
 #else
     (void)sourceParent;
@@ -374,11 +489,11 @@ Result<void> exchangeEntries(int leftParent, const std::string& leftName, int ri
     errno = ENOTSUP;
 #endif
     if (result == 0) {
-        return Result<void>::ok();
+        return syncNamespaceMutation(rightParent, leftParent, context);
     }
 #elif defined(__APPLE__)
     if (::renameatx_np(leftParent, leftName.c_str(), rightParent, rightName.c_str(), RENAME_SWAP) == 0) {
-        return Result<void>::ok();
+        return syncNamespaceMutation(rightParent, leftParent, context);
     }
 #else
     (void)leftParent;
@@ -461,7 +576,7 @@ class PrivateNamespace {
         if (::fstatat(parent_.get(), name_.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
             if (errno == ENOENT) {
                 cleaned_ = true;
-                return Result<void>::ok();
+                return syncDirectory(parent_.get(), "private temporary namespace parent");
             }
             return posixFailure("Failed to inspect private temporary namespace name");
         }
@@ -473,7 +588,7 @@ class PrivateNamespace {
             return posixFailure("Failed to remove private temporary namespace");
         }
         cleaned_ = true;
-        return Result<void>::ok();
+        return syncDirectory(parent_.get(), "private temporary namespace parent");
     }
 
   private:
@@ -520,8 +635,16 @@ Result<PrivateNamespace> createPrivateNamespace(FileDescriptor parent) {
             return Result<PrivateNamespace>::fail(
                 {ErrorCode::SecurityPolicyViolation, "Private temporary namespace was replaced while opening"});
         }
-        return Result<PrivateNamespace>::ok(
-            PrivateNamespace(std::move(parent), std::move(directory), name, identityFromStat(opened)));
+        PrivateNamespace temporaryNamespace(std::move(parent), std::move(directory), name, identityFromStat(opened));
+        auto directorySynced = syncDirectory(temporaryNamespace.descriptor(), "new private temporary namespace");
+        if (!directorySynced) {
+            return Result<PrivateNamespace>::fail(directorySynced.error());
+        }
+        auto parentSynced = syncDirectory(temporaryNamespace.parentDescriptor(), "private temporary namespace parent");
+        if (!parentSynced) {
+            return Result<PrivateNamespace>::fail(parentSynced.error());
+        }
+        return Result<PrivateNamespace>::ok(std::move(temporaryNamespace));
     }
     return Result<PrivateNamespace>::fail(
         {ErrorCode::FileSystemError, "Failed to allocate a unique private temporary namespace"});
@@ -609,10 +732,7 @@ class PosixRootedFile final : public IRootedFile {
                 return singleLink;
             }
         }
-        if (::fsync(file_.get()) != 0) {
-            return posixFailure("Failed to flush rooted file");
-        }
-        return Result<void>::ok();
+        return syncFileDescriptor(file_.get(), "Failed to flush rooted file");
     }
 
     Result<RootedFileMetadata> metadata() noexcept override {
@@ -653,8 +773,7 @@ class PosixRootedFile final : public IRootedFile {
     const std::string& name() const noexcept {
         return name_;
     }
-    void markCommitted(std::string newName) noexcept {
-        name_ = std::move(newName);
+    void markCommitted() noexcept {
         deleteOnDestroy_ = false;
     }
 
@@ -698,11 +817,8 @@ class PosixTemporaryFile final : public IRootedTemporaryFile {
     int namespaceParentDescriptor() const noexcept {
         return temporaryNamespace_.parentDescriptor();
     }
-    const std::string& payloadIdentity() const noexcept {
-        return payloadIdentity_;
-    }
-    void setPayloadIdentity(std::string identity) {
-        payloadIdentity_ = std::move(identity);
+    void swapPayloadIdentity(std::string& identity) noexcept {
+        payloadIdentity_.swap(identity);
         payloadPresent_ = true;
     }
     void clearPayload() noexcept {
@@ -761,16 +877,11 @@ Result<void> copyOpenedFile(IRootedFile& source, IRootedFile& target) {
 
 class PosixLock final : public IRootedLock {
   public:
-    PosixLock(FileDescriptor parent, std::string name) : parent_(std::move(parent)), name_(std::move(name)) {}
-    ~PosixLock() override {
-        if (parent_) {
-            ::unlinkat(parent_.get(), name_.c_str(), AT_REMOVEDIR);
-        }
-    }
+    explicit PosixLock(FileDescriptor file) : file_(std::move(file)) {}
+    ~PosixLock() override = default;
 
   private:
-    FileDescriptor parent_;
-    std::string name_;
+    FileDescriptor file_;
 };
 
 class PosixRootedDirectory final : public IRootedDirectory {
@@ -954,16 +1065,11 @@ class PosixRootedDirectory final : public IRootedDirectory {
             if (!permissions) {
                 return permissions;
             }
-            auto flushed = temporary.value()->file().flush();
-            if (!flushed) {
-                return flushed;
+            auto committed = temporary.value()->commit(expectation);
+            if (!committed) {
+                return committed;
             }
-            auto removed =
-                quarantineAndRemoveOpenedFile(*file, RootedEntryExpectation::matching(sourceMetadata.value()));
-            if (!removed) {
-                return removed;
-            }
-            return temporary.value()->commit(expectation);
+            return quarantineAndRemoveOpenedFile(*file, RootedEntryExpectation::matching(sourceMetadata.value()));
         } catch (...) {
             return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected rooted replacement failure"});
         }
@@ -975,6 +1081,10 @@ class PosixRootedDirectory final : public IRootedDirectory {
             if (access_ != RootAccess::ReadWrite) {
                 return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rooted directory is read-only"});
             }
+            auto components = managedComponents(relativePath);
+            if (!components) {
+                return Result<void>::fail(components.error());
+            }
             auto opened =
                 openRegularFile(relativePath, RootedFileOpenMode::ReadOnly, RootedDirectoryCreationMode::Private);
             if (!opened) {
@@ -982,7 +1092,15 @@ class PosixRootedDirectory final : public IRootedDirectory {
             }
             if (!opened.value().exists()) {
                 if (expectation.kind == RootedEntryExpectationKind::Missing) {
-                    return Result<void>::ok();
+                    auto parent =
+                        traverseParent(root_.get(), components.value(), false, RootedDirectoryCreationMode::Private);
+                    if (!parent) {
+                        return Result<void>::fail(parent.error());
+                    }
+                    if (!parent.value()) {
+                        return Result<void>::ok();
+                    }
+                    return syncDirectory(parent.value().get(), "managed remove target parent");
                 }
                 return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed remove target disappeared"});
             }
@@ -1016,14 +1134,68 @@ class PosixRootedDirectory final : public IRootedDirectory {
             if (!parent) {
                 return Result<std::unique_ptr<IRootedLock>>::fail(parent.error());
             }
-            if (::mkdirat(parent.value().get(), components.value().back().c_str(), S_IRWXU) != 0) {
-                if (errno == EEXIST) {
+            const auto& lockName = components.value().back();
+            const int descriptor =
+                ::openat(parent.value().get(), lockName.c_str(),
+                         O_RDWR | O_CREAT | O_NONBLOCK | closeOnExecFlag() | noFollowFlag(), S_IRUSR | S_IWUSR);
+            if (descriptor < 0) {
+                if (errno == EISDIR) {
                     return Result<std::unique_ptr<IRootedLock>>::fail(
                         {ErrorCode::ApplyFailed, "Another update appears to be running"});
                 }
-                return posixFailureValue<std::unique_ptr<IRootedLock>>("Failed to create update lock");
+                if (errno == ELOOP) {
+                    return Result<std::unique_ptr<IRootedLock>>::fail(
+                        {ErrorCode::PathTraversalRejected, "Update lock is a symbolic link"});
+                }
+                return posixFailureValue<std::unique_ptr<IRootedLock>>("Failed to open update lock file");
             }
-            auto result = std::make_unique<PosixLock>(std::move(parent.value()), components.value().back());
+            FileDescriptor lockFile(descriptor);
+            auto regular = ensureRegularDescriptor(lockFile.get(), "Update lock");
+            if (!regular) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(regular.error());
+            }
+            auto singleLink = ensureSingleLinkDescriptor(lockFile.get(), "Update lock");
+            if (!singleLink) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(singleLink.error());
+            }
+            auto lockStatus = descriptorStatus(lockFile.get(), "update lock");
+            if (!lockStatus) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(lockStatus.error());
+            }
+            if (lockStatus.value().st_uid != ::geteuid()) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(
+                    {ErrorCode::SecurityPolicyViolation, "Update lock is not owned by the current user"});
+            }
+            for (;;) {
+                if (::flock(lockFile.get(), LOCK_EX | LOCK_NB) == 0) {
+                    break;
+                }
+                const int code = errno;
+                if (code == EINTR) {
+                    continue;
+                }
+                if (code == EWOULDBLOCK || code == EAGAIN) {
+                    return Result<std::unique_ptr<IRootedLock>>::fail(
+                        {ErrorCode::ApplyFailed, "Another update appears to be running"});
+                }
+                return posixFailureValue<std::unique_ptr<IRootedLock>>("Failed to acquire update lock", code);
+            }
+            auto namedLock = verifyEntryIdentity(parent.value().get(), lockName, lockFile.get(), "Update lock");
+            if (!namedLock) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(namedLock.error());
+            }
+            if (::fchmod(lockFile.get(), S_IRUSR | S_IWUSR) != 0) {
+                return posixFailureValue<std::unique_ptr<IRootedLock>>("Failed to secure update lock file");
+            }
+            auto lockSynced = syncFileDescriptor(lockFile.get(), "Failed to persist update lock file");
+            if (!lockSynced) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(lockSynced.error());
+            }
+            auto parentSynced = syncDirectory(parent.value().get(), "update lock parent");
+            if (!parentSynced) {
+                return Result<std::unique_ptr<IRootedLock>>::fail(parentSynced.error());
+            }
+            auto result = std::make_unique<PosixLock>(std::move(lockFile));
             return Result<std::unique_ptr<IRootedLock>>::ok(std::move(result));
         } catch (...) {
             return Result<std::unique_ptr<IRootedLock>>::fail(
@@ -1077,7 +1249,6 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
         }
 
         const auto& targetName = components.value().back();
-        const auto sourceIdentity = temporary.payloadIdentity();
         if (expectation.kind == RootedEntryExpectationKind::Missing) {
             auto renamed = renameNoReplace(temporary.namespaceDescriptor(), privatePayloadName,
                                            temporary.namespaceParentDescriptor(), targetName,
@@ -1098,15 +1269,16 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
                 }
                 return installed;
             }
-            temporary.rootedFile().markCommitted(targetName);
+            temporary.rootedFile().markCommitted();
             temporary.clearPayload();
-            // The payload is already installed. Namespace cleanup is
-            // identity-checked and may safely leak on a concurrent name swap,
-            // but it must not turn a completed commit into a reported failure.
-            (void)temporary.cleanupNamespace();
+            auto cleaned = temporary.cleanupNamespace();
+            if (!cleaned) {
+                return cleaned;
+            }
             return Result<void>::ok();
         }
 
+        std::string displacedIdentity = expectation.identity;
         auto exchanged =
             exchangeEntries(temporary.namespaceDescriptor(), privatePayloadName, temporary.namespaceParentDescriptor(),
                             targetName, "Failed to atomically exchange managed target");
@@ -1129,10 +1301,15 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
             return !installed ? installed : displaced;
         }
 
-        temporary.setPayloadIdentity(expectation.identity);
-        auto removedOldTarget = removeEntryWithIdentity(temporary.namespaceDescriptor(), privatePayloadName,
-                                                        expectation.identity, "displaced managed target");
+        temporary.swapPayloadIdentity(displacedIdentity);
+        bool oldTargetRemoved = false;
+        auto removedOldTarget =
+            removeEntryWithIdentity(temporary.namespaceDescriptor(), privatePayloadName, expectation.identity,
+                                    "displaced managed target", &oldTargetRemoved);
         if (!removedOldTarget) {
+            if (oldTargetRemoved) {
+                return removedOldTarget;
+            }
             auto restored = exchangeEntries(temporary.namespaceDescriptor(), privatePayloadName,
                                             temporary.namespaceParentDescriptor(), targetName,
                                             "Failed to restore target after displaced-file cleanup failure");
@@ -1141,12 +1318,15 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
                     {ErrorCode::ApplyFailed,
                      removedOldTarget.error().message + "; target restoration failed: " + restored.error().message});
             }
-            temporary.setPayloadIdentity(sourceIdentity);
+            temporary.swapPayloadIdentity(displacedIdentity);
             return removedOldTarget;
         }
         temporary.clearPayload();
-        temporary.rootedFile().markCommitted(targetName);
-        (void)temporary.cleanupNamespace();
+        temporary.rootedFile().markCommitted();
+        auto cleaned = temporary.cleanupNamespace();
+        if (!cleaned) {
+            return cleaned;
+        }
         return Result<void>::ok();
     } catch (...) {
         return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected private temporary commit failure"});
@@ -1192,9 +1372,14 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
             }
             return quarantined;
         }
-        auto removed = removeEntryWithIdentity(quarantine.value().descriptor(), privatePayloadName,
-                                               expectation.identity, "quarantined managed removal target");
+        bool quarantinedTargetRemoved = false;
+        auto removed =
+            removeEntryWithIdentity(quarantine.value().descriptor(), privatePayloadName, expectation.identity,
+                                    "quarantined managed removal target", &quarantinedTargetRemoved);
         if (!removed) {
+            if (quarantinedTargetRemoved) {
+                return removed;
+            }
             auto restored =
                 renameNoReplace(quarantine.value().descriptor(), privatePayloadName, file.parentDescriptor(),
                                 file.name(), "Failed to restore managed removal target after cleanup failure");
@@ -1205,9 +1390,10 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
             }
             return removed;
         }
-        // The expected file has already been unlinked. Treat an identity-safe
-        // namespace cleanup failure as a harmless leak, not as a failed remove.
-        (void)quarantine.value().cleanupDirectory();
+        auto cleaned = quarantine.value().cleanupDirectory();
+        if (!cleaned) {
+            return cleaned;
+        }
         return Result<void>::ok();
     } catch (...) {
         return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected rooted removal quarantine failure"});
@@ -1215,6 +1401,10 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
 }
 
 Result<void> PosixTemporaryFile::commit(const RootedEntryExpectation& expectation) noexcept {
+    auto flushed = file_->flush();
+    if (!flushed) {
+        return flushed;
+    }
     return root_.commitPrivateTemporary(*this, expectation);
 }
 
