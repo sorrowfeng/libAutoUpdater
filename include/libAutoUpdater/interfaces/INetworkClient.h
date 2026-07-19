@@ -55,16 +55,21 @@ class INetworkClient {
 
     /// Performs exactly one request. Received HTTP responses, including 3xx,
     /// 4xx, and 5xx, are returned with status and headers; only transport or
-    /// local IO failures fail the Result.
+    /// local IO failures fail the Result. Implementors must stream the body and
+    /// stop before buffering more than maxResponseBytes. Response metadata
+    /// must also be bounded.
     virtual Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
-                                         CancellationToken& cancel) noexcept = 0;
+                                         std::uint64_t maxResponseBytes, CancellationToken& cancel) noexcept = 0;
 
     /// Performs exactly one request without following redirects. Implementors
     /// must not write an HTTP response body unless the status is 200 for a
     /// full request or 206 for a resume request. Explicit local file adapters
     /// synthesize status 200 and may honor a supplied offset directly.
+    /// maxTotalBytes is the signed expected artifact size, including any bytes
+    /// already present for a resume request. Implementors must stop before a
+    /// write would make the target exceed it.
     virtual Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target,
-                                                  const NetworkOptions& options,
+                                                  const NetworkOptions& options, std::uint64_t maxTotalBytes,
                                                   const std::optional<DownloadResumeInfo>& resume,
                                                   ProgressCallback progress, CancellationToken& cancel) noexcept = 0;
 };

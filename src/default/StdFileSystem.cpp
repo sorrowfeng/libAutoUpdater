@@ -1,9 +1,9 @@
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 
 #include "default/RootedFileSystemFactory.h"
+#include "util/BoundedFile.h"
 
 #include <fstream>
-#include <sstream>
 
 namespace autoupdater {
 
@@ -116,18 +116,8 @@ class StdFileSystem final : public IFileSystem {
         }
     }
 
-    Result<std::string> readText(const std::filesystem::path& path) noexcept override {
-        try {
-            std::ifstream input(path, std::ios::binary);
-            if (!input) {
-                return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to open file"});
-            }
-            std::ostringstream stream;
-            stream << input.rdbuf();
-            return Result<std::string>::ok(stream.str());
-        } catch (...) {
-            return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to read file"});
-        }
+    Result<std::string> readText(const std::filesystem::path& path, std::uint64_t maxBytes) noexcept override {
+        return util::readRegularFileWithLimit(path, maxBytes, ErrorCode::FileSystemError, "file");
     }
 
     Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept override {

@@ -4,6 +4,7 @@
 #include "UrlPolicy.h"
 #include "util/UrlUtil.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -33,9 +34,10 @@ Result<util::ParsedUrl> signatureUrlFor(const RedirectedTextResult& document, co
 }
 
 Result<RedirectedTextResult> fetchTextAndVerify(const std::string& url, const std::string& signatureUrlOverride,
-                                                const Config& config, const UrlPolicy& policy, INetworkClient& network,
+                                                std::uint64_t maxDocumentBytes, const Config& config,
+                                                const UrlPolicy& policy, INetworkClient& network,
                                                 ISignatureVerifier& signatureVerifier, CancellationToken& cancel) {
-    auto raw = fetchTextWithRedirects(url, config.network, policy, network, cancel);
+    auto raw = fetchTextWithRedirects(url, config.network, maxDocumentBytes, policy, network, cancel);
     if (!raw) {
         return Result<RedirectedTextResult>::fail(raw.error());
     }
@@ -45,8 +47,8 @@ Result<RedirectedTextResult> fetchTextAndVerify(const std::string& url, const st
         if (!signatureUrl) {
             return Result<RedirectedTextResult>::fail(signatureUrl.error());
         }
-        auto signature =
-            fetchTextWithRedirects(signatureUrl.value().canonical, config.network, policy, network, cancel);
+        auto signature = fetchTextWithRedirects(signatureUrl.value().canonical, config.network,
+                                                config.resources.maxSignatureBytes, policy, network, cancel);
         if (!signature) {
             return Result<RedirectedTextResult>::fail(signature.error());
         }
@@ -120,17 +122,25 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         return Result<ManifestEnvelope>::fail(policy.error());
     }
 
-    auto raw = fetchTextAndVerify(policy.value().initialUrl().canonical, config.security.manifestSignatureUrl, config,
-                                  policy.value(), network, signatureVerifier, cancel);
+    const auto initialDocumentLimit = std::max(config.resources.maxIndexBytes, config.resources.maxManifestBytes);
+    auto raw = fetchTextAndVerify(policy.value().initialUrl().canonical, config.security.manifestSignatureUrl,
+                                  initialDocumentLimit, config, policy.value(), network, signatureVerifier, cancel);
     if (!raw) {
         return Result<ManifestEnvelope>::fail(raw.error());
     }
 
-    auto parsed = Manifest::parse(raw.value().body);
-    if (!parsed && parsed.error().code == ErrorCode::ManifestParseFailed) {
-        auto index = IndexManifest::parse(raw.value().body);
+    const bool withinManifestLimit = raw.value().body.size() <= config.resources.maxManifestBytes;
+    const bool withinIndexLimit = raw.value().body.size() <= config.resources.maxIndexBytes;
+    auto parsed = withinManifestLimit
+                      ? Manifest::parse(raw.value().body, config.resources)
+                      : Result<Manifest>::fail({ErrorCode::ResourceLimitExceeded, "Manifest exceeds its byte limit"});
+    const bool mayBeIndex = !parsed && (parsed.error().code == ErrorCode::ManifestParseFailed ||
+                                        (!withinManifestLimit && withinIndexLimit));
+    if (!parsed && mayBeIndex) {
+        auto index = IndexManifest::parse(raw.value().body, config.resources);
         if (!index) {
-            return Result<ManifestEnvelope>::fail(parsed.error());
+            return Result<ManifestEnvelope>::fail(
+                parsed.error().code == ErrorCode::ResourceLimitExceeded ? parsed.error() : index.error());
         }
         auto target = selectIndexTarget(config, index.value());
         if (!target) {
@@ -144,12 +154,12 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         if (!releaseUrl) {
             return Result<ManifestEnvelope>::fail(releaseUrl.error());
         }
-        raw = fetchTextAndVerify(releaseUrl.value().canonical, {}, config, policy.value(), network, signatureVerifier,
-                                 cancel);
+        raw = fetchTextAndVerify(releaseUrl.value().canonical, {}, config.resources.maxManifestBytes, config,
+                                 policy.value(), network, signatureVerifier, cancel);
         if (!raw) {
             return Result<ManifestEnvelope>::fail(raw.error());
         }
-        parsed = Manifest::parse(raw.value().body);
+        parsed = Manifest::parse(raw.value().body, config.resources);
     }
 
     if (!parsed) {

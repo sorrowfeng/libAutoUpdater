@@ -3,6 +3,7 @@
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
 #include <filesystem>
+#include <fstream>
 
 void testStateStoreDownloadResume() {
     const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-state-test";
@@ -33,6 +34,24 @@ void testStateStoreDownloadResume() {
     auto afterClear = store->loadDownloadResume(state.key);
     LAU_REQUIRE(afterClear);
     LAU_REQUIRE(!afterClear.value().has_value());
+
+    const auto limitedPath = root / "limited-state.json";
+    {
+        std::ofstream output(limitedPath, std::ios::binary | std::ios::trunc);
+        output << "12345";
+    }
+    autoupdater::ResourceLimits limits;
+    limits.maxStateBytes = 4;
+    auto limitedStore = autoupdater::createJsonStateStore(limitedPath, limits);
+    auto oversizedLoad = limitedStore->loadLastAcceptedVersion();
+    LAU_REQUIRE(!oversizedLoad);
+    LAU_REQUIRE(oversizedLoad.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
+
+    std::filesystem::remove(limitedPath, ec);
+    state.offset = limits.maxArtifactBytes + 1;
+    auto oversizedResume = limitedStore->saveDownloadResume(state);
+    LAU_REQUIRE(!oversizedResume);
+    LAU_REQUIRE(oversizedResume.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
 
     std::filesystem::remove_all(root, ec);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Types.h"
+#include "libAutoUpdater/ResourceLimits.h"
 #include "libAutoUpdater/Version.h"
 
 #include <chrono>
@@ -61,6 +62,7 @@ struct Config {
     NetworkOptions network;
     RetryOptions retry;
     SecurityOptions security;
+    ResourceLimits resources;
 
     std::vector<std::string> managedPathWhitelist;
     std::chrono::seconds applyWaitTimeout{60};

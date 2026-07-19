@@ -3,6 +3,9 @@
 #include "util/Json.h"
 #include "util/PathUtil.h"
 
+#include <cmath>
+#include <limits>
+
 namespace autoupdater {
 
 namespace {
@@ -40,11 +43,49 @@ Result<ApplyOperationType> opFromString(const std::string& text) {
     return Result<ApplyOperationType>::fail({ErrorCode::ManifestParseFailed, "Unknown apply operation type"});
 }
 
+Result<std::uint64_t> operationSize(const util::Json& object, const ResourceLimits& limits) {
+    const auto* value = object.get("size");
+    if (!value) {
+        return Result<std::uint64_t>::ok(0);
+    }
+    if (!value->isNumber()) {
+        return Result<std::uint64_t>::fail({ErrorCode::ManifestParseFailed, "operation size must be a number"});
+    }
+    const double number = value->asNumber();
+    constexpr double kLargestExactlyRepresentableInteger = 9007199254740991.0;
+    if (!std::isfinite(number) || number < 0 || number > kLargestExactlyRepresentableInteger ||
+        std::floor(number) != number) {
+        return Result<std::uint64_t>::fail(
+            {ErrorCode::ManifestParseFailed, "operation size must be a non-negative exact integer"});
+    }
+    const auto parsed = static_cast<std::uint64_t>(number);
+    if (parsed > limits.maxArtifactBytes) {
+        return Result<std::uint64_t>::fail(
+            {ErrorCode::ResourceLimitExceeded, "Apply operation exceeds the artifact byte limit"});
+    }
+    return Result<std::uint64_t>::ok(parsed);
+}
+
+bool checkedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t& result) {
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return false;
+    }
+    result = left + right;
+    return true;
+}
+
 } // namespace
 
 Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
+    return parse(jsonText, ResourceLimits{});
+}
+
+Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLimits& limits) noexcept {
     try {
-        auto json = util::Json::parse(jsonText);
+        if (jsonText.size() > limits.maxApplyPlanBytes) {
+            return Result<ApplyPlan>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan exceeds its byte limit"});
+        }
+        auto json = util::Json::parse(jsonText, limits.json);
         if (!json) {
             return Result<ApplyPlan>::fail(json.error());
         }
@@ -53,6 +94,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
         }
 
         ApplyPlan plan;
+        std::uint64_t totalArtifactBytes = 0;
         const auto* schema = json.value().get("schemaVersion");
         if (!schema || !schema->isNumber() || schema->asInt() != 1) {
             return Result<ApplyPlan>::fail(
@@ -116,10 +158,11 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
             }
             op.target = target.value();
             op.sha256 = optionalString(item, "sha256");
-            const auto* size = item.get("size");
-            if (size && size->isNumber()) {
-                op.size = static_cast<std::uint64_t>(size->asNumber());
+            auto size = operationSize(item, limits);
+            if (!size) {
+                return Result<ApplyPlan>::fail(size.error());
             }
+            op.size = size.value();
             auto validTarget = util::validateManagedPath(op.target);
             if (!validTarget) {
                 return Result<ApplyPlan>::fail(validTarget.error());
@@ -129,6 +172,13 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
                 if (!validSource) {
                     return Result<ApplyPlan>::fail(validSource.error());
                 }
+                std::uint64_t updatedTotal = 0;
+                if (!checkedAdd(totalArtifactBytes, op.size, updatedTotal) ||
+                    updatedTotal > limits.maxTotalArtifactBytes) {
+                    return Result<ApplyPlan>::fail(
+                        {ErrorCode::ResourceLimitExceeded, "Apply operations exceed the total artifact byte limit"});
+                }
+                totalArtifactBytes = updatedTotal;
             }
             plan.operations.push_back(std::move(op));
         }

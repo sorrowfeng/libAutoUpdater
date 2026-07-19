@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Result.h"
+#include "libAutoUpdater/ResourceLimits.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -36,6 +37,7 @@ struct ApplyPlan {
     std::vector<ApplyOperation> operations;
 
     static Result<ApplyPlan> parse(const std::string& jsonText) noexcept;
+    static Result<ApplyPlan> parse(const std::string& jsonText, const ResourceLimits& limits) noexcept;
     std::string toJson() const;
 };
 

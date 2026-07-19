@@ -26,7 +26,9 @@ class IFileSystem {
                                          const std::filesystem::path& to) noexcept = 0;
     virtual Result<void> remove(const std::filesystem::path& path) noexcept = 0;
     virtual Result<void> removeAll(const std::filesystem::path& path) noexcept = 0;
-    virtual Result<std::string> readText(const std::filesystem::path& path) noexcept = 0;
+    /// Reads at most maxBytes and fails before retaining any byte beyond that
+    /// limit, including when the file grows after metadata inspection.
+    virtual Result<std::string> readText(const std::filesystem::path& path, std::uint64_t maxBytes) noexcept = 0;
     virtual Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept = 0;
     virtual Result<std::unique_ptr<IRootedDirectory>>
     openRoot(const std::filesystem::path& path, RootAccess access, bool create,

@@ -2,8 +2,8 @@
 
 #ifdef LIBAUTOUPDATER_HAS_CFNETWORK
 
-#include "util/UrlUtil.h"
-#include "util/PathUtil.h"
+#include "NetworkLimits.h"
+#include "default/LocalNetworkFile.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CFNetwork/CFNetwork.h>
@@ -11,11 +11,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <limits>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +18,9 @@
 namespace autoupdater {
 
 namespace {
+
+constexpr std::size_t kMaxPreHeaderBodyBytes = 64 * 1024;
+constexpr std::size_t kResponseReadBufferBytes = 64 * 1024;
 
 template <class T> class CfRef {
   public:
@@ -98,99 +96,6 @@ bool isHttpUrl(const std::string& url) {
     return scheme == "http" || scheme == "https";
 }
 
-Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
-    if (util::isFileUrl(url)) {
-        return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
-    }
-    return Result<std::filesystem::path>::fail(
-        {ErrorCode::NetworkError, "CFNetwork accepts only HTTP, HTTPS, and explicit file: URLs"});
-}
-
-Result<TextResponse> readLocalText(const std::string& url, CancellationToken& cancel) {
-    if (cancel.isCancelled()) {
-        return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-    }
-
-    auto path = localPathFromUrl(url);
-    if (!path) {
-        return Result<TextResponse>::fail(path.error());
-    }
-
-    try {
-        std::ifstream input(path.value(), std::ios::binary);
-        if (!input) {
-            return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
-        }
-        std::ostringstream stream;
-        stream << input.rdbuf();
-        if (input.bad()) {
-            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-        }
-        TextResponse response;
-        response.response.statusCode = 200;
-        response.response.effectiveUrl = url;
-        response.body = stream.str();
-        return Result<TextResponse>::ok(std::move(response));
-    } catch (...) {
-        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-    }
-}
-
-Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& target,
-                                       const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                       CancellationToken& cancel) {
-    auto source = localPathFromUrl(url);
-    if (!source) {
-        return Result<DownloadResult>::fail(source.error());
-    }
-
-    try {
-        std::error_code ec;
-        const auto total = std::filesystem::file_size(source.value(), ec);
-        if (ec) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
-        }
-        std::ifstream input(source.value(), std::ios::binary);
-        if (resume && resume->offset > 0) {
-            input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
-        }
-        if (!input) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
-        }
-
-        std::array<char, 64 * 1024> buffer{};
-        std::uint64_t written = resume ? resume->offset : 0;
-        while (input) {
-            if (cancel.isCancelled()) {
-                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-            }
-            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const auto count = input.gcount();
-            if (count > 0) {
-                auto write = target.write(buffer.data(), static_cast<std::size_t>(count));
-                if (!write) {
-                    return Result<DownloadResult>::fail(write.error());
-                }
-                written += static_cast<std::uint64_t>(count);
-                if (progress) {
-                    progress({written, static_cast<std::uint64_t>(total), {}});
-                }
-            }
-        }
-        if (input.bad()) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
-        }
-
-        DownloadResult result;
-        result.response.statusCode = 200;
-        result.response.effectiveUrl = url;
-        result.bytesWritten = written;
-        return Result<DownloadResult>::ok(result);
-    } catch (...) {
-        return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to copy local source"});
-    }
-}
-
 struct HttpRequest {
     CfRef<CFHTTPMessageRef> message;
     bool secure = false;
@@ -228,24 +133,6 @@ void setHeader(CFHTTPMessageRef request, CFStringRef name, const std::string& va
     if (text) {
         CFHTTPMessageSetHeaderFieldValue(request, name, text.get());
     }
-}
-
-std::string queryHeader(CFHTTPMessageRef response, CFStringRef name) {
-    auto value = CfRef<CFStringRef>(CFHTTPMessageCopyHeaderFieldValue(response, name));
-    return value ? cfStringToStd(value.get()) : std::string();
-}
-
-std::uint64_t contentLength(CFHTTPMessageRef response) {
-    const auto value = queryHeader(response, CFSTR("Content-Length"));
-    if (value.empty()) {
-        return 0;
-    }
-    char* end = nullptr;
-    const auto parsed = std::strtoull(value.c_str(), &end, 10);
-    if (end == value.c_str()) {
-        return 0;
-    }
-    return parsed;
 }
 
 Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const NetworkOptions& options) {
@@ -295,17 +182,23 @@ void trimOptionalWhitespace(std::string& value) {
     value = value.substr(begin, end - begin + 1);
 }
 
-std::vector<NetworkHeader> responseHeaders(CFHTTPMessageRef response) {
+Result<std::vector<NetworkHeader>> responseHeaders(CFHTTPMessageRef response) {
     std::vector<NetworkHeader> headers;
     auto serialized = CfRef<CFDataRef>(CFHTTPMessageCopySerializedMessage(response));
     if (!serialized) {
-        return headers;
+        return Result<std::vector<NetworkHeader>>::fail(
+            {ErrorCode::NetworkError, "Failed to serialize CFNetwork response headers"});
     }
 
     const auto length = CFDataGetLength(serialized.get());
     const auto* bytes = CFDataGetBytePtr(serialized.get());
     if (!bytes || length <= 0) {
-        return headers;
+        return Result<std::vector<NetworkHeader>>::fail(
+            {ErrorCode::NetworkError, "CFNetwork response headers are empty"});
+    }
+    if (static_cast<std::uint64_t>(length) > detail::kMaxNetworkResponseHeaderBytes) {
+        return Result<std::vector<NetworkHeader>>::fail(
+            {ErrorCode::ResourceLimitExceeded, "HTTP response headers exceed their byte limit"});
     }
 
     const std::string raw(reinterpret_cast<const char*>(bytes), static_cast<std::size_t>(length));
@@ -332,7 +225,7 @@ std::vector<NetworkHeader> responseHeaders(CFHTTPMessageRef response) {
         }
         position = end + 2;
     }
-    return headers;
+    return Result<std::vector<NetworkHeader>>::ok(std::move(headers));
 }
 
 std::string responseHeader(const NetworkResponseInfo& response, const std::string& name) {
@@ -344,10 +237,32 @@ std::string responseHeader(const NetworkResponseInfo& response, const std::strin
     return {};
 }
 
-NetworkResponseInfo responseInfo(CFReadStreamRef stream, CFHTTPMessageRef headers, const std::string& requestedUrl) {
+Result<void> validateIdentityContentEncoding(const NetworkResponseInfo& response, ErrorCode errorCode) {
+    for (const auto& header : response.headers) {
+        if (header.name != "content-encoding") {
+            continue;
+        }
+        auto value = header.value;
+        trimOptionalWhitespace(value);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (!value.empty() && value != "identity") {
+            return Result<void>::fail(
+                {errorCode, "Unsupported Content-Encoding; update responses must use identity encoding"});
+        }
+    }
+    return Result<void>::ok();
+}
+
+Result<NetworkResponseInfo> responseInfo(CFReadStreamRef stream, CFHTTPMessageRef headers,
+                                         const std::string& requestedUrl) {
     NetworkResponseInfo response;
     response.statusCode = static_cast<int>(CFHTTPMessageGetResponseStatusCode(headers));
-    response.headers = responseHeaders(headers);
+    auto parsedHeaders = responseHeaders(headers);
+    if (!parsedHeaders) {
+        return Result<NetworkResponseInfo>::fail(parsedHeaders.error());
+    }
+    response.headers = std::move(parsedHeaders.value());
     response.effectiveUrl = requestedUrl;
 
     auto finalUrl = CfRef<CFTypeRef>(CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL));
@@ -358,7 +273,7 @@ NetworkResponseInfo responseInfo(CFReadStreamRef stream, CFHTTPMessageRef header
             response.effectiveUrl = serialized;
         }
     }
-    return response;
+    return Result<NetworkResponseInfo>::ok(std::move(response));
 }
 
 struct ResponseStart {
@@ -366,9 +281,10 @@ struct ResponseStart {
     std::vector<char> bufferedBody;
 };
 
-Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CancellationToken& cancel) {
+Result<ResponseStart> waitForResponse(CFReadStreamRef stream, std::uint64_t maxBufferedBodyBytes,
+                                      ErrorCode readErrorCode, CancellationToken& cancel) {
     ResponseStart start;
-    std::array<UInt8, 64 * 1024> buffer{};
+    std::array<UInt8, kResponseReadBufferBytes> buffer{};
 
     for (;;) {
         if (cancel.isCancelled()) {
@@ -380,41 +296,95 @@ Result<ResponseStart> waitForResponse(CFReadStreamRef stream, CancellationToken&
             return Result<ResponseStart>::ok(std::move(start));
         }
 
-        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(buffer.size()));
+        const auto buffered = static_cast<std::uint64_t>(start.bufferedBody.size());
+        const auto remaining = maxBufferedBodyBytes - buffered;
+        std::size_t requested = buffer.size();
+        if (remaining < requested) {
+            requested = static_cast<std::size_t>(remaining + 1);
+        }
+        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(requested));
         if (count < 0) {
-            return Result<ResponseStart>::fail({ErrorCode::NetworkError, streamError(stream, "CFReadStreamRead")});
+            return Result<ResponseStart>::fail({readErrorCode, streamError(stream, "CFReadStreamRead")});
         }
         if (count == 0) {
-            return Result<ResponseStart>::fail({ErrorCode::NetworkError, "No HTTP response headers received"});
+            return Result<ResponseStart>::fail({readErrorCode, "No HTTP response headers received"});
         }
 
+        if (static_cast<std::uint64_t>(count) > remaining) {
+            return Result<ResponseStart>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Response body exceeds its pre-header buffer limit"});
+        }
         const auto* begin = reinterpret_cast<const char*>(buffer.data());
         start.bufferedBody.insert(start.bufferedBody.end(), begin, begin + count);
     }
 }
 
-Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken& cancel, ProgressCallback progress,
-                                       const std::string& currentFile, std::uint64_t initialBytes,
-                                       std::uint64_t expectedBytes, IRootedFile* output,
-                                       const std::vector<char>& initialBody = {}) {
-    std::vector<char> bytes;
-    std::array<UInt8, 64 * 1024> buffer{};
-    std::uint64_t downloaded = initialBytes;
-    const std::uint64_t total = expectedBytes > 0 ? initialBytes + expectedBytes : 0;
+Result<void> validateCompletedBody(const NetworkResponseInfo& response, std::uint64_t actualBytes,
+                                   std::uint64_t maxResponseBytes, ErrorCode invalidHeaderCode) {
+    auto budget = detail::validateResponseBodyBudget(response, actualBytes, maxResponseBytes, invalidHeaderCode);
+    if (!budget) {
+        return budget;
+    }
+    auto declared = detail::declaredContentLength(response, invalidHeaderCode);
+    if (!declared) {
+        return Result<void>::fail(declared.error());
+    }
+    if (declared.value() && *declared.value() != actualBytes) {
+        return Result<void>::fail({invalidHeaderCode, "Content-Length does not match the received response body"});
+    }
+    return Result<void>::ok();
+}
+
+struct ReadResponseResult {
+    std::string body;
+    std::uint64_t actualBytes = 0;
+};
+
+Result<ReadResponseResult> readResponse(CFReadStreamRef stream, const NetworkResponseInfo& response,
+                                        std::uint64_t maxResponseBytes, std::uint64_t initialBytes,
+                                        std::uint64_t totalBytes, ErrorCode readErrorCode, CancellationToken& cancel,
+                                        ProgressCallback progress, const std::string& currentFile, IRootedFile* output,
+                                        const std::vector<char>& initialBody = {}) {
+    auto encoding = validateIdentityContentEncoding(response, readErrorCode);
+    if (!encoding) {
+        return Result<ReadResponseResult>::fail(encoding.error());
+    }
+    auto declaredBudget = detail::validateResponseBodyBudget(response, 0, maxResponseBytes, readErrorCode);
+    if (!declaredBudget) {
+        return Result<ReadResponseResult>::fail(declaredBudget.error());
+    }
+    auto declared = detail::declaredContentLength(response, readErrorCode);
+    if (!declared) {
+        return Result<ReadResponseResult>::fail(declared.error());
+    }
+    const auto bodyLimit = declared.value().value_or(maxResponseBytes);
+
+    ReadResponseResult result;
+    std::array<UInt8, kResponseReadBufferBytes> buffer{};
 
     const auto consume = [&](const char* data, std::size_t count) -> Result<void> {
+        const auto bytes = static_cast<std::uint64_t>(count);
+        if (bytes > bodyLimit - result.actualBytes) {
+            return Result<void>::fail({declared.value() ? readErrorCode : ErrorCode::ResourceLimitExceeded,
+                                       declared.value() ? "Response body exceeds its declared Content-Length"
+                                                        : "Response body exceeds its byte limit"});
+        }
         if (output) {
             auto written = output->write(data, count);
             if (!written) {
                 return written;
             }
         } else {
-            bytes.insert(bytes.end(), data, data + count);
+            result.body.append(data, count);
         }
 
-        downloaded += static_cast<std::uint64_t>(count);
+        result.actualBytes += bytes;
         if (progress) {
-            progress({downloaded, total, currentFile});
+            std::uint64_t downloaded = 0;
+            if (!detail::checkedAdd(initialBytes, result.actualBytes, downloaded)) {
+                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download byte counter overflow"});
+            }
+            progress({downloaded, totalBytes, currentFile});
         }
         return Result<void>::ok();
     };
@@ -422,18 +392,23 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken
     if (!initialBody.empty()) {
         auto consumed = consume(initialBody.data(), initialBody.size());
         if (!consumed) {
-            return Result<std::vector<char>>::fail(consumed.error());
+            return Result<ReadResponseResult>::fail(consumed.error());
         }
     }
 
     for (;;) {
         if (cancel.isCancelled()) {
-            return Result<std::vector<char>>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+            return Result<ReadResponseResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
         }
 
-        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(buffer.size()));
+        const auto remaining = bodyLimit - result.actualBytes;
+        std::size_t requested = buffer.size();
+        if (remaining < requested) {
+            requested = static_cast<std::size_t>(remaining + 1);
+        }
+        const CFIndex count = CFReadStreamRead(stream, buffer.data(), static_cast<CFIndex>(requested));
         if (count < 0) {
-            return Result<std::vector<char>>::fail({ErrorCode::NetworkError, streamError(stream, "CFReadStreamRead")});
+            return Result<ReadResponseResult>::fail({readErrorCode, streamError(stream, "CFReadStreamRead")});
         }
         if (count == 0) {
             break;
@@ -441,11 +416,15 @@ Result<std::vector<char>> readResponse(CFReadStreamRef stream, CancellationToken
 
         auto consumed = consume(reinterpret_cast<const char*>(buffer.data()), static_cast<std::size_t>(count));
         if (!consumed) {
-            return Result<std::vector<char>>::fail(consumed.error());
+            return Result<ReadResponseResult>::fail(consumed.error());
         }
     }
 
-    return Result<std::vector<char>>::ok(std::move(bytes));
+    auto completed = validateCompletedBody(response, result.actualBytes, maxResponseBytes, readErrorCode);
+    if (!completed) {
+        return Result<ReadResponseResult>::fail(completed.error());
+    }
+    return Result<ReadResponseResult>::ok(std::move(result));
 }
 
 void setResumeHeaders(CFHTTPMessageRef request, const NetworkOptions& options,
@@ -464,10 +443,10 @@ void setResumeHeaders(CFHTTPMessageRef request, const NetworkOptions& options,
 
 class CfNetworkClient final : public INetworkClient {
   public:
-    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options, std::uint64_t maxResponseBytes,
                                  CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
-            return readLocalText(url, cancel);
+            return detail::readLocalText(url, maxResponseBytes, cancel);
         }
 
         try {
@@ -475,25 +454,31 @@ class CfNetworkClient final : public INetworkClient {
             if (!request) {
                 return Result<TextResponse>::fail(request.error());
             }
+            setHeader(request.value().message.get(), CFSTR("Accept-Encoding"), "identity");
             auto stream = openStream(request.value(), options);
             if (!stream) {
                 return Result<TextResponse>::fail(stream.error());
             }
-            auto response = waitForResponse(stream.value().get(), cancel);
+            const auto preHeaderLimit = std::min<std::uint64_t>(maxResponseBytes, kMaxPreHeaderBodyBytes);
+            auto response = waitForResponse(stream.value().get(), preHeaderLimit, ErrorCode::NetworkError, cancel);
             if (!response) {
                 return Result<TextResponse>::fail(response.error());
             }
             auto info = responseInfo(stream.value().get(), response.value().headers.get(), url);
-
-            auto bytes =
-                readResponse(stream.value().get(), cancel, {}, {}, 0, contentLength(response.value().headers.get()),
-                             nullptr, response.value().bufferedBody);
-            if (!bytes) {
-                return Result<TextResponse>::fail(bytes.error());
+            if (!info) {
+                return Result<TextResponse>::fail(info.error());
             }
             TextResponse result;
-            result.response = std::move(info);
-            result.body.assign(bytes.value().begin(), bytes.value().end());
+            result.response = std::move(info.value());
+            if (result.response.statusCode == 200) {
+                auto bytes =
+                    readResponse(stream.value().get(), result.response, maxResponseBytes, 0, maxResponseBytes,
+                                 ErrorCode::NetworkError, cancel, {}, {}, nullptr, response.value().bufferedBody);
+                if (!bytes) {
+                    return Result<TextResponse>::fail(bytes.error());
+                }
+                result.body = std::move(bytes.value().body);
+            }
             return Result<TextResponse>::ok(std::move(result));
         } catch (...) {
             return Result<TextResponse>::fail({ErrorCode::NetworkError, "Unexpected CFNetwork request failure"});
@@ -501,55 +486,60 @@ class CfNetworkClient final : public INetworkClient {
     }
 
     Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                          CancellationToken& cancel) noexcept override {
+                                          std::uint64_t maxTotalBytes, const std::optional<DownloadResumeInfo>& resume,
+                                          ProgressCallback progress, CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             const auto effectiveResume = options.enableResume ? resume : std::nullopt;
-            return copyLocalToFile(url, target, effectiveResume, std::move(progress), cancel);
+            return detail::copyLocalToFile(url, target, maxTotalBytes, effectiveResume, std::move(progress), cancel);
         }
 
         try {
+            const bool appending = options.enableResume && resume && resume->offset > 0;
+            const auto initialBytes = appending ? resume->offset : 0;
+            auto remaining = detail::remainingTransferBudget(initialBytes, maxTotalBytes);
+            if (!remaining) {
+                return Result<DownloadResult>::fail(remaining.error());
+            }
             auto request = makeRequest(url);
             if (!request) {
                 return Result<DownloadResult>::fail(request.error());
             }
+            setHeader(request.value().message.get(), CFSTR("Accept-Encoding"), "identity");
             setResumeHeaders(request.value().message.get(), options, resume);
 
             auto stream = openStream(request.value(), options);
             if (!stream) {
                 return Result<DownloadResult>::fail(stream.error());
             }
-            auto response = waitForResponse(stream.value().get(), cancel);
+            const auto preHeaderLimit = std::min<std::uint64_t>(remaining.value(), kMaxPreHeaderBodyBytes);
+            auto response = waitForResponse(stream.value().get(), preHeaderLimit, ErrorCode::DownloadFailed, cancel);
             if (!response) {
                 return Result<DownloadResult>::fail(response.error());
             }
 
             auto info = responseInfo(stream.value().get(), response.value().headers.get(), url);
-
-            const bool appending = options.enableResume && resume && resume->offset > 0;
-            const auto initialBytes = appending ? resume->offset : 0;
+            if (!info) {
+                return Result<DownloadResult>::fail(info.error());
+            }
             const int writableStatus = appending ? 206 : 200;
-            if (info.statusCode == writableStatus) {
-                auto bytes =
-                    readResponse(stream.value().get(), cancel, std::move(progress), {}, initialBytes,
-                                 contentLength(response.value().headers.get()), &target, response.value().bufferedBody);
+            std::uint64_t responseBytes = 0;
+            if (info.value().statusCode == writableStatus) {
+                auto bytes = readResponse(stream.value().get(), info.value(), remaining.value(), initialBytes,
+                                          maxTotalBytes, ErrorCode::DownloadFailed, cancel, std::move(progress), {},
+                                          &target, response.value().bufferedBody);
                 if (!bytes) {
-                    const auto code =
-                        bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;
-                    return Result<DownloadResult>::fail({code, bytes.error().message});
+                    return Result<DownloadResult>::fail(bytes.error());
                 }
+                responseBytes = bytes.value().actualBytes;
             } else if (cancel.isCancelled()) {
                 return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
             }
 
             DownloadResult result;
-            result.response = std::move(info);
-            result.bytesWritten = initialBytes;
-            if (result.response.statusCode == writableStatus) {
-                auto metadata = target.metadata();
-                if (metadata) {
-                    result.bytesWritten = metadata.value().size;
-                }
+            result.response = std::move(info.value());
+            if (!detail::checkedAdd(initialBytes, responseBytes, result.bytesWritten)) {
+                return Result<DownloadResult>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download byte counter overflow"});
             }
             result.etag = responseHeader(result.response, "etag");
             result.lastModified = responseHeader(result.response, "last-modified");

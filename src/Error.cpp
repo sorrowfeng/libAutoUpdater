@@ -40,6 +40,8 @@ const char* toString(ErrorCode code) noexcept {
         return "StateStoreError";
     case ErrorCode::SecurityPolicyViolation:
         return "SecurityPolicyViolation";
+    case ErrorCode::ResourceLimitExceeded:
+        return "ResourceLimitExceeded";
     case ErrorCode::UnsupportedInstallLayout:
         return "UnsupportedInstallLayout";
     case ErrorCode::InternalError:

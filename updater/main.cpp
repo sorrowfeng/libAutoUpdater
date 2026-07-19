@@ -1,14 +1,14 @@
 #include "ApplyExecutor.h"
 
 #include "libAutoUpdater/ApplyPlan.h"
+#include "libAutoUpdater/ResourceLimits.h"
+#include "util/BoundedFile.h"
 
 #include <chrono>
 #include <cstdlib>
 #include <cwchar>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -97,14 +97,14 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    std::ifstream input(args.planPath, std::ios::binary);
-    if (!input) {
-        std::cerr << "Failed to open apply plan\n";
+    const autoupdater::ResourceLimits limits;
+    auto contents = autoupdater::util::readRegularFileWithLimit(args.planPath, limits.maxApplyPlanBytes,
+                                                                autoupdater::ErrorCode::ApplyFailed, "apply plan");
+    if (!contents) {
+        std::cerr << contents.error().message << "\n";
         return 4;
     }
-    std::ostringstream stream;
-    stream << input.rdbuf();
-    auto plan = autoupdater::ApplyPlan::parse(stream.str());
+    auto plan = autoupdater::ApplyPlan::parse(contents.value(), limits);
     if (!plan) {
         std::cerr << plan.error().message << "\n";
         return 5;

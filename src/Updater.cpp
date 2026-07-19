@@ -60,6 +60,34 @@ std::filesystem::perms sanitizedFilePermissions(std::filesystem::perms permissio
     return permissions & allowed;
 }
 
+Result<void> validateResourceLimits(const ResourceLimits& resources) {
+    const auto& json = resources.json;
+    const ResourceLimits ceilings;
+    if (json.maxDepth == 0 || json.maxNodes == 0 || json.maxStringBytes == 0 || json.maxNumberBytes == 0 ||
+        json.maxContainerEntries == 0 || json.maxDepth > JsonResourceLimits::absoluteMaxDepth ||
+        json.maxNodes > JsonResourceLimits::absoluteMaxNodes ||
+        json.maxStringBytes > JsonResourceLimits::absoluteMaxStringBytes ||
+        json.maxNumberBytes > JsonResourceLimits::absoluteMaxNumberBytes ||
+        json.maxContainerEntries > JsonResourceLimits::absoluteMaxContainerEntries) {
+        return Result<void>::fail({ErrorCode::InvalidConfig, "JSON resource limits are outside the safe range"});
+    }
+    if (resources.maxIndexBytes > ceilings.maxIndexBytes || resources.maxManifestBytes > ceilings.maxManifestBytes ||
+        resources.maxSignatureBytes > ceilings.maxSignatureBytes ||
+        resources.maxArtifactBytes > ceilings.maxArtifactBytes ||
+        resources.maxTotalArtifactBytes > ceilings.maxTotalArtifactBytes ||
+        resources.maxApplyPlanBytes > ceilings.maxApplyPlanBytes || resources.maxStateBytes > ceilings.maxStateBytes ||
+        json.maxDepth > ceilings.json.maxDepth || json.maxNodes > ceilings.json.maxNodes ||
+        json.maxStringBytes > ceilings.json.maxStringBytes || json.maxNumberBytes > ceilings.json.maxNumberBytes ||
+        json.maxContainerEntries > ceilings.json.maxContainerEntries) {
+        return Result<void>::fail({ErrorCode::InvalidConfig, "Resource limits exceed the updater safety ceiling"});
+    }
+    if (resources.maxIndexBytes == 0 || resources.maxManifestBytes == 0 || resources.maxApplyPlanBytes == 0 ||
+        resources.maxStateBytes == 0 || resources.maxArtifactBytes > resources.maxTotalArtifactBytes) {
+        return Result<void>::fail({ErrorCode::InvalidConfig, "Resource byte limits are inconsistent"});
+    }
+    return Result<void>::ok();
+}
+
 } // namespace
 
 struct Updater::Impl {
@@ -77,7 +105,8 @@ struct Updater::Impl {
             config.tempDir = util::defaultStagingRoot(config.installDir) / "staging";
         }
         if (!config.installDir.empty()) {
-            stateStore = createJsonStateStore(util::defaultStagingRoot(config.installDir) / "state.json");
+            stateStore =
+                createJsonStateStore(util::defaultStagingRoot(config.installDir) / "state.json", config.resources);
         }
     }
 
@@ -178,6 +207,10 @@ struct Updater::Impl {
         if (!deps.network || !deps.hashProvider || !deps.fileSystem || !deps.signatureVerifier || !deps.dispatcher ||
             !deps.processLauncher) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "Updater dependencies are incomplete"});
+        }
+        auto resources = validateResourceLimits(config.resources);
+        if (!resources) {
+            return resources;
         }
         return Result<void>::ok();
     }
@@ -514,6 +547,10 @@ struct Updater::Impl {
     }
 
     Result<void> markCurrentVersionHealthy() noexcept {
+        auto validResources = validateResourceLimits(config.resources);
+        if (!validResources) {
+            return validResources;
+        }
         auto deps = dependenciesCopy();
         if (!deps.stateStore) {
             return Result<void>::ok();
@@ -531,6 +568,10 @@ struct Updater::Impl {
     }
 
     Result<void> rollbackLastUpdate() noexcept {
+        auto validResources = validateResourceLimits(config.resources);
+        if (!validResources) {
+            return validResources;
+        }
         auto deps = dependenciesCopy();
         if (!deps.stateStore) {
             return Result<void>::ok();
@@ -549,11 +590,11 @@ struct Updater::Impl {
             return Result<void>::fail({ErrorCode::ApplyFailed, "Pending update has no apply plan path"});
         }
 
-        auto text = deps.fileSystem->readText(pending.value()->applyPlanPath);
+        auto text = deps.fileSystem->readText(pending.value()->applyPlanPath, config.resources.maxApplyPlanBytes);
         if (!text) {
             return Result<void>::fail(text.error());
         }
-        auto plan = ApplyPlan::parse(text.value());
+        auto plan = ApplyPlan::parse(text.value(), config.resources);
         if (!plan) {
             return Result<void>::fail(plan.error());
         }

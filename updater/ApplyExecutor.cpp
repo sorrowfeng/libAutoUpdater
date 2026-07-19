@@ -5,10 +5,12 @@
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
 #include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 #include "util/Json.h"
+#include "util/PathUtil.h"
 #include "util/Sha256.h"
 
 #include <array>
 #include <chrono>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <thread>
@@ -33,6 +35,66 @@ struct AppliedOperation {
     bool backupExists = false;
     RootedEntryExpectation expectedCurrent = RootedEntryExpectation::missing();
 };
+
+Result<void> consumePlanTextBudget(const std::string& value, const ResourceLimits& limits,
+                                   std::uint64_t& consumedBytes) {
+    if (value.size() > limits.json.maxStringBytes) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan string exceeds its byte limit"});
+    }
+    if (value.size() > limits.maxApplyPlanBytes - consumedBytes) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan exceeds its byte limit"});
+    }
+    consumedBytes += static_cast<std::uint64_t>(value.size());
+    return Result<void>::ok();
+}
+
+Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLimits& limits) {
+    if (plan.operations.size() > limits.json.maxContainerEntries ||
+        plan.restartCommand.size() > limits.json.maxContainerEntries) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan entry limit exceeded"});
+    }
+
+    std::uint64_t consumedBytes = 1024;
+    if (consumedBytes > limits.maxApplyPlanBytes) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan exceeds its byte limit"});
+    }
+    for (const auto& value :
+         {plan.appId, plan.fromVersion, plan.toVersion, plan.releaseId, plan.manifestSha256,
+          util::pathToUtf8(plan.installDir), util::pathToUtf8(plan.stagingDir), util::pathToUtf8(plan.backupDir)}) {
+        auto valid = consumePlanTextBudget(value, limits, consumedBytes);
+        if (!valid) {
+            return valid;
+        }
+    }
+    for (const auto& argument : plan.restartCommand) {
+        auto valid = consumePlanTextBudget(argument, limits, consumedBytes);
+        if (!valid) {
+            return valid;
+        }
+    }
+
+    std::uint64_t totalArtifactBytes = 0;
+    for (const auto& operation : plan.operations) {
+        for (const auto& value : {operation.source, operation.target, operation.sha256}) {
+            auto valid = consumePlanTextBudget(value, limits, consumedBytes);
+            if (!valid) {
+                return valid;
+            }
+        }
+        if (operation.size > limits.maxArtifactBytes) {
+            return Result<void>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Apply operation exceeds the artifact byte limit"});
+        }
+        if (operation.type == ApplyOperationType::Replace) {
+            if (operation.size > limits.maxTotalArtifactBytes - totalArtifactBytes) {
+                return Result<void>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Apply operations exceed the total artifact byte limit"});
+            }
+            totalArtifactBytes += operation.size;
+        }
+    }
+    return Result<void>::ok();
+}
 
 std::filesystem::perms sanitizedFilePermissions(std::filesystem::perms permissions) {
     constexpr auto allowed = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
@@ -307,6 +369,10 @@ bool hasReplaceOperation(const ApplyPlan& plan) {
 
 Result<std::string> transactionJournalFileName(const ApplyPlan& plan) noexcept {
     try {
+        auto valid = validateApplyPlanResources(plan, ResourceLimits{});
+        if (!valid) {
+            return Result<std::string>::fail(valid.error());
+        }
         return Result<std::string>::ok(util::sha256Bytes(plan.toJson()) + ".json");
     } catch (...) {
         return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to create transaction identifier"});
@@ -345,6 +411,10 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
 Result<void> executeApplyPlan(const ApplyPlan& plan) noexcept {
     std::vector<AppliedOperation> applied;
     try {
+        auto valid = validateApplyPlanResources(plan, ResourceLimits{});
+        if (!valid) {
+            return valid;
+        }
         auto fileSystem = createDefaultFileSystem();
         auto hashProvider = createDefaultHashProvider();
 

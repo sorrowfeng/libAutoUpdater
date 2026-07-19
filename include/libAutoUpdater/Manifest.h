@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Result.h"
+#include "libAutoUpdater/ResourceLimits.h"
 #include "libAutoUpdater/Version.h"
 
 #include <cstdint>
@@ -44,6 +45,7 @@ struct Manifest {
     std::vector<std::string> remove;
 
     static Result<Manifest> parse(const std::string& jsonText) noexcept;
+    static Result<Manifest> parse(const std::string& jsonText, const ResourceLimits& limits) noexcept;
     std::string toJson() const;
 };
 
@@ -63,6 +65,7 @@ struct IndexManifest {
     std::vector<IndexTarget> targets;
 
     static Result<IndexManifest> parse(const std::string& jsonText) noexcept;
+    static Result<IndexManifest> parse(const std::string& jsonText, const ResourceLimits& limits) noexcept;
 };
 
 } // namespace autoupdater

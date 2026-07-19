@@ -20,12 +20,12 @@ struct RedirectedDownloadResult {
 };
 
 Result<RedirectedTextResult> fetchTextWithRedirects(const std::string& initialUrl, const NetworkOptions& options,
-                                                    const UrlPolicy& policy, INetworkClient& network,
-                                                    CancellationToken& cancel) noexcept;
+                                                    std::uint64_t maxResponseBytes, const UrlPolicy& policy,
+                                                    INetworkClient& network, CancellationToken& cancel) noexcept;
 
 Result<RedirectedDownloadResult> downloadWithRedirects(const std::string& initialUrl, IRootedFile& target,
-                                                       const NetworkOptions& options, const UrlPolicy& policy,
-                                                       INetworkClient& network,
+                                                       const NetworkOptions& options, std::uint64_t maxTotalBytes,
+                                                       const UrlPolicy& policy, INetworkClient& network,
                                                        const std::optional<DownloadResumeInfo>& resume,
                                                        ProgressCallback progress, CancellationToken& cancel) noexcept;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Result.h"
+#include "libAutoUpdater/ResourceLimits.h"
 
 #include <cstdint>
 #include <map>
@@ -24,7 +25,8 @@ class Json {
     Json(Object value);
     Json(Array value);
 
-    static Result<Json> parse(const std::string& text) noexcept;
+    static Result<Json> parse(const std::string& text, const JsonResourceLimits& limits) noexcept;
+    static Result<void> validateResourceUsage(const Json& value, const JsonResourceLimits& limits) noexcept;
 
     bool isNull() const noexcept;
     bool isBool() const noexcept;

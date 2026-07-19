@@ -29,8 +29,10 @@ class ScriptedNetworkClient final : public INetworkClient {
         downloadResponses_[std::move(url)].push_back(std::move(response));
     }
 
-    Result<TextResponse> getText(const std::string& url, const NetworkOptions&, CancellationToken&) noexcept override {
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions&, std::uint64_t maxResponseBytes,
+                                 CancellationToken&) noexcept override {
         textRequests.push_back(url);
+        textLimits.push_back(maxResponseBytes);
         auto scripted = take(textResponses_, url);
         if (!scripted) {
             return Result<TextResponse>::fail(scripted.error());
@@ -45,9 +47,10 @@ class ScriptedNetworkClient final : public INetworkClient {
     }
 
     Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions&,
-                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback,
-                                          CancellationToken&) noexcept override {
+                                          std::uint64_t maxTotalBytes, const std::optional<DownloadResumeInfo>& resume,
+                                          ProgressCallback, CancellationToken&) noexcept override {
         downloadRequests.push_back(url);
+        downloadLimits.push_back(maxTotalBytes);
         downloadResumes.push_back(resume);
         auto scripted = take(downloadResponses_, url);
         if (!scripted) {
@@ -75,7 +78,9 @@ class ScriptedNetworkClient final : public INetworkClient {
     }
 
     std::vector<std::string> textRequests;
+    std::vector<std::uint64_t> textLimits;
     std::vector<std::string> downloadRequests;
+    std::vector<std::uint64_t> downloadLimits;
     std::vector<std::optional<DownloadResumeInfo>> downloadResumes;
     std::vector<std::uint64_t> downloadTargetSizesAfterResponse;
 

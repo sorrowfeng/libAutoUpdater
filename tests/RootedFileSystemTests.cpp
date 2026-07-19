@@ -305,6 +305,7 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
     explicit StaticDownloadClient(std::string contents) : contents_(std::move(contents)) {}
 
     autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
@@ -312,7 +313,7 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
 
     autoupdater::Result<autoupdater::DownloadResult>
     downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
-                   const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
+                   std::uint64_t, const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         called = true;
         auto written = target.write(contents_.data(), contents_.size());
@@ -340,6 +341,7 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
           outside_(std::move(outside)), contents_(std::move(contents)) {}
 
     autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
@@ -347,7 +349,7 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
 
     autoupdater::Result<autoupdater::DownloadResult>
     downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
-                   const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
+                   std::uint64_t, const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         try {
             std::error_code ec;
@@ -435,6 +437,7 @@ class RedirectingValidatorDownloadClient final : public autoupdater::INetworkCli
         : initialUrl_(std::move(initialUrl)), finalUrl_(std::move(finalUrl)), contents_(std::move(contents)) {}
 
     autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
@@ -442,8 +445,8 @@ class RedirectingValidatorDownloadClient final : public autoupdater::INetworkCli
 
     autoupdater::Result<autoupdater::DownloadResult>
     downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
-                   const std::optional<autoupdater::DownloadResumeInfo>& resume, autoupdater::ProgressCallback,
-                   autoupdater::CancellationToken&) noexcept override {
+                   std::uint64_t, const std::optional<autoupdater::DownloadResumeInfo>& resume,
+                   autoupdater::ProgressCallback, autoupdater::CancellationToken&) noexcept override {
         requests.push_back(url);
         resumes.push_back(resume);
         autoupdater::DownloadResult result;
@@ -483,6 +486,7 @@ class FailingPartialDownloadClient final : public autoupdater::INetworkClient {
     explicit FailingPartialDownloadClient(std::string partial) : partial_(std::move(partial)) {}
 
     autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
@@ -490,8 +494,8 @@ class FailingPartialDownloadClient final : public autoupdater::INetworkClient {
 
     autoupdater::Result<autoupdater::DownloadResult>
     downloadToFile(const std::string&, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
-                   const std::optional<autoupdater::DownloadResumeInfo>& resume, autoupdater::ProgressCallback,
-                   autoupdater::CancellationToken&) noexcept override {
+                   std::uint64_t, const std::optional<autoupdater::DownloadResumeInfo>& resume,
+                   autoupdater::ProgressCallback, autoupdater::CancellationToken&) noexcept override {
         resumes.push_back(resume);
         auto written = target.write(partial_.data(), partial_.size());
         if (!written) {

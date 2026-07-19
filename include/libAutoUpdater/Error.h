@@ -25,7 +25,8 @@ enum class ErrorCode {
     StateStoreError,
     SecurityPolicyViolation,
     UnsupportedInstallLayout,
-    InternalError
+    InternalError,
+    ResourceLimitExceeded
 };
 
 /// Error object containing a stable code and human-readable message.

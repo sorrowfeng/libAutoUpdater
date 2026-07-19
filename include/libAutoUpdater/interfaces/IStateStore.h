@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libAutoUpdater/Result.h"
+#include "libAutoUpdater/ResourceLimits.h"
 #include "libAutoUpdater/Version.h"
 
 #include <filesystem>
@@ -46,5 +47,6 @@ class IStateStore {
 };
 
 std::shared_ptr<IStateStore> createJsonStateStore(const std::filesystem::path& path);
+std::shared_ptr<IStateStore> createJsonStateStore(const std::filesystem::path& path, const ResourceLimits& limits);
 
 } // namespace autoupdater

@@ -45,6 +45,7 @@ class QueuedDispatcher final : public autoupdater::IEventDispatcher {
 class StaticManifestNetwork final : public autoupdater::INetworkClient {
   public:
     autoupdater::Result<autoupdater::TextResponse> getText(const std::string& url, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken&) noexcept override {
         autoupdater::TextResponse response;
         response.response.statusCode = 200;
@@ -59,7 +60,7 @@ class StaticManifestNetwork final : public autoupdater::INetworkClient {
     }
 
     autoupdater::Result<autoupdater::DownloadResult>
-    downloadToFile(const std::string&, autoupdater::IRootedFile&, const autoupdater::NetworkOptions&,
+    downloadToFile(const std::string&, autoupdater::IRootedFile&, const autoupdater::NetworkOptions&, std::uint64_t,
                    const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::DownloadResult>::fail(

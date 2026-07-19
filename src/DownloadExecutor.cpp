@@ -1,8 +1,10 @@
 #include "DownloadExecutor.h"
 
+#include "NetworkLimits.h"
 #include "NetworkRequest.h"
 #include "UrlPolicy.h"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -21,7 +23,16 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                               ProgressCallback progress, CancellationToken& cancel) {
     std::uint64_t totalBytes = 0;
     for (const auto& download : decision.downloads) {
-        totalBytes += download.file.size;
+        if (download.file.size > config.resources.maxArtifactBytes) {
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Artifact exceeds the per-file byte limit"});
+        }
+        std::uint64_t updatedTotal = 0;
+        if (!detail::checkedAdd(totalBytes, download.file.size, updatedTotal) ||
+            updatedTotal > config.resources.maxTotalArtifactBytes) {
+            return Result<void>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Downloads exceed the total artifact byte limit"});
+        }
+        totalBytes = updatedTotal;
     }
 
     auto policy = UrlPolicy::fromConfig(config);
@@ -54,16 +65,20 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                 return Result<void>::fail(existingMetadata.error());
             }
             finalExpectation = RootedEntryExpectation::matching(existingMetadata.value());
-            auto hash = hashProvider.sha256Stream(*existing.value().file);
-            if (!hash) {
-                return Result<void>::fail(hash.error());
-            }
-            if (existingMetadata.value().size == download.file.size && hash.value() == download.file.sha256) {
-                completedBeforeFile += download.file.size;
-                if (progress) {
-                    progress({completedBeforeFile, totalBytes, download.file.path});
+            if (existingMetadata.value().size == download.file.size) {
+                auto hash = hashProvider.sha256Stream(*existing.value().file);
+                if (!hash) {
+                    return Result<void>::fail(hash.error());
                 }
-                continue;
+                if (hash.value() != download.file.sha256) {
+                    existing.value().file.reset();
+                } else {
+                    completedBeforeFile += download.file.size;
+                    if (progress) {
+                        progress({completedBeforeFile, totalBytes, download.file.path});
+                    }
+                    continue;
+                }
             }
         }
         existing.value().file.reset();
@@ -87,6 +102,25 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
             auto tempMetadata = temporary.value().file->metadata();
             if (!tempMetadata) {
                 return Result<void>::fail(tempMetadata.error());
+            }
+            if (tempMetadata.value().size > download.file.size) {
+                const auto expectation = RootedEntryExpectation::matching(tempMetadata.value());
+                temporary.value().file.reset();
+                auto removed = stagingRoot.value()->removeRegularFile(tempRelativePath, expectation);
+                if (!removed) {
+                    return removed;
+                }
+                if (stateStore) {
+                    stateStore->clearDownloadResume(download.url);
+                }
+                temporary = stagingRoot.value()->openRegularFile(tempRelativePath, RootedFileOpenMode::OpenOrCreate);
+                if (!temporary) {
+                    return Result<void>::fail(temporary.error());
+                }
+                tempMetadata = temporary.value().file->metadata();
+                if (!tempMetadata) {
+                    return Result<void>::fail(tempMetadata.error());
+                }
             }
             std::optional<DownloadResumeInfo> resume;
             if (config.network.enableResume && tempMetadata.value().size > 0) {
@@ -120,11 +154,16 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
             }
 
             auto result = downloadWithRedirects(
-                download.url, *temporary.value().file, config.network, policy.value(), network, resume,
+                download.url, *temporary.value().file, config.network, download.file.size, policy.value(), network,
+                resume,
                 [&](const Progress& current) {
                     if (progress) {
                         Progress aggregate;
-                        aggregate.downloadedBytes = completedBeforeFile + current.downloadedBytes;
+                        const auto currentFileBytes = std::min(current.downloadedBytes, download.file.size);
+                        if (!detail::checkedAdd(completedBeforeFile, currentFileBytes, aggregate.downloadedBytes)) {
+                            aggregate.downloadedBytes = totalBytes;
+                        }
+                        aggregate.downloadedBytes = std::min(aggregate.downloadedBytes, totalBytes);
                         aggregate.totalBytes = totalBytes;
                         aggregate.currentFile = download.file.path;
                         progress(aggregate);
@@ -134,6 +173,21 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
             if (!result) {
                 lastError = result.error();
                 auto failedMetadata = temporary.value().file->metadata();
+                if (lastError.code == ErrorCode::ResourceLimitExceeded) {
+                    if (!failedMetadata) {
+                        return Result<void>::fail(failedMetadata.error());
+                    }
+                    const auto expectation = RootedEntryExpectation::matching(failedMetadata.value());
+                    temporary.value().file.reset();
+                    auto removed = stagingRoot.value()->removeRegularFile(tempRelativePath, expectation);
+                    if (!removed) {
+                        return removed;
+                    }
+                    if (stateStore) {
+                        stateStore->clearDownloadResume(download.url);
+                    }
+                    return Result<void>::fail(lastError);
+                }
                 if (config.network.enableResume && stateStore && failedMetadata && failedMetadata.value().size > 0) {
                     DownloadResumeState state;
                     state.key = download.url;
@@ -166,11 +220,14 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                     state.sha256 = download.file.sha256;
                     stateStore->saveDownloadResume(state);
                 }
-                auto hash = hashProvider.sha256Stream(*temporary.value().file);
+                Result<std::string> hash = Result<std::string>::fail(
+                    {ErrorCode::HashMismatch, "Downloaded file size mismatch: " + download.file.path});
+                if (completedMetadata.value().size == download.file.size) {
+                    hash = hashProvider.sha256Stream(*temporary.value().file);
+                }
                 if (!hash) {
                     lastError = hash.error();
-                } else if (completedMetadata.value().size != download.file.size ||
-                           hash.value() != download.file.sha256) {
+                } else if (hash.value() != download.file.sha256) {
                     lastError = {ErrorCode::HashMismatch, "Downloaded file SHA-256 mismatch: " + download.file.path};
                     temporary.value().file.reset();
                     auto removed = stagingRoot.value()->removeRegularFile(

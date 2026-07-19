@@ -75,6 +75,7 @@ set(LIBAUTOUPDATER_PUBLIC_HEADERS
     include/libAutoUpdater/Config.h
     include/libAutoUpdater/Error.h
     include/libAutoUpdater/Manifest.h
+    include/libAutoUpdater/ResourceLimits.h
     include/libAutoUpdater/Result.h
     include/libAutoUpdater/Types.h
     include/libAutoUpdater/Updater.h
@@ -98,6 +99,7 @@ set(LIBAUTOUPDATER_SOURCES
     src/Manifest.cpp
     src/ManifestFetcher.cpp
     src/ManifestVerifier.cpp
+    src/NetworkLimits.cpp
     src/NetworkRequest.cpp
     src/UpdatePlanner.cpp
     src/Updater.cpp
@@ -106,11 +108,13 @@ set(LIBAUTOUPDATER_SOURCES
     src/default/BasicNetworkClient.cpp
     src/default/DirectDispatcher.cpp
     src/default/JsonStateStore.cpp
+    src/default/LocalNetworkFile.cpp
     src/default/NullSignatureVerifier.cpp
     src/default/ProcessLauncher.cpp
     src/default/Sha256HashProvider.cpp
     src/default/StdFileSystem.cpp
     src/util/Json.cpp
+    src/util/BoundedFile.cpp
     src/util/PathUtil.cpp
     src/util/Sha256.cpp
     src/util/UrlUtil.cpp)

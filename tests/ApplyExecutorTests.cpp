@@ -91,7 +91,8 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
 
     const auto journalName = autoupdater::updater::transactionJournalFileName(plan);
     LAU_REQUIRE(journalName);
-    const auto journal = autoupdater::util::Json::parse(readFile(journalDir / journalName.value()));
+    const auto journal =
+        autoupdater::util::Json::parse(readFile(journalDir / journalName.value()), autoupdater::ResourceLimits{}.json);
     LAU_REQUIRE(journal);
     LAU_REQUIRE(journal.value().get("state") != nullptr);
     LAU_REQUIRE(journal.value().get("state")->asString() == "complete");

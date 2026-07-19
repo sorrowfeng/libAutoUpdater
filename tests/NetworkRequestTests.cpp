@@ -129,8 +129,8 @@ void testNetworkRequestRejectsInitialUrlBeforeTransport() {
     autoupdater::NetworkOptions options;
     autoupdater::CancellationToken cancel;
 
-    auto result = autoupdater::fetchTextWithRedirects("https://evil.example.test/releases/start.json", options, policy,
-                                                      network, cancel);
+    auto result = autoupdater::fetchTextWithRedirects("https://evil.example.test/releases/start.json", options, 1024,
+                                                      policy, network, cancel);
     LAU_REQUIRE(!result);
     LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
     LAU_REQUIRE(network.textRequests.empty());
@@ -148,7 +148,7 @@ void testNetworkRequestFollowsAllAllowedRedirectStatuses() {
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
 
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(result.value().body == "manifest-body");
         LAU_REQUIRE(result.value().effectiveUrl == final);
@@ -167,7 +167,7 @@ void testNetworkRequestEnforcesRedirectOriginsAndProtocols() {
         network.queueText(crossOrigin, autoupdater::test::textResponse("allowed-cross-origin"));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(result.value().body == "allowed-cross-origin");
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start, crossOrigin}));
@@ -179,7 +179,7 @@ void testNetworkRequestEnforcesRedirectOriginsAndProtocols() {
         network.queueText(start, autoupdater::test::redirectResponse(302, crossOrigin));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -193,7 +193,7 @@ void testNetworkRequestEnforcesRedirectOriginsAndProtocols() {
         network.queueText(middle, autoupdater::test::redirectResponse(307, crossOrigin));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start, middle}));
@@ -206,7 +206,7 @@ void testNetworkRequestEnforcesRedirectOriginsAndProtocols() {
                           autoupdater::test::redirectResponse(302, "http://updates.example.test/releases/final.json"));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -223,7 +223,7 @@ void testNetworkRequestEnforcesRedirectOriginsAndProtocols() {
         network.queueText(start, autoupdater::test::redirectResponse(302, localTarget));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -255,7 +255,7 @@ void testNetworkRequestRequiresOneLocationHeader() {
         network.queueText(start, std::move(response));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -273,7 +273,7 @@ void testNetworkRequestDetectsLoopsAndRedirectLimit() {
         network.queueText(middle, autoupdater::test::redirectResponse(302, start));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start, middle}));
@@ -286,7 +286,7 @@ void testNetworkRequestDetectsLoopsAndRedirectLimit() {
             start, autoupdater::test::redirectResponse(302, "HTTPS://UPDATES.EXAMPLE.TEST:443/releases/./start.json"));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -301,7 +301,7 @@ void testNetworkRequestDetectsLoopsAndRedirectLimit() {
         autoupdater::NetworkOptions options;
         options.maxRedirects = 1;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start, middle}));
@@ -320,7 +320,7 @@ void testNetworkRequestRejectsForgedEffectiveUrl() {
         network.queueText(start, std::move(response));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({start}));
@@ -334,7 +334,7 @@ void testNetworkRequestRejectsForgedEffectiveUrl() {
         network.queueText(start, std::move(response));
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
-        auto result = autoupdater::fetchTextWithRedirects(start, options, policy, network, cancel);
+        auto result = autoupdater::fetchTextWithRedirects(start, options, 1024, policy, network, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(result.value().body == "equivalent");
     }
@@ -353,7 +353,7 @@ void testNetworkDownloadRestoresBodiesWrittenByRedirects() {
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
         auto result =
-            autoupdater::downloadWithRedirects(start, target, options, policy, network, std::nullopt, {}, cancel);
+            autoupdater::downloadWithRedirects(start, target, options, 1024, policy, network, std::nullopt, {}, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(target.contents() == "payload");
         LAU_REQUIRE(network.downloadRequests == std::vector<std::string>({start, final}));
@@ -371,7 +371,7 @@ void testNetworkDownloadRestoresBodiesWrittenByRedirects() {
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
         auto result =
-            autoupdater::downloadWithRedirects(start, target, options, policy, network, std::nullopt, {}, cancel);
+            autoupdater::downloadWithRedirects(start, target, options, 1024, policy, network, std::nullopt, {}, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(target.contents() == "payload");
     }
@@ -386,7 +386,7 @@ void testNetworkDownloadRestoresBodiesWrittenByRedirects() {
         autoupdater::NetworkOptions options;
         autoupdater::CancellationToken cancel;
         auto result =
-            autoupdater::downloadWithRedirects(start, target, options, policy, network, std::nullopt, {}, cancel);
+            autoupdater::downloadWithRedirects(start, target, options, 1024, policy, network, std::nullopt, {}, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
         LAU_REQUIRE(target.contents() == "seed");
@@ -409,7 +409,8 @@ void testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus() {
         resume.etag = "old-validator";
         autoupdater::CancellationToken cancel;
 
-        auto result = autoupdater::downloadWithRedirects(start, target, options, policy, network, resume, {}, cancel);
+        auto result =
+            autoupdater::downloadWithRedirects(start, target, options, 1024, policy, network, resume, {}, cancel);
         LAU_REQUIRE(result);
         LAU_REQUIRE(target.contents() == "complete-payload");
         LAU_REQUIRE(network.downloadRequests == std::vector<std::string>({start, final}));
@@ -429,7 +430,7 @@ void testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus() {
         autoupdater::CancellationToken cancel;
 
         auto result =
-            autoupdater::downloadWithRedirects(start, target, options, policy, network, std::nullopt, {}, cancel);
+            autoupdater::downloadWithRedirects(start, target, options, 1024, policy, network, std::nullopt, {}, cancel);
         LAU_REQUIRE(!result);
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::DownloadFailed);
         LAU_REQUIRE(target.contents() == "seed");
@@ -449,7 +450,7 @@ void testNetworkDownloadRestartsIgnoredHttpResume() {
     resume.etag = "old-validator";
     autoupdater::CancellationToken cancel;
 
-    auto result = autoupdater::downloadWithRedirects(url, target, options, policy, network, resume, {}, cancel);
+    auto result = autoupdater::downloadWithRedirects(url, target, options, 1024, policy, network, resume, {}, cancel);
     LAU_REQUIRE(result);
     LAU_REQUIRE(target.contents() == "complete-payload");
     LAU_REQUIRE(network.downloadRequests == std::vector<std::string>({url, url}));
@@ -483,8 +484,8 @@ void testNetworkDownloadPreservesLocalFileResume() {
     resume.offset = 7;
     autoupdater::CancellationToken cancel;
 
-    auto result =
-        autoupdater::downloadWithRedirects(artifactUrl, target, options, policy.value(), network, resume, {}, cancel);
+    auto result = autoupdater::downloadWithRedirects(artifactUrl, target, options, 1024, policy.value(), network,
+                                                     resume, {}, cancel);
     LAU_REQUIRE(result);
     LAU_REQUIRE(target.contents() == "partial-complete");
     LAU_REQUIRE(network.downloadRequests == std::vector<std::string>({artifactUrl}));

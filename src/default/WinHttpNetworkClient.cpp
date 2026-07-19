@@ -2,8 +2,8 @@
 
 #ifdef LIBAUTOUPDATER_HAS_WINHTTP
 
-#include "util/UrlUtil.h"
-#include "util/PathUtil.h"
+#include "NetworkLimits.h"
+#include "default/LocalNetworkFile.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -12,10 +12,7 @@
 #include <array>
 #include <cctype>
 #include <cwctype>
-#include <filesystem>
-#include <fstream>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +20,8 @@
 namespace autoupdater {
 
 namespace {
+
+constexpr std::size_t kResponseReadBufferBytes = 64 * 1024;
 
 class WinHttpHandle {
   public:
@@ -225,8 +224,10 @@ Result<WinHttpRequest> openRequest(const std::string& url, const NetworkOptions&
         WinHttpSetOption(requestHandle.get(), WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
 
-    const LPCWSTR headers = extraHeaders.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : extraHeaders.c_str();
-    const DWORD headerLength = extraHeaders.empty() ? 0 : static_cast<DWORD>(extraHeaders.size());
+    std::wstring requestHeaders = L"Accept-Encoding: identity\r\n";
+    requestHeaders += extraHeaders;
+    const LPCWSTR headers = requestHeaders.c_str();
+    const DWORD headerLength = static_cast<DWORD>(requestHeaders.size());
     if (!WinHttpSendRequest(requestHandle.get(), headers, headerLength, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
         return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpSendRequest");
     }
@@ -267,6 +268,10 @@ Result<std::vector<NetworkHeader>> responseHeaders(HINTERNET request) {
                         &size, WINHTTP_NO_HEADER_INDEX);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
         return failLast<std::vector<NetworkHeader>>(ErrorCode::NetworkError, "WinHttpQueryHeaders raw headers");
+    }
+    if (static_cast<std::uint64_t>(size) > detail::kMaxNetworkResponseHeaderBytes) {
+        return Result<std::vector<NetworkHeader>>::fail(
+            {ErrorCode::ResourceLimitExceeded, "HTTP response headers exceed their byte limit"});
     }
 
     std::wstring raw(size / sizeof(wchar_t), L'\0');
@@ -354,60 +359,123 @@ std::string responseHeader(const NetworkResponseInfo& response, const std::strin
     return {};
 }
 
-std::uint64_t queryContentLength(HINTERNET request) {
-    DWORD value = 0;
-    DWORD size = sizeof(value);
-    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &value, &size, WINHTTP_NO_HEADER_INDEX)) {
-        return 0;
+Result<void> validateIdentityContentEncoding(const NetworkResponseInfo& response, ErrorCode errorCode) {
+    for (const auto& header : response.headers) {
+        if (header.name != "content-encoding") {
+            continue;
+        }
+        auto value = header.value;
+        trimOptionalWhitespace(value);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (!value.empty() && value != "identity") {
+            return Result<void>::fail(
+                {errorCode, "Unsupported Content-Encoding; update responses must use identity encoding"});
+        }
     }
-    return value;
+    return Result<void>::ok();
 }
 
-Result<std::vector<char>> readResponseBytes(HINTERNET request, CancellationToken& cancel, ProgressCallback progress,
-                                            const std::string& currentFile, std::uint64_t initialBytes,
-                                            IRootedFile* output) {
-    std::vector<char> bytes;
-    std::uint64_t downloaded = initialBytes;
-    const std::uint64_t total = initialBytes + queryContentLength(request);
+Result<void> validateCompletedBody(const NetworkResponseInfo& response, std::uint64_t actualBytes,
+                                   std::uint64_t maxResponseBytes, ErrorCode invalidHeaderCode) {
+    auto budget = detail::validateResponseBodyBudget(response, actualBytes, maxResponseBytes, invalidHeaderCode);
+    if (!budget) {
+        return budget;
+    }
+    auto declared = detail::declaredContentLength(response, invalidHeaderCode);
+    if (!declared) {
+        return Result<void>::fail(declared.error());
+    }
+    if (declared.value() && *declared.value() != actualBytes) {
+        return Result<void>::fail({invalidHeaderCode, "Content-Length does not match the received response body"});
+    }
+    return Result<void>::ok();
+}
+
+struct ReadResponseResult {
+    std::string body;
+    std::uint64_t actualBytes = 0;
+};
+
+Result<ReadResponseResult> readResponseBytes(HINTERNET request, const NetworkResponseInfo& response,
+                                             std::uint64_t maxResponseBytes, std::uint64_t initialBytes,
+                                             std::uint64_t totalBytes, ErrorCode readErrorCode,
+                                             CancellationToken& cancel, ProgressCallback progress,
+                                             const std::string& currentFile, IRootedFile* output) {
+    auto encoding = validateIdentityContentEncoding(response, readErrorCode);
+    if (!encoding) {
+        return Result<ReadResponseResult>::fail(encoding.error());
+    }
+    auto declaredBudget = detail::validateResponseBodyBudget(response, 0, maxResponseBytes, readErrorCode);
+    if (!declaredBudget) {
+        return Result<ReadResponseResult>::fail(declaredBudget.error());
+    }
+    auto declared = detail::declaredContentLength(response, readErrorCode);
+    if (!declared) {
+        return Result<ReadResponseResult>::fail(declared.error());
+    }
+    const auto bodyLimit = declared.value().value_or(maxResponseBytes);
+
+    ReadResponseResult result;
+    std::array<char, kResponseReadBufferBytes> buffer{};
 
     for (;;) {
         if (cancel.isCancelled()) {
-            return Result<std::vector<char>>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+            return Result<ReadResponseResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
         }
 
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available)) {
-            return failLast<std::vector<char>>(ErrorCode::NetworkError, "WinHttpQueryDataAvailable");
+            return failLast<ReadResponseResult>(readErrorCode, "WinHttpQueryDataAvailable");
         }
         if (available == 0) {
             break;
         }
 
-        std::vector<char> buffer(available);
+        const auto remaining = bodyLimit - result.actualBytes;
+        DWORD requested = static_cast<DWORD>(std::min<std::size_t>(static_cast<std::size_t>(available), buffer.size()));
+        if (remaining < requested) {
+            requested = static_cast<DWORD>(remaining + 1);
+        }
+
         DWORD read = 0;
-        if (!WinHttpReadData(request, buffer.data(), available, &read)) {
-            return failLast<std::vector<char>>(ErrorCode::NetworkError, "WinHttpReadData");
+        if (!WinHttpReadData(request, buffer.data(), requested, &read)) {
+            return failLast<ReadResponseResult>(readErrorCode, "WinHttpReadData");
         }
         if (read == 0) {
             break;
+        }
+        if (static_cast<std::uint64_t>(read) > remaining) {
+            return Result<ReadResponseResult>::fail(
+                {declared.value() ? readErrorCode : ErrorCode::ResourceLimitExceeded,
+                 declared.value() ? "Response body exceeds its declared Content-Length"
+                                  : "Response body exceeds its byte limit"});
         }
 
         if (output) {
             auto written = output->write(buffer.data(), static_cast<std::size_t>(read));
             if (!written) {
-                return Result<std::vector<char>>::fail(written.error());
+                return Result<ReadResponseResult>::fail(written.error());
             }
         } else {
-            bytes.insert(bytes.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(read));
+            result.body.append(buffer.data(), static_cast<std::size_t>(read));
         }
-        downloaded += read;
+        result.actualBytes += static_cast<std::uint64_t>(read);
         if (progress) {
-            progress({downloaded, total, currentFile});
+            std::uint64_t downloaded = 0;
+            if (!detail::checkedAdd(initialBytes, result.actualBytes, downloaded)) {
+                return Result<ReadResponseResult>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download byte counter overflow"});
+            }
+            progress({downloaded, totalBytes, currentFile});
         }
     }
 
-    return Result<std::vector<char>>::ok(std::move(bytes));
+    auto completed = validateCompletedBody(response, result.actualBytes, maxResponseBytes, readErrorCode);
+    if (!completed) {
+        return Result<ReadResponseResult>::fail(completed.error());
+    }
+    return Result<ReadResponseResult>::ok(std::move(result));
 }
 
 bool isHttpUrl(const std::string& url) {
@@ -419,96 +487,6 @@ bool isHttpUrl(const std::string& url) {
     std::transform(scheme.begin(), scheme.end(), scheme.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return scheme == "http" || scheme == "https";
-}
-
-Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
-    if (util::isFileUrl(url)) {
-        return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
-    }
-    return Result<std::filesystem::path>::fail(
-        {ErrorCode::NetworkError, "WinHTTP accepts only HTTP, HTTPS, and explicit file: URLs"});
-}
-
-Result<TextResponse> readLocalText(const std::string& url, CancellationToken& cancel) {
-    if (cancel.isCancelled()) {
-        return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-    }
-    auto path = localPathFromUrl(url);
-    if (!path) {
-        return Result<TextResponse>::fail(path.error());
-    }
-    try {
-        std::ifstream input(path.value(), std::ios::binary);
-        if (!input) {
-            return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
-        }
-        std::ostringstream stream;
-        stream << input.rdbuf();
-        if (input.bad()) {
-            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-        }
-        TextResponse response;
-        response.response.statusCode = 200;
-        response.response.effectiveUrl = url;
-        response.body = stream.str();
-        return Result<TextResponse>::ok(std::move(response));
-    } catch (...) {
-        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-    }
-}
-
-Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& target,
-                                       const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                       CancellationToken& cancel) {
-    auto source = localPathFromUrl(url);
-    if (!source) {
-        return Result<DownloadResult>::fail(source.error());
-    }
-    try {
-        std::error_code ec;
-        const auto total = std::filesystem::file_size(source.value(), ec);
-        if (ec) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
-        }
-        std::ifstream input(source.value(), std::ios::binary);
-        if (resume && resume->offset > 0) {
-            input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
-        }
-        if (!input) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
-        }
-
-        std::array<char, 64 * 1024> buffer{};
-        std::uint64_t written = resume ? resume->offset : 0;
-        while (input) {
-            if (cancel.isCancelled()) {
-                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-            }
-            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const auto count = input.gcount();
-            if (count > 0) {
-                auto write = target.write(buffer.data(), static_cast<std::size_t>(count));
-                if (!write) {
-                    return Result<DownloadResult>::fail(write.error());
-                }
-                written += static_cast<std::uint64_t>(count);
-                if (progress) {
-                    progress({written, static_cast<std::uint64_t>(total), {}});
-                }
-            }
-        }
-        if (input.bad()) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
-        }
-
-        DownloadResult result;
-        result.response.statusCode = 200;
-        result.response.effectiveUrl = url;
-        result.bytesWritten = written;
-        return Result<DownloadResult>::ok(result);
-    } catch (...) {
-        return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to copy local source"});
-    }
 }
 
 std::wstring resumeHeaders(const NetworkOptions& options, const std::optional<DownloadResumeInfo>& resume) {
@@ -527,10 +505,10 @@ std::wstring resumeHeaders(const NetworkOptions& options, const std::optional<Do
 
 class WinHttpNetworkClient final : public INetworkClient {
   public:
-    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options, std::uint64_t maxResponseBytes,
                                  CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
-            return readLocalText(url, cancel);
+            return detail::readLocalText(url, maxResponseBytes, cancel);
         }
 
         try {
@@ -543,13 +521,16 @@ class WinHttpNetworkClient final : public INetworkClient {
                 return Result<TextResponse>::fail(info.error());
             }
 
-            auto bytes = readResponseBytes(request.value().get(), cancel, {}, {}, 0, nullptr);
-            if (!bytes) {
-                return Result<TextResponse>::fail(bytes.error());
-            }
             TextResponse response;
             response.response = std::move(info.value());
-            response.body.assign(bytes.value().begin(), bytes.value().end());
+            if (response.response.statusCode == 200) {
+                auto bytes = readResponseBytes(request.value().get(), response.response, maxResponseBytes, 0,
+                                               maxResponseBytes, ErrorCode::NetworkError, cancel, {}, {}, nullptr);
+                if (!bytes) {
+                    return Result<TextResponse>::fail(bytes.error());
+                }
+                response.body = std::move(bytes.value().body);
+            }
             return Result<TextResponse>::ok(std::move(response));
         } catch (...) {
             return Result<TextResponse>::fail({ErrorCode::NetworkError, "Unexpected WinHTTP request failure"});
@@ -557,14 +538,20 @@ class WinHttpNetworkClient final : public INetworkClient {
     }
 
     Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                          CancellationToken& cancel) noexcept override {
+                                          std::uint64_t maxTotalBytes, const std::optional<DownloadResumeInfo>& resume,
+                                          ProgressCallback progress, CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             const auto effectiveResume = options.enableResume ? resume : std::nullopt;
-            return copyLocalToFile(url, target, effectiveResume, std::move(progress), cancel);
+            return detail::copyLocalToFile(url, target, maxTotalBytes, effectiveResume, std::move(progress), cancel);
         }
 
         try {
+            const bool appending = options.enableResume && resume && resume->offset > 0;
+            const auto initialBytes = appending ? resume->offset : 0;
+            auto remaining = detail::remainingTransferBudget(initialBytes, maxTotalBytes);
+            if (!remaining) {
+                return Result<DownloadResult>::fail(remaining.error());
+            }
             const auto requestHeaders = resumeHeaders(options, resume);
             auto request = openRequest(url, options, requestHeaders);
             if (!request) {
@@ -579,27 +566,23 @@ class WinHttpNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
             }
 
-            const bool appending = options.enableResume && resume && resume->offset > 0;
-            const auto initialBytes = appending ? resume->offset : 0;
             const int writableStatus = appending ? 206 : 200;
+            std::uint64_t responseBytes = 0;
             if (info.value().statusCode == writableStatus) {
-                auto bytes =
-                    readResponseBytes(request.value().get(), cancel, std::move(progress), {}, initialBytes, &target);
+                auto bytes = readResponseBytes(request.value().get(), info.value(), remaining.value(), initialBytes,
+                                               maxTotalBytes, ErrorCode::DownloadFailed, cancel, std::move(progress),
+                                               {}, &target);
                 if (!bytes) {
-                    return Result<DownloadResult>::fail(
-                        {bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code,
-                         bytes.error().message});
+                    return Result<DownloadResult>::fail(bytes.error());
                 }
+                responseBytes = bytes.value().actualBytes;
             }
 
             DownloadResult result;
             result.response = std::move(info.value());
-            result.bytesWritten = initialBytes;
-            if (result.response.statusCode == writableStatus) {
-                auto metadata = target.metadata();
-                if (metadata) {
-                    result.bytesWritten = metadata.value().size;
-                }
+            if (!detail::checkedAdd(initialBytes, responseBytes, result.bytesWritten)) {
+                return Result<DownloadResult>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download byte counter overflow"});
             }
             result.etag = responseHeader(result.response, "etag");
             result.lastModified = responseHeader(result.response, "last-modified");

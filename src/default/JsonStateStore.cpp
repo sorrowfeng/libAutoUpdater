@@ -1,10 +1,11 @@
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include "util/BoundedFile.h"
 #include "util/Json.h"
 #include "util/PathUtil.h"
 
+#include <cmath>
 #include <fstream>
-#include <sstream>
 
 namespace autoupdater {
 
@@ -12,7 +13,8 @@ namespace {
 
 class JsonStateStore final : public IStateStore {
   public:
-    explicit JsonStateStore(std::filesystem::path path) : path_(std::move(path)) {}
+    JsonStateStore(std::filesystem::path path, ResourceLimits limits)
+        : path_(std::move(path)), limits_(std::move(limits)) {}
 
     Result<void> saveLastAcceptedVersion(const Version& version, const std::string& releaseId) noexcept override {
         auto root = loadRoot();
@@ -111,6 +113,10 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<void> saveDownloadResume(const DownloadResumeState& state) noexcept override {
+        if (state.offset > limits_.maxArtifactBytes) {
+            return Result<void>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
+        }
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -119,6 +125,9 @@ class JsonStateStore final : public IStateStore {
         const auto downloadsIt = root.value().find("downloadResume");
         if (downloadsIt != root.value().end() && downloadsIt->second.isObject()) {
             downloads = downloadsIt->second.asObject();
+        }
+        if (downloads.find(state.key) == downloads.end() && downloads.size() >= limits_.json.maxContainerEntries) {
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
         }
 
         util::Json::Object record;
@@ -150,7 +159,18 @@ class JsonStateStore final : public IStateStore {
         const auto& object = recordIt->second;
         const auto* offset = object.get("offset");
         if (offset && offset->isNumber()) {
-            state.offset = static_cast<std::uint64_t>(offset->asNumber());
+            const double number = offset->asNumber();
+            constexpr double kLargestExactlyRepresentableInteger = 9007199254740991.0;
+            if (!std::isfinite(number) || number < 0 || number > kLargestExactlyRepresentableInteger ||
+                std::floor(number) != number) {
+                return Result<std::optional<DownloadResumeState>>::fail(
+                    {ErrorCode::StateStoreError, "Download resume offset is invalid"});
+            }
+            state.offset = static_cast<std::uint64_t>(number);
+            if (state.offset > limits_.maxArtifactBytes) {
+                return Result<std::optional<DownloadResumeState>>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
+            }
         }
         const auto* etag = object.get("etag");
         if (etag && etag->isString()) {
@@ -187,13 +207,12 @@ class JsonStateStore final : public IStateStore {
             if (!std::filesystem::exists(path_)) {
                 return Result<util::Json::Object>::ok({});
             }
-            std::ifstream input(path_, std::ios::binary);
-            if (!input) {
-                return Result<util::Json::Object>::fail({ErrorCode::StateStoreError, "Failed to open state file"});
+            auto contents =
+                util::readRegularFileWithLimit(path_, limits_.maxStateBytes, ErrorCode::StateStoreError, "state file");
+            if (!contents) {
+                return Result<util::Json::Object>::fail(contents.error());
             }
-            std::ostringstream stream;
-            stream << input.rdbuf();
-            auto json = util::Json::parse(stream.str());
+            auto json = util::Json::parse(contents.value(), limits_.json);
             if (!json) {
                 return Result<util::Json::Object>::fail(json.error());
             }
@@ -208,6 +227,15 @@ class JsonStateStore final : public IStateStore {
 
     Result<void> saveRoot(const util::Json::Object& root) noexcept {
         try {
+            const util::Json document(root);
+            auto usage = util::Json::validateResourceUsage(document, limits_.json);
+            if (!usage) {
+                return usage;
+            }
+            const auto contents = document.stringify(2);
+            if (contents.size() > limits_.maxStateBytes) {
+                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "State file exceeds its byte limit"});
+            }
             std::error_code ec;
             std::filesystem::create_directories(path_.parent_path(), ec);
             if (ec) {
@@ -217,7 +245,10 @@ class JsonStateStore final : public IStateStore {
             if (!output) {
                 return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
             }
-            output << util::Json(root).stringify(2);
+            output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+            if (!output) {
+                return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
+            }
             return Result<void>::ok();
         } catch (...) {
             return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
@@ -225,12 +256,17 @@ class JsonStateStore final : public IStateStore {
     }
 
     std::filesystem::path path_;
+    ResourceLimits limits_;
 };
 
 } // namespace
 
 std::shared_ptr<IStateStore> createJsonStateStore(const std::filesystem::path& path) {
-    return std::make_shared<JsonStateStore>(path);
+    return createJsonStateStore(path, ResourceLimits{});
+}
+
+std::shared_ptr<IStateStore> createJsonStateStore(const std::filesystem::path& path, const ResourceLimits& limits) {
+    return std::make_shared<JsonStateStore>(path, limits);
 }
 
 } // namespace autoupdater

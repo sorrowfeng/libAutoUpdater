@@ -2,19 +2,15 @@
 
 #ifdef LIBAUTOUPDATER_HAS_CURL
 
-#include "util/PathUtil.h"
-#include "util/UrlUtil.h"
+#include "NetworkLimits.h"
+#include "default/LocalNetworkFile.h"
 
 #include <curl/curl.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <mutex>
-#include <sstream>
 #include <utility>
 
 namespace autoupdater {
@@ -62,100 +58,13 @@ bool isHttpUrl(const std::string& url) {
     return scheme == "http" || scheme == "https";
 }
 
-Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
-    if (util::isFileUrl(url)) {
-        return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
-    }
-    return Result<std::filesystem::path>::fail(
-        {ErrorCode::NetworkError, "curl accepts only HTTP, HTTPS, and explicit file: URLs"});
-}
-
-Result<TextResponse> readLocalText(const std::string& url, CancellationToken& cancel) {
-    if (cancel.isCancelled()) {
-        return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-    }
-    auto path = localPathFromUrl(url);
-    if (!path) {
-        return Result<TextResponse>::fail(path.error());
-    }
-    try {
-        std::ifstream input(path.value(), std::ios::binary);
-        if (!input) {
-            return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
-        }
-        std::ostringstream stream;
-        stream << input.rdbuf();
-        if (input.bad()) {
-            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-        }
-        TextResponse response;
-        response.response.statusCode = 200;
-        response.response.effectiveUrl = url;
-        response.body = stream.str();
-        return Result<TextResponse>::ok(std::move(response));
-    } catch (...) {
-        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
-    }
-}
-
-Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& target,
-                                       const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                       CancellationToken& cancel) {
-    auto source = localPathFromUrl(url);
-    if (!source) {
-        return Result<DownloadResult>::fail(source.error());
-    }
-    try {
-        std::error_code ec;
-        const auto total = std::filesystem::file_size(source.value(), ec);
-        if (ec) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
-        }
-        std::ifstream input(source.value(), std::ios::binary);
-        if (resume && resume->offset > 0) {
-            input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
-        }
-        if (!input) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
-        }
-
-        std::array<char, 64 * 1024> buffer{};
-        std::uint64_t written = resume ? resume->offset : 0;
-        while (input) {
-            if (cancel.isCancelled()) {
-                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
-            }
-            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const auto count = input.gcount();
-            if (count > 0) {
-                auto write = target.write(buffer.data(), static_cast<std::size_t>(count));
-                if (!write) {
-                    return Result<DownloadResult>::fail(write.error());
-                }
-                written += static_cast<std::uint64_t>(count);
-                if (progress) {
-                    progress({written, static_cast<std::uint64_t>(total), {}});
-                }
-            }
-        }
-        if (input.bad()) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
-        }
-
-        DownloadResult result;
-        result.response.statusCode = 200;
-        result.response.effectiveUrl = url;
-        result.bytesWritten = written;
-        return Result<DownloadResult>::ok(std::move(result));
-    } catch (...) {
-        return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to copy local source"});
-    }
-}
-
 struct TextContext {
     std::string data;
     NetworkResponseInfo response;
     Error callbackError;
+    std::uint64_t downloaded = 0;
+    std::uint64_t maxResponseBytes = 0;
+    bool discardedResponseBody = false;
     CancellationToken* cancel = nullptr;
 };
 
@@ -165,12 +74,22 @@ struct FileContext {
     std::string currentFile;
     std::uint64_t downloaded = 0;
     std::uint64_t total = 0;
+    std::uint64_t maxTotalBytes = 0;
     int writableStatus = 200;
     NetworkResponseInfo response;
     Error callbackError;
     Error writeError;
     bool discardedResponseBody = false;
     CancellationToken* cancel = nullptr;
+};
+
+struct HeaderContext {
+    NetworkResponseInfo* response = nullptr;
+    Error* callbackError = nullptr;
+    std::uint64_t maxBodyBytes = 0;
+    int writableStatus = 200;
+    ErrorCode invalidHeaderCode = ErrorCode::NetworkError;
+    std::uint64_t headerBytes = 0;
 };
 
 bool byteCount(std::size_t size, std::size_t nmemb, std::size_t& bytes) noexcept {
@@ -180,6 +99,9 @@ bool byteCount(std::size_t size, std::size_t nmemb, std::size_t& bytes) noexcept
     bytes = size * nmemb;
     return true;
 }
+
+static_assert(std::numeric_limits<std::size_t>::digits <= std::numeric_limits<std::uint64_t>::digits,
+              "curl callback byte counts must fit in uint64_t");
 
 bool parseStatusLine(const std::string& line, int& status) {
     if (line.rfind("HTTP/", 0) != 0) {
@@ -221,6 +143,50 @@ std::string responseHeader(const NetworkResponseInfo& response, const std::strin
     return {};
 }
 
+bool equalsAsciiCaseInsensitive(const std::string& value, const char* expected) {
+    const std::string expectedValue(expected);
+    if (value.size() != expectedValue.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(value[index])) !=
+            std::tolower(static_cast<unsigned char>(expectedValue[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Result<void> validateIdentityContentEncoding(const NetworkResponseInfo& response, ErrorCode invalidHeaderCode) {
+    for (const auto& header : response.headers) {
+        if (header.name == "content-encoding" && !equalsAsciiCaseInsensitive(header.value, "identity")) {
+            return Result<void>::fail(
+                {invalidHeaderCode, "Encoded HTTP response bodies are not accepted for byte-exact transfers"});
+        }
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validateCompletedBody(const NetworkResponseInfo& response, std::uint64_t actualBytes,
+                                   std::uint64_t maxBytes, ErrorCode invalidHeaderCode) {
+    auto identityEncoding = validateIdentityContentEncoding(response, invalidHeaderCode);
+    if (!identityEncoding) {
+        return identityEncoding;
+    }
+    auto budget = detail::validateResponseBodyBudget(response, actualBytes, maxBytes, invalidHeaderCode);
+    if (!budget) {
+        return budget;
+    }
+    auto declared = detail::declaredContentLength(response, invalidHeaderCode);
+    if (!declared) {
+        return Result<void>::fail(declared.error());
+    }
+    if (declared.value() && *declared.value() != actualBytes) {
+        return Result<void>::fail({invalidHeaderCode, "Content-Length does not match the received response body"});
+    }
+    return Result<void>::ok();
+}
+
 std::size_t writeText(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
     auto* context = static_cast<TextContext*>(userdata);
     if (context->cancel && context->cancel->isCancelled()) {
@@ -228,11 +194,33 @@ std::size_t writeText(char* ptr, std::size_t size, std::size_t nmemb, void* user
     }
     std::size_t bytes = 0;
     if (!byteCount(size, nmemb, bytes)) {
-        context->callbackError = {ErrorCode::NetworkError, "HTTP response chunk is too large"};
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response chunk is too large"};
+        return 0;
+    }
+    if (context->response.statusCode != 200) {
+        context->discardedResponseBody = true;
+        return 0;
+    }
+
+    const auto chunkBytes = static_cast<std::uint64_t>(bytes);
+    if (context->downloaded > context->maxResponseBytes ||
+        chunkBytes > context->maxResponseBytes - context->downloaded) {
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response body exceeds its byte limit"};
+        return 0;
+    }
+    std::uint64_t nextDownloaded = 0;
+    if (!detail::checkedAdd(context->downloaded, chunkBytes, nextDownloaded)) {
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response byte counter overflow"};
         return 0;
     }
     try {
+        if (bytes > context->data.max_size() - context->data.size()) {
+            context->callbackError = {ErrorCode::ResourceLimitExceeded,
+                                      "HTTP response body exceeds the supported string size"};
+            return 0;
+        }
         context->data.append(ptr, bytes);
+        context->downloaded = nextDownloaded;
     } catch (...) {
         context->callbackError = {ErrorCode::NetworkError, "Failed to buffer HTTP response body"};
         return 0;
@@ -247,12 +235,23 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
     }
     std::size_t bytes = 0;
     if (!byteCount(size, nmemb, bytes)) {
-        context->callbackError = {ErrorCode::DownloadFailed, "HTTP response chunk is too large"};
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response chunk is too large"};
         return 0;
     }
 
     if (context->response.statusCode != context->writableStatus) {
         context->discardedResponseBody = true;
+        return 0;
+    }
+
+    const auto chunkBytes = static_cast<std::uint64_t>(bytes);
+    if (context->downloaded > context->maxTotalBytes || chunkBytes > context->maxTotalBytes - context->downloaded) {
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "Artifact response exceeds its signed byte limit"};
+        return 0;
+    }
+    std::uint64_t nextDownloaded = 0;
+    if (!detail::checkedAdd(context->downloaded, chunkBytes, nextDownloaded)) {
+        context->callbackError = {ErrorCode::ResourceLimitExceeded, "Artifact byte counter overflow"};
         return 0;
     }
 
@@ -262,7 +261,7 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
             context->writeError = written.error();
             return 0;
         }
-        context->downloaded += static_cast<std::uint64_t>(bytes);
+        context->downloaded = nextDownloaded;
         if (context->progress) {
             context->progress({context->downloaded, context->total, context->currentFile});
         }
@@ -274,11 +273,19 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
 }
 
 std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
-    auto* response = static_cast<NetworkResponseInfo*>(userdata);
+    auto* context = static_cast<HeaderContext*>(userdata);
     std::size_t bytes = 0;
     if (!byteCount(size, nmemb, bytes)) {
+        *context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response header is too large"};
         return 0;
     }
+    const auto lineBytes = static_cast<std::uint64_t>(bytes);
+    if (context->headerBytes > detail::kMaxNetworkResponseHeaderBytes ||
+        lineBytes > detail::kMaxNetworkResponseHeaderBytes - context->headerBytes) {
+        *context->callbackError = {ErrorCode::ResourceLimitExceeded, "HTTP response headers exceed their byte limit"};
+        return 0;
+    }
+    context->headerBytes += lineBytes;
     try {
         std::string line(ptr, bytes);
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
@@ -287,8 +294,25 @@ std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* us
 
         int status = 0;
         if (parseStatusLine(line, status)) {
-            response->statusCode = status;
-            response->headers.clear();
+            context->response->statusCode = status;
+            context->response->headers.clear();
+            return bytes;
+        }
+
+        if (line.empty()) {
+            if (context->response->statusCode == context->writableStatus) {
+                auto identityEncoding = validateIdentityContentEncoding(*context->response, context->invalidHeaderCode);
+                if (!identityEncoding) {
+                    *context->callbackError = identityEncoding.error();
+                    return 0;
+                }
+                auto valid = detail::validateResponseBodyBudget(*context->response, 0, context->maxBodyBytes,
+                                                                context->invalidHeaderCode);
+                if (!valid) {
+                    *context->callbackError = valid.error();
+                    return 0;
+                }
+            }
             return bytes;
         }
 
@@ -299,9 +323,10 @@ std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* us
             std::transform(key.begin(), key.end(), key.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             trimOptionalWhitespace(value);
-            response->headers.push_back({std::move(key), std::move(value)});
+            context->response->headers.push_back({std::move(key), std::move(value)});
         }
     } catch (...) {
+        *context->callbackError = {context->invalidHeaderCode, "Failed to process HTTP response headers"};
         return 0;
     }
     return bytes;
@@ -313,6 +338,11 @@ void applyCommonOptions(CURL* curl, const NetworkOptions& options) {
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
 #else
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#endif
+#if LIBCURL_VERSION_NUM >= 0x071506
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "identity");
+#else
+    curl_easy_setopt(curl, CURLOPT_ENCODING, "identity");
 #endif
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(options.connectTimeout.count()));
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(options.transferTimeout.count()));
@@ -334,24 +364,27 @@ void populateResponseInfo(CURL* curl, NetworkResponseInfo& response) {
 
 class CurlNetworkClient final : public INetworkClient {
   public:
-    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options, std::uint64_t maxResponseBytes,
                                  CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
-            return readLocalText(url, cancel);
+            return detail::readLocalText(url, maxResponseBytes, cancel);
         }
         try {
             ensureCurlGlobalInit();
             TextContext context;
+            context.maxResponseBytes = maxResponseBytes;
             CurlEasyHandle curl;
             if (!curl) {
                 return Result<TextResponse>::fail({ErrorCode::NetworkError, "curl_easy_init failed"});
             }
             context.cancel = &cancel;
+            HeaderContext headerContext{&context.response, &context.callbackError, maxResponseBytes, 200,
+                                        ErrorCode::NetworkError};
             curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, writeText);
             curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &context);
             curl_easy_setopt(curl.get(), CURLOPT_HEADERFUNCTION, writeHeader);
-            curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &context.response);
+            curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &headerContext);
             applyCommonOptions(curl.get(), options);
 
             const CURLcode code = curl_easy_perform(curl.get());
@@ -363,7 +396,16 @@ class CurlNetworkClient final : public INetworkClient {
             if (!context.callbackError.ok()) {
                 return Result<TextResponse>::fail(context.callbackError);
             }
-            if (code != CURLE_OK) {
+            const bool stoppedAfterHeaders =
+                context.discardedResponseBody && code == CURLE_WRITE_ERROR && context.response.statusCode != 0;
+            if (context.response.statusCode == 200) {
+                auto valid = validateCompletedBody(context.response, context.downloaded, maxResponseBytes,
+                                                   ErrorCode::NetworkError);
+                if (!valid) {
+                    return Result<TextResponse>::fail(valid.error());
+                }
+            }
+            if (code != CURLE_OK && !stoppedAfterHeaders) {
                 return Result<TextResponse>::fail({ErrorCode::NetworkError, curl_easy_strerror(code)});
             }
             TextResponse response;
@@ -376,11 +418,11 @@ class CurlNetworkClient final : public INetworkClient {
     }
 
     Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
-                                          const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
-                                          CancellationToken& cancel) noexcept override {
+                                          std::uint64_t maxTotalBytes, const std::optional<DownloadResumeInfo>& resume,
+                                          ProgressCallback progress, CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             const auto effectiveResume = options.enableResume ? resume : std::nullopt;
-            return copyLocalToFile(url, target, effectiveResume, std::move(progress), cancel);
+            return detail::copyLocalToFile(url, target, maxTotalBytes, effectiveResume, std::move(progress), cancel);
         }
         try {
             ensureCurlGlobalInit();
@@ -393,15 +435,24 @@ class CurlNetworkClient final : public INetworkClient {
             context.output = &target;
             context.progress = std::move(progress);
             const bool appending = options.enableResume && resume && resume->offset > 0;
-            context.downloaded = appending ? resume->offset : 0;
+            const auto initialBytes = appending ? resume->offset : 0;
+            auto remaining = detail::remainingTransferBudget(initialBytes, maxTotalBytes);
+            if (!remaining) {
+                return Result<DownloadResult>::fail(remaining.error());
+            }
+            context.downloaded = initialBytes;
+            context.total = maxTotalBytes;
+            context.maxTotalBytes = maxTotalBytes;
             context.writableStatus = appending ? 206 : 200;
             context.cancel = &cancel;
+            HeaderContext headerContext{&context.response, &context.callbackError, remaining.value(),
+                                        context.writableStatus, ErrorCode::DownloadFailed};
 
             curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, writeFile);
             curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &context);
             curl_easy_setopt(curl.get(), CURLOPT_HEADERFUNCTION, writeHeader);
-            curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &context.response);
+            curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &headerContext);
             applyCommonOptions(curl.get(), options);
 
             struct curl_slist* headers = nullptr;
@@ -432,12 +483,20 @@ class CurlNetworkClient final : public INetworkClient {
             if (!context.callbackError.ok()) {
                 return Result<DownloadResult>::fail(context.callbackError);
             }
+            if (!context.writeError.ok()) {
+                return Result<DownloadResult>::fail(context.writeError);
+            }
             const bool stoppedAfterHeaders =
                 context.discardedResponseBody && code == CURLE_WRITE_ERROR && context.response.statusCode != 0;
-            if (code != CURLE_OK && !stoppedAfterHeaders) {
-                if (!context.writeError.ok()) {
-                    return Result<DownloadResult>::fail(context.writeError);
+            if (context.response.statusCode == context.writableStatus) {
+                const auto actualBytes = context.downloaded - initialBytes;
+                auto valid =
+                    validateCompletedBody(context.response, actualBytes, remaining.value(), ErrorCode::DownloadFailed);
+                if (!valid) {
+                    return Result<DownloadResult>::fail(valid.error());
                 }
+            }
+            if (code != CURLE_OK && !stoppedAfterHeaders) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, curl_easy_strerror(code)});
             }
 

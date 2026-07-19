@@ -25,6 +25,9 @@ void testNetworkDownloadRestoresBodiesWrittenByRedirects();
 void testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus();
 void testNetworkDownloadRestartsIgnoredHttpResume();
 void testNetworkDownloadPreservesLocalFileResume();
+void testNetworkResourceLimits();
+void testJsonResourceLimits();
+void testManifestAndSignatureResourceLimits();
 void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
 void testApplyPlanRoundTrip();
@@ -73,6 +76,9 @@ int main() {
          testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus},
         {"NetworkDownloadRestartsIgnoredHttpResume", testNetworkDownloadRestartsIgnoredHttpResume},
         {"NetworkDownloadPreservesLocalFileResume", testNetworkDownloadPreservesLocalFileResume},
+        {"NetworkResourceLimits", testNetworkResourceLimits},
+        {"JsonResourceLimits", testJsonResourceLimits},
+        {"ManifestAndSignatureResourceLimits", testManifestAndSignatureResourceLimits},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},

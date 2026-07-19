@@ -76,7 +76,7 @@ likelihood of affecting production update flows.
     - The effective URL of every network request satisfies the same policy as
       the original URL.
 
-- [ ] **AU-004 — Add hard resource budgets to all untrusted input paths**
+- [x] **AU-004 — Add hard resource budgets to all untrusted input paths**
   - Classification: Verified security issue; medium severity; CWE-400/CWE-674.
   - Key code: `include/libAutoUpdater/Config.h:19-25`,
     `src/ManifestFetcher.cpp:12-29`, `src/util/Json.cpp:33-127`,

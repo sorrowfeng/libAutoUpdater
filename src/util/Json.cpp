@@ -1,7 +1,9 @@
 #include "util/Json.h"
 
 #include <cctype>
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace autoupdater::util {
@@ -14,11 +16,11 @@ const Json::Array kEmptyArray;
 
 class Parser {
   public:
-    explicit Parser(const std::string& input) : input_(input) {}
+    Parser(const std::string& input, const JsonResourceLimits& limits) : input_(input), limits_(limits) {}
 
     Result<Json> parse() {
         skipWhitespace();
-        auto value = parseValue();
+        auto value = parseValue(1);
         if (!value) {
             return value;
         }
@@ -30,8 +32,15 @@ class Parser {
     }
 
   private:
-    Result<Json> parseValue() {
+    Result<Json> parseValue(std::size_t depth) {
         skipWhitespace();
+        if (depth > limits_.maxDepth) {
+            return limit("JSON depth limit exceeded");
+        }
+        if (nodeCount_ >= limits_.maxNodes) {
+            return limit("JSON node limit exceeded");
+        }
+        ++nodeCount_;
         if (pos_ >= input_.size()) {
             return fail("Unexpected end of JSON");
         }
@@ -45,10 +54,10 @@ class Parser {
             return Result<Json>::ok(Json(value.value()));
         }
         if (c == '{') {
-            return parseObject();
+            return parseObject(depth);
         }
         if (c == '[') {
-            return parseArray();
+            return parseArray(depth);
         }
         if (c == '-' || std::isdigit(static_cast<unsigned char>(c))) {
             return parseNumber();
@@ -65,15 +74,20 @@ class Parser {
         return fail("Invalid JSON value");
     }
 
-    Result<Json> parseObject() {
+    Result<Json> parseObject(std::size_t depth) {
         ++pos_;
         Json::Object object;
+        std::size_t entryCount = 0;
         skipWhitespace();
         if (consume('}')) {
             return Result<Json>::ok(Json(std::move(object)));
         }
 
         while (true) {
+            if (entryCount >= limits_.maxContainerEntries) {
+                return limit("JSON object entry limit exceeded");
+            }
+            ++entryCount;
             skipWhitespace();
             if (pos_ >= input_.size() || input_[pos_] != '"') {
                 return fail("Expected object key");
@@ -86,7 +100,10 @@ class Parser {
             if (!consume(':')) {
                 return fail("Expected ':' after object key");
             }
-            auto value = parseValue();
+            if (depth >= limits_.maxDepth) {
+                return limit("JSON depth limit exceeded");
+            }
+            auto value = parseValue(depth + 1);
             if (!value) {
                 return value;
             }
@@ -102,7 +119,7 @@ class Parser {
         return Result<Json>::ok(Json(std::move(object)));
     }
 
-    Result<Json> parseArray() {
+    Result<Json> parseArray(std::size_t depth) {
         ++pos_;
         Json::Array array;
         skipWhitespace();
@@ -111,7 +128,13 @@ class Parser {
         }
 
         while (true) {
-            auto value = parseValue();
+            if (array.size() >= limits_.maxContainerEntries) {
+                return limit("JSON array entry limit exceeded");
+            }
+            if (depth >= limits_.maxDepth) {
+                return limit("JSON depth limit exceeded");
+            }
+            auto value = parseValue(depth + 1);
             if (!value) {
                 return value;
             }
@@ -139,6 +162,9 @@ class Parser {
             ++pos_;
         } else if (std::isdigit(static_cast<unsigned char>(input_[pos_]))) {
             while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) {
+                if (pos_ - start >= limits_.maxNumberBytes) {
+                    return limit("JSON number length limit exceeded");
+                }
                 ++pos_;
             }
         } else {
@@ -151,6 +177,9 @@ class Parser {
                 return fail("Invalid number fraction");
             }
             while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) {
+                if (pos_ - start >= limits_.maxNumberBytes) {
+                    return limit("JSON number length limit exceeded");
+                }
                 ++pos_;
             }
         }
@@ -164,11 +193,17 @@ class Parser {
                 return fail("Invalid number exponent");
             }
             while (pos_ < input_.size() && std::isdigit(static_cast<unsigned char>(input_[pos_]))) {
+                if (pos_ - start >= limits_.maxNumberBytes) {
+                    return limit("JSON number length limit exceeded");
+                }
                 ++pos_;
             }
         }
 
         try {
+            if (pos_ - start > limits_.maxNumberBytes) {
+                return limit("JSON number length limit exceeded");
+            }
             const auto text = input_.substr(start, pos_ - start);
             return Result<Json>::ok(Json(std::stod(text)));
         } catch (...) {
@@ -193,42 +228,63 @@ class Parser {
                 const char esc = input_[pos_++];
                 switch (esc) {
                 case '"':
-                    out.push_back('"');
+                    if (!append(out, '"')) {
+                        return stringLimit();
+                    }
                     break;
                 case '\\':
-                    out.push_back('\\');
+                    if (!append(out, '\\')) {
+                        return stringLimit();
+                    }
                     break;
                 case '/':
-                    out.push_back('/');
+                    if (!append(out, '/')) {
+                        return stringLimit();
+                    }
                     break;
                 case 'b':
-                    out.push_back('\b');
+                    if (!append(out, '\b')) {
+                        return stringLimit();
+                    }
                     break;
                 case 'f':
-                    out.push_back('\f');
+                    if (!append(out, '\f')) {
+                        return stringLimit();
+                    }
                     break;
                 case 'n':
-                    out.push_back('\n');
+                    if (!append(out, '\n')) {
+                        return stringLimit();
+                    }
                     break;
                 case 'r':
-                    out.push_back('\r');
+                    if (!append(out, '\r')) {
+                        return stringLimit();
+                    }
                     break;
                 case 't':
-                    out.push_back('\t');
+                    if (!append(out, '\t')) {
+                        return stringLimit();
+                    }
                     break;
                 case 'u':
                     if (pos_ + 4 > input_.size()) {
                         return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Invalid unicode escape"});
                     }
+                    if (limits_.maxStringBytes - out.size() < 6) {
+                        return stringLimit();
+                    }
                     out.append("\\u");
-                    out.append(input_.substr(pos_, 4));
+                    out.append(input_, pos_, 4);
                     pos_ += 4;
                     break;
                 default:
                     return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Invalid string escape"});
                 }
             } else {
-                out.push_back(c);
+                if (!append(out, c)) {
+                    return stringLimit();
+                }
             }
         }
         return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Unterminated string"});
@@ -261,12 +317,79 @@ class Parser {
         return Result<Json>::fail({ErrorCode::ManifestParseFailed, message});
     }
 
+    Result<Json> limit(const std::string& message) const {
+        return Result<Json>::fail({ErrorCode::ResourceLimitExceeded, message});
+    }
+
+    bool append(std::string& output, char value) const {
+        if (output.size() >= limits_.maxStringBytes) {
+            return false;
+        }
+        output.push_back(value);
+        return true;
+    }
+
+    Result<std::string> stringLimit() const {
+        return Result<std::string>::fail({ErrorCode::ResourceLimitExceeded, "JSON string limit exceeded"});
+    }
+
     const std::string& input_;
+    const JsonResourceLimits& limits_;
     std::size_t pos_ = 0;
+    std::size_t nodeCount_ = 0;
 };
 
 std::string indentText(int depth) {
     return std::string(static_cast<std::size_t>(depth), ' ');
+}
+
+Result<void> validateValueResources(const Json& value, const JsonResourceLimits& limits, std::size_t depth,
+                                    std::size_t& nodes) {
+    if (depth > limits.maxDepth) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON depth limit exceeded"});
+    }
+    if (nodes >= limits.maxNodes) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON node limit exceeded"});
+    }
+    ++nodes;
+
+    if (value.isString()) {
+        if (value.asString().size() > limits.maxStringBytes) {
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON string limit exceeded"});
+        }
+    } else if (value.isArray()) {
+        const auto& array = value.asArray();
+        if (array.size() > limits.maxContainerEntries) {
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON array entry limit exceeded"});
+        }
+        for (const auto& item : array) {
+            if (depth >= limits.maxDepth) {
+                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON depth limit exceeded"});
+            }
+            auto valid = validateValueResources(item, limits, depth + 1, nodes);
+            if (!valid) {
+                return valid;
+            }
+        }
+    } else if (value.isObject()) {
+        const auto& object = value.asObject();
+        if (object.size() > limits.maxContainerEntries) {
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON object entry limit exceeded"});
+        }
+        for (const auto& item : object) {
+            if (item.first.size() > limits.maxStringBytes) {
+                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON string limit exceeded"});
+            }
+            if (depth >= limits.maxDepth) {
+                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "JSON depth limit exceeded"});
+            }
+            auto valid = validateValueResources(item.second, limits, depth + 1, nodes);
+            if (!valid) {
+                return valid;
+            }
+        }
+    }
+    return Result<void>::ok();
 }
 
 void stringifyInto(std::ostringstream& stream, const Json& value, int indent, int depth) {
@@ -276,7 +399,10 @@ void stringifyInto(std::ostringstream& stream, const Json& value, int indent, in
         stream << (value.asBool() ? "true" : "false");
     } else if (value.isNumber()) {
         const double number = value.asNumber();
-        if (number == static_cast<std::int64_t>(number)) {
+        const auto int64Lower = static_cast<double>(std::numeric_limits<std::int64_t>::min());
+        const auto int64UpperExclusive = -int64Lower;
+        if (std::isfinite(number) && std::floor(number) == number && number >= int64Lower &&
+            number < int64UpperExclusive) {
             stream << static_cast<std::int64_t>(number);
         } else {
             stream << std::setprecision(15) << number;
@@ -333,11 +459,34 @@ Json::Json(const char* value) : storage_(std::string(value)) {}
 Json::Json(Object value) : storage_(std::move(value)) {}
 Json::Json(Array value) : storage_(std::move(value)) {}
 
-Result<Json> Json::parse(const std::string& text) noexcept {
+Result<Json> Json::parse(const std::string& text, const JsonResourceLimits& limits) noexcept {
     try {
-        return Parser(text).parse();
+        if (limits.maxDepth > JsonResourceLimits::absoluteMaxDepth ||
+            limits.maxNodes > JsonResourceLimits::absoluteMaxNodes ||
+            limits.maxStringBytes > JsonResourceLimits::absoluteMaxStringBytes ||
+            limits.maxNumberBytes > JsonResourceLimits::absoluteMaxNumberBytes ||
+            limits.maxContainerEntries > JsonResourceLimits::absoluteMaxContainerEntries) {
+            return Result<Json>::fail({ErrorCode::InvalidConfig, "JSON resource limit exceeds the safety ceiling"});
+        }
+        return Parser(text, limits).parse();
     } catch (...) {
         return Result<Json>::fail({ErrorCode::ManifestParseFailed, "Unexpected JSON parser failure"});
+    }
+}
+
+Result<void> Json::validateResourceUsage(const Json& value, const JsonResourceLimits& limits) noexcept {
+    try {
+        if (limits.maxDepth > JsonResourceLimits::absoluteMaxDepth ||
+            limits.maxNodes > JsonResourceLimits::absoluteMaxNodes ||
+            limits.maxStringBytes > JsonResourceLimits::absoluteMaxStringBytes ||
+            limits.maxNumberBytes > JsonResourceLimits::absoluteMaxNumberBytes ||
+            limits.maxContainerEntries > JsonResourceLimits::absoluteMaxContainerEntries) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "JSON resource limit exceeds the safety ceiling"});
+        }
+        std::size_t nodes = 0;
+        return validateValueResources(value, limits, 1, nodes);
+    } catch (...) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Failed to validate JSON resource usage"});
     }
 }
 
@@ -369,7 +518,16 @@ double Json::asNumber(double fallback) const noexcept {
 }
 
 std::int64_t Json::asInt(std::int64_t fallback) const noexcept {
-    return isNumber() ? static_cast<std::int64_t>(std::get<double>(storage_)) : fallback;
+    if (!isNumber()) {
+        return fallback;
+    }
+    const double value = std::get<double>(storage_);
+    if (!std::isfinite(value) || std::floor(value) != value ||
+        value < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+        value >= -static_cast<double>(std::numeric_limits<std::int64_t>::min())) {
+        return fallback;
+    }
+    return static_cast<std::int64_t>(value);
 }
 
 const std::string& Json::asString() const noexcept {

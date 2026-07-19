@@ -40,6 +40,19 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnve
     plan.restartCommand = config.restartCommand;
     plan.operations = decision.operations;
 
+    const auto json = plan.toJson();
+    if (json.size() > config.resources.maxApplyPlanBytes) {
+        return Result<WrittenApplyPlan>::fail(
+            {ErrorCode::ResourceLimitExceeded, "Generated apply plan exceeds its byte limit"});
+    }
+    // Keep the producer and the external updater on the same resource and
+    // schema contract. In particular, planning can merge independently
+    // bounded manifest arrays into one operations array.
+    auto validatedPlan = ApplyPlan::parse(json, config.resources);
+    if (!validatedPlan) {
+        return Result<WrittenApplyPlan>::fail(validatedPlan.error());
+    }
+
     const auto planPath = config.tempDir / "apply-plan.json";
     auto root = fileSystem.openRoot(config.tempDir, RootAccess::ReadWrite, true);
     if (!root) {
@@ -62,7 +75,6 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnve
     if (!temporary) {
         return Result<WrittenApplyPlan>::fail(temporary.error());
     }
-    const auto json = plan.toJson();
     auto write = temporary.value()->file().write(json.data(), json.size());
     if (!write) {
         return Result<WrittenApplyPlan>::fail(write.error());

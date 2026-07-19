@@ -3,6 +3,8 @@
 #include "util/Json.h"
 #include "util/PathUtil.h"
 
+#include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace autoupdater {
@@ -51,11 +53,46 @@ void addString(util::Json::Object& object, const std::string& key, const std::st
     }
 }
 
+Result<std::uint64_t> artifactSize(const util::Json& object, const ResourceLimits& limits) {
+    const auto* value = object.get("size");
+    if (!value || !value->isNumber()) {
+        return Result<std::uint64_t>::fail({ErrorCode::ManifestParseFailed, "file size is required"});
+    }
+    const double number = value->asNumber();
+    constexpr double kLargestExactlyRepresentableInteger = 9007199254740991.0;
+    if (!std::isfinite(number) || number < 0 || number > kLargestExactlyRepresentableInteger ||
+        std::floor(number) != number) {
+        return Result<std::uint64_t>::fail(
+            {ErrorCode::ManifestParseFailed, "file size must be a non-negative exact integer"});
+    }
+    const auto parsed = static_cast<std::uint64_t>(number);
+    if (parsed > limits.maxArtifactBytes) {
+        return Result<std::uint64_t>::fail(
+            {ErrorCode::ResourceLimitExceeded, "Artifact exceeds the per-file byte limit"});
+    }
+    return Result<std::uint64_t>::ok(parsed);
+}
+
+bool checkedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t& result) {
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return false;
+    }
+    result = left + right;
+    return true;
+}
+
 } // namespace
 
 Result<Manifest> Manifest::parse(const std::string& jsonText) noexcept {
+    return parse(jsonText, ResourceLimits{});
+}
+
+Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimits& limits) noexcept {
     try {
-        auto json = util::Json::parse(jsonText);
+        if (jsonText.size() > limits.maxManifestBytes) {
+            return Result<Manifest>::fail({ErrorCode::ResourceLimitExceeded, "Manifest exceeds its byte limit"});
+        }
+        auto json = util::Json::parse(jsonText, limits.json);
         if (!json) {
             return Result<Manifest>::fail(json.error());
         }
@@ -64,14 +101,15 @@ Result<Manifest> Manifest::parse(const std::string& jsonText) noexcept {
         }
 
         Manifest manifest;
+        std::uint64_t totalArtifactBytes = 0;
         const auto* schema = json.value().get("schemaVersion");
         if (!schema || !schema->isNumber()) {
             return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "schemaVersion is required"});
         }
-        manifest.schemaVersion = static_cast<int>(schema->asInt());
-        if (manifest.schemaVersion != kSupportedManifestSchema) {
+        if (schema->asInt() != kSupportedManifestSchema) {
             return Result<Manifest>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported manifest schemaVersion"});
         }
+        manifest.schemaVersion = kSupportedManifestSchema;
 
         auto versionText = requiredString(json.value(), "version");
         if (!versionText) {
@@ -129,11 +167,18 @@ Result<Manifest> Manifest::parse(const std::string& jsonText) noexcept {
                 file.path = path.value();
                 file.localPath = optionalString(item, "localPath");
                 file.sha256 = sha.value();
-                const auto* size = item.get("size");
-                if (!size || !size->isNumber()) {
-                    return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "file size is required"});
+                auto size = artifactSize(item, limits);
+                if (!size) {
+                    return Result<Manifest>::fail(size.error());
                 }
-                file.size = static_cast<std::uint64_t>(size->asNumber());
+                file.size = size.value();
+                std::uint64_t updatedTotal = 0;
+                if (!checkedAdd(totalArtifactBytes, file.size, updatedTotal) ||
+                    updatedTotal > limits.maxTotalArtifactBytes) {
+                    return Result<Manifest>::fail(
+                        {ErrorCode::ResourceLimitExceeded, "Manifest artifacts exceed the total byte limit"});
+                }
+                totalArtifactBytes = updatedTotal;
 
                 auto validPath = util::validateManagedPath(file.path);
                 if (!validPath) {
@@ -218,8 +263,16 @@ std::string Manifest::toJson() const {
 }
 
 Result<IndexManifest> IndexManifest::parse(const std::string& jsonText) noexcept {
+    return parse(jsonText, ResourceLimits{});
+}
+
+Result<IndexManifest> IndexManifest::parse(const std::string& jsonText, const ResourceLimits& limits) noexcept {
     try {
-        auto json = util::Json::parse(jsonText);
+        if (jsonText.size() > limits.maxIndexBytes) {
+            return Result<IndexManifest>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Index manifest exceeds its byte limit"});
+        }
+        auto json = util::Json::parse(jsonText, limits.json);
         if (!json) {
             return Result<IndexManifest>::fail(json.error());
         }
@@ -232,11 +285,11 @@ Result<IndexManifest> IndexManifest::parse(const std::string& jsonText) noexcept
         if (!schema || !schema->isNumber()) {
             return Result<IndexManifest>::fail({ErrorCode::ManifestParseFailed, "schemaVersion is required"});
         }
-        manifest.schemaVersion = static_cast<int>(schema->asInt());
-        if (manifest.schemaVersion != kSupportedManifestSchema) {
+        if (schema->asInt() != kSupportedManifestSchema) {
             return Result<IndexManifest>::fail(
                 {ErrorCode::UnsupportedManifestSchema, "Unsupported index manifest schemaVersion"});
         }
+        manifest.schemaVersion = kSupportedManifestSchema;
         manifest.appId = optionalString(json.value(), "appId");
         manifest.channel = optionalString(json.value(), "channel");
         manifest.generatedAt = optionalString(json.value(), "generatedAt");
