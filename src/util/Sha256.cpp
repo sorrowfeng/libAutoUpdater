@@ -3,6 +3,7 @@
 #include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 
 #include <array>
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -160,6 +161,12 @@ std::string sha256Bytes(std::string_view data) {
     Sha256 sha;
     sha.update(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
     return toHex(sha.final());
+}
+
+bool isLowerHexSha256(std::string_view value) noexcept {
+    return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+           });
 }
 
 Result<std::string> sha256File(const std::filesystem::path& path) noexcept {

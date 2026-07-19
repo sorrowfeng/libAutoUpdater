@@ -108,7 +108,7 @@ likelihood of affecting production update flows.
       boundary produces a deterministic recoverable state.
     - Forced termination at every transaction boundary is covered by tests.
 
-- [ ] **AU-006 — Delegate public rollback to the external updater**
+- [x] **AU-006 — Delegate public rollback to the external updater**
   - Classification: Verified high-impact architecture and stability defect.
   - Key code: `src/Updater.cpp:523-574`.
   - Required work:

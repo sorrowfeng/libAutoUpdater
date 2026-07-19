@@ -6,11 +6,13 @@
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
 #include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 #include "util/PathUtil.h"
+#include "util/Sha256.h"
 
 #include <array>
 #include <chrono>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -30,6 +32,7 @@ namespace autoupdater::updater {
 namespace {
 
 constexpr std::size_t kNoOperation = (std::numeric_limits<std::size_t>::max)();
+constexpr std::uint32_t kPortablePermissionMask = 0777U;
 
 struct ObservedFile {
     bool exists = false;
@@ -50,6 +53,23 @@ Result<void> consumePlanTextBudget(const std::string& value, const ResourceLimit
 }
 
 Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLimits& limits) {
+    if (plan.schemaVersion != 1 && plan.schemaVersion != 2) {
+        return Result<void>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
+    }
+    if (plan.schemaVersion == 1 &&
+        (plan.intent != ApplyPlanIntent::Install || plan.rollbackOf.has_value())) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Apply plan schemaVersion 1 cannot contain transaction intent"});
+    }
+    if (plan.intent == ApplyPlanIntent::Rollback) {
+        if (plan.schemaVersion != 2 || !plan.rollbackOf ||
+            !util::isLowerHexSha256(plan.rollbackOf->transactionId) ||
+            !util::isLowerHexSha256(plan.rollbackOf->planDigest)) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Rollback transaction reference is invalid"});
+        }
+    } else if (plan.rollbackOf) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Install plans cannot contain rollbackOf"});
+    }
     if (plan.operations.size() > limits.json.maxContainerEntries ||
         plan.restartCommand.size() > limits.json.maxContainerEntries) {
         return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan entry limit exceeded"});
@@ -61,10 +81,18 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
     }
     for (const auto& value :
          {plan.appId, plan.fromVersion, plan.toVersion, plan.releaseId, plan.manifestSha256,
-          util::pathToUtf8(plan.installDir), util::pathToUtf8(plan.stagingDir), util::pathToUtf8(plan.backupDir)}) {
+           util::pathToUtf8(plan.installDir), util::pathToUtf8(plan.stagingDir), util::pathToUtf8(plan.backupDir)}) {
         auto valid = consumePlanTextBudget(value, limits, consumedBytes);
         if (!valid) {
             return valid;
+        }
+    }
+    if (plan.rollbackOf) {
+        for (const auto& value : {plan.rollbackOf->transactionId, plan.rollbackOf->planDigest}) {
+            auto valid = consumePlanTextBudget(value, limits, consumedBytes);
+            if (!valid) {
+                return valid;
+            }
         }
     }
     for (const auto& argument : plan.restartCommand) {
@@ -76,6 +104,16 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
 
     std::uint64_t totalArtifactBytes = 0;
     for (const auto& operation : plan.operations) {
+        auto validTarget = util::validateManagedTargetPath(operation.target);
+        if (!validTarget) {
+            return validTarget;
+        }
+        if (operation.type == ApplyOperationType::Replace) {
+            auto validSource = util::validateManagedPath(operation.source);
+            if (!validSource) {
+                return validSource;
+            }
+        }
         for (const auto& value : {operation.source, operation.target, operation.sha256}) {
             auto valid = consumePlanTextBudget(value, limits, consumedBytes);
             if (!valid) {
@@ -85,6 +123,27 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
         if (operation.size > limits.maxArtifactBytes) {
             return Result<void>::fail(
                 {ErrorCode::ResourceLimitExceeded, "Apply operation exceeds the artifact byte limit"});
+        }
+        if (operation.permissions &&
+            (operation.type != ApplyOperationType::Replace || *operation.permissions > kPortablePermissionMask)) {
+            return Result<void>::fail({ErrorCode::ApplyFailed, "Apply operation permissions are invalid"});
+        }
+        if (operation.precondition) {
+            if (plan.schemaVersion < 2 ||
+                (operation.precondition->permissions &&
+                 *operation.precondition->permissions > kPortablePermissionMask) ||
+                (operation.precondition->exists &&
+                 (!util::isLowerHexSha256(operation.precondition->sha256) ||
+                  operation.precondition->size > limits.maxArtifactBytes)) ||
+                (!operation.precondition->exists &&
+                 (operation.precondition->size != 0 || !operation.precondition->sha256.empty() ||
+                  operation.precondition->permissions))) {
+                return Result<void>::fail({ErrorCode::ApplyFailed, "Apply operation precondition is invalid"});
+            }
+            auto valid = consumePlanTextBudget(operation.precondition->sha256, limits, consumedBytes);
+            if (!valid) {
+                return valid;
+            }
         }
         if (operation.type == ApplyOperationType::Replace) {
             if (totalArtifactBytes > limits.maxTotalArtifactBytes ||
@@ -209,7 +268,23 @@ bool matchesInstalled(const ObservedFile& file, const ApplyOperation& operation)
     if (operation.type == ApplyOperationType::Remove) {
         return !file.exists;
     }
-    return matchesEvidence(file, operation.size, operation.sha256);
+    return matchesEvidence(file, operation.size, operation.sha256) &&
+           (!operation.permissions ||
+            (permissionsKnown(file.metadata.permissions) &&
+             permissionBits(file.metadata.permissions) == *operation.permissions));
+}
+
+bool matchesPrecondition(const ObservedFile& file, const ApplyOperationPrecondition& precondition) {
+    if (file.exists != precondition.exists) {
+        return false;
+    }
+    if (!precondition.exists) {
+        return true;
+    }
+    return matchesEvidence(file, precondition.size, precondition.sha256) &&
+           (!precondition.permissions ||
+            (permissionsKnown(file.metadata.permissions) &&
+             permissionBits(file.metadata.permissions) == *precondition.permissions));
 }
 
 bool matchesOriginal(const ObservedFile& file, const ApplyJournalOperation& record) {
@@ -494,6 +569,18 @@ class ApplyTransaction final {
         return Result<void>::ok();
     }
 
+    Result<std::vector<ApplyJournalOperation>> rollbackSourceRecords() {
+        if (summary_.fileState != JournalFileState::Complete) {
+            return Result<std::vector<ApplyJournalOperation>>::fail(
+                {ErrorCode::ApplyFailed, "Rollback source transaction is not complete"});
+        }
+        auto verified = verifyAppliedState();
+        if (!verified) {
+            return Result<std::vector<ApplyJournalOperation>>::fail(verified.error());
+        }
+        return loadOperationRecords();
+    }
+
   private:
     bool restartMayHaveStarted() const noexcept {
         return summary_.restartState == JournalRestartState::Intent ||
@@ -601,6 +688,11 @@ class ApplyTransaction final {
         auto original = observeFile(installRoot_, operation.target, hashProvider_);
         if (!original) {
             return Result<void>::fail(original.error());
+        }
+        if (operation.precondition && !matchesPrecondition(original.value(), *operation.precondition)) {
+            return Result<void>::fail(
+                {ErrorCode::SecurityPolicyViolation,
+                 "Managed target no longer matches the transaction precondition"});
         }
 
         ApplyJournalOperation record;
@@ -756,10 +848,13 @@ class ApplyTransaction final {
         if (!copied) {
             return failOperation(record, copied.error());
         }
-        auto permissions =
-            original.exists
-                ? temporary.value()->file().setPermissions(sanitizedFilePermissions(original.metadata.permissions))
-                : temporary.value()->file().setPermissions(defaultInstalledFilePermissions());
+        Result<void> permissions = operation.permissions
+                                       ? temporary.value()->file().setPermissions(
+                                             static_cast<std::filesystem::perms>(*operation.permissions))
+                                       : (original.exists ? temporary.value()->file().setPermissions(
+                                                                sanitizedFilePermissions(original.metadata.permissions))
+                                                          : temporary.value()->file().setPermissions(
+                                                                defaultInstalledFilePermissions()));
         if (!permissions) {
             return failOperation(record, permissions.error());
         }
@@ -1349,7 +1444,7 @@ Result<void> replayTerminalTransaction(const ApplyPlan& requestedPlan, IRootedDi
     if (!validSummary) {
         return validSummary;
     }
-    auto backupRoot = dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadWrite, true);
+    auto backupRoot = dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadOnly, false);
     if (!backupRoot) {
         return Result<void>::fail(backupRoot.error());
     }
@@ -1357,6 +1452,219 @@ Result<void> replayTerminalTransaction(const ApplyPlan& requestedPlan, IRootedDi
                                  *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits, hooks,
                                  terminal.transactionId, terminal.planDigest, summary.value());
     return transaction.replayTerminal();
+}
+
+bool samePath(const std::filesystem::path& left, const std::filesystem::path& right) {
+    return left.lexically_normal() == right.lexically_normal();
+}
+
+bool sameReference(const ApplyTransactionReference& left, const ApplyTransactionReference& right) {
+    return left.transactionId == right.transactionId && left.planDigest == right.planDigest;
+}
+
+std::filesystem::path rollbackUndoRoot(const ApplyPlan& request) {
+    return util::defaultStagingRoot(request.installDir) / "backup" / "rollback" /
+           util::pathFromUtf8(request.rollbackOf->transactionId);
+}
+
+Result<void> validateRollbackRequest(const ApplyPlan& request, const ApplyPlan& sourcePlan) {
+    if (request.schemaVersion != 2 || request.intent != ApplyPlanIntent::Rollback || !request.rollbackOf ||
+        !request.operations.empty() || !request.restartCommand.empty() || !request.toVersion.empty() ||
+        !request.manifestSha256.empty()) {
+        return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rollback request shape is invalid"});
+    }
+    if (sourcePlan.intent != ApplyPlanIntent::Install || sourcePlan.rollbackOf) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Rollback source is not a completed install transaction"});
+    }
+    if (!samePath(request.installDir, sourcePlan.installDir) ||
+        !samePath(request.stagingDir, sourcePlan.backupDir) ||
+        !samePath(request.backupDir, rollbackUndoRoot(request))) {
+        return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rollback request roots are invalid"});
+    }
+    if ((!request.appId.empty() && request.appId != sourcePlan.appId) ||
+        request.fromVersion != sourcePlan.toVersion || request.releaseId != sourcePlan.releaseId) {
+        return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rollback request metadata is invalid"});
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validateCompletedRollbackPlan(const ApplyPlan& request, const ApplyPlan& completedPlan) {
+    if (completedPlan.intent != ApplyPlanIntent::Rollback || !completedPlan.rollbackOf || !request.rollbackOf ||
+        !sameReference(*completedPlan.rollbackOf, *request.rollbackOf) ||
+        !samePath(completedPlan.installDir, request.installDir) ||
+        !samePath(completedPlan.stagingDir, request.stagingDir) ||
+        !samePath(completedPlan.backupDir, request.backupDir) ||
+        !samePath(request.backupDir, rollbackUndoRoot(request)) ||
+        (!request.appId.empty() && request.appId != completedPlan.appId) ||
+        request.fromVersion != completedPlan.fromVersion || request.releaseId != completedPlan.releaseId ||
+        !request.toVersion.empty() || !request.manifestSha256.empty()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Latest terminal transaction is not the requested rollback"});
+    }
+    return Result<void>::ok();
+}
+
+Result<void> startNewTransaction(const ApplyPlan& plan, IRootedDirectory& installRoot,
+                                 ApplyExecutorDependencies& dependencies, const ApplyExecutionHooks& hooks) {
+    auto valid = validateApplyPlanResources(plan, dependencies.limits);
+    if (!valid) {
+        return valid;
+    }
+    auto backupRoot = dependencies.fileSystem->openRoot(plan.backupDir, RootAccess::ReadWrite, true);
+    if (!backupRoot) {
+        return Result<void>::fail(backupRoot.error());
+    }
+    std::unique_ptr<IRootedDirectory> stagingRoot;
+    if (hasReplaceOperation(plan)) {
+        auto openedStaging = dependencies.fileSystem->openRoot(plan.stagingDir, RootAccess::ReadOnly, false);
+        if (!openedStaging) {
+            return Result<void>::fail(openedStaging.error());
+        }
+        stagingRoot = std::move(openedStaging.value());
+    }
+    auto planDigest = applyPlanDigest(plan);
+    if (!planDigest) {
+        return Result<void>::fail(planDigest.error());
+    }
+    auto transactionId = createApplyTransactionId(planDigest.value());
+    if (!transactionId) {
+        return Result<void>::fail(transactionId.error());
+    }
+    ApplyTransaction transaction(plan, installRoot, *backupRoot.value(), stagingRoot.get(),
+                                 *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits, hooks,
+                                 transactionId.value(), planDigest.value());
+    return transaction.start();
+}
+
+Result<ApplyPlan> deriveRollbackPlan(const ApplyPlan& request, const ApplyPlan& sourcePlan,
+                                     const std::vector<ApplyJournalOperation>& records) {
+    if (records.size() != sourcePlan.operations.size()) {
+        return Result<ApplyPlan>::fail(
+            {ErrorCode::ApplyFailed, "Rollback source operation records are incomplete"});
+    }
+    std::set<std::string> targets;
+    for (const auto& operation : sourcePlan.operations) {
+        if (!targets.insert(operation.target).second) {
+            return Result<ApplyPlan>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Rollback source contains duplicate managed targets"});
+        }
+    }
+
+    ApplyPlan rollback;
+    rollback.schemaVersion = 2;
+    rollback.intent = ApplyPlanIntent::Rollback;
+    rollback.rollbackOf = request.rollbackOf;
+    rollback.appId = sourcePlan.appId;
+    rollback.fromVersion = sourcePlan.toVersion;
+    rollback.toVersion = sourcePlan.fromVersion;
+    rollback.releaseId = sourcePlan.releaseId;
+    rollback.manifestSha256 = sourcePlan.manifestSha256;
+    rollback.installDir = sourcePlan.installDir;
+    rollback.stagingDir = sourcePlan.backupDir;
+    rollback.backupDir = request.backupDir;
+    rollback.restartCommand = sourcePlan.restartCommand;
+
+    for (auto iterator = records.rbegin(); iterator != records.rend(); ++iterator) {
+        const auto& record = *iterator;
+        if (record.index >= sourcePlan.operations.size()) {
+            return Result<ApplyPlan>::fail(
+                {ErrorCode::ApplyFailed, "Rollback source operation index is invalid"});
+        }
+        const auto& sourceOperation = sourcePlan.operations[record.index];
+        if (record.rollbackState == JournalRollbackState::NotRequired) {
+            continue;
+        }
+        ApplyOperation inverse;
+        inverse.target = sourceOperation.target;
+        if (record.originalExists) {
+            if (record.backupState != JournalBackupState::Durable) {
+                return Result<ApplyPlan>::fail(
+                    {ErrorCode::ApplyFailed, "Rollback source has no durable original backup"});
+            }
+            inverse.type = ApplyOperationType::Replace;
+            inverse.source = sourceOperation.target;
+            inverse.sha256 = record.originalSha256;
+            inverse.size = record.originalSize;
+            if (record.originalPermissionsKnown) {
+                inverse.permissions = record.originalPermissions;
+            }
+        } else {
+            inverse.type = ApplyOperationType::Remove;
+        }
+        ApplyOperationPrecondition precondition;
+        precondition.exists = sourceOperation.type == ApplyOperationType::Replace;
+        if (precondition.exists) {
+            precondition.size = sourceOperation.size;
+            precondition.sha256 = sourceOperation.sha256;
+            precondition.permissions = sourceOperation.permissions;
+        }
+        inverse.precondition = std::move(precondition);
+        rollback.operations.push_back(std::move(inverse));
+    }
+    return Result<ApplyPlan>::ok(std::move(rollback));
+}
+
+Result<void> executeRollbackRequest(const ApplyPlan& request, IRootedDirectory& installRoot,
+                                    const std::optional<ActiveTransaction>& terminal,
+                                    ApplyExecutorDependencies& dependencies, const ApplyExecutionHooks& hooks) {
+    if (request.schemaVersion != 2 || request.intent != ApplyPlanIntent::Rollback || !request.rollbackOf ||
+        !request.operations.empty() || !request.restartCommand.empty()) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Only an operation-free rollback request may be submitted"});
+    }
+    if (!terminal) {
+        return Result<void>::fail({ErrorCode::ApplyFailed, "No completed transaction is available to roll back"});
+    }
+
+    ApplyJournalStore journal(installRoot, dependencies.limits);
+    auto terminalJson = journal.readPlanSnapshot(terminal->transactionId, terminal->planDigest);
+    if (!terminalJson) {
+        return Result<void>::fail(terminalJson.error());
+    }
+    auto terminalPlan = ApplyPlan::parse(terminalJson.value(), dependencies.limits);
+    if (!terminalPlan) {
+        return Result<void>::fail(terminalPlan.error());
+    }
+    auto summary = journal.readSummary(terminal->transactionId);
+    if (!summary) {
+        return Result<void>::fail(summary.error());
+    }
+    auto validSummary = validateRecoveredSummary(terminalPlan.value(), *terminal, summary.value());
+    if (!validSummary) {
+        return validSummary;
+    }
+
+    if (terminal->transactionId != request.rollbackOf->transactionId ||
+        terminal->planDigest != request.rollbackOf->planDigest) {
+        auto completed = validateCompletedRollbackPlan(request, terminalPlan.value());
+        if (!completed) {
+            return completed;
+        }
+        return replayTerminalTransaction(request, installRoot, *terminal, dependencies, hooks);
+    }
+
+    auto validRequest = validateRollbackRequest(request, terminalPlan.value());
+    if (!validRequest) {
+        return validRequest;
+    }
+    auto sourceBackup =
+        dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadOnly, false);
+    if (!sourceBackup) {
+        return Result<void>::fail(sourceBackup.error());
+    }
+    ApplyTransaction sourceTransaction(terminalPlan.value(), installRoot, *sourceBackup.value(), nullptr,
+                                       *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits,
+                                       hooks, terminal->transactionId, terminal->planDigest, summary.value());
+    auto records = sourceTransaction.rollbackSourceRecords();
+    if (!records) {
+        return Result<void>::fail(records.error());
+    }
+    auto rollback = deriveRollbackPlan(request, terminalPlan.value(), records.value());
+    if (!rollback) {
+        return Result<void>::fail(rollback.error());
+    }
+    return startNewTransaction(rollback.value(), installRoot, dependencies, hooks);
 }
 
 } // namespace
@@ -1417,41 +1725,49 @@ Result<void> executeApplyPlanWithDependencies(const ApplyPlan& plan, ApplyExecut
             return Result<void>::fail(active.error());
         }
         if (active.value()) {
-            return recoverActiveTransaction(plan, *installRoot.value(), *active.value(), dependencies, hooks);
+            auto recovered = recoverActiveTransaction(plan, *installRoot.value(), *active.value(), dependencies, hooks);
+            if (plan.intent != ApplyPlanIntent::Rollback) {
+                return recovered;
+            }
+
+            // A detached public rollback has no caller that can reliably retry
+            // it. Continue only after the durable active pointer is gone; the
+            // terminal validation below then proves whether the recovered
+            // state is still the requested source (or the requested rollback
+            // already completed). If recovery launched an unrelated update,
+            // its new terminal receipt makes the request fail closed.
+            auto remainingActive = journal.loadActive();
+            if (!remainingActive) {
+                return Result<void>::fail(remainingActive.error());
+            }
+            if (remainingActive.value()) {
+                return recovered ? Result<void>::fail(
+                                       {ErrorCode::ApplyFailed, "Recovered transaction remains active"})
+                                 : recovered;
+            }
+            auto recoveredTerminal = journal.loadTerminal();
+            if (!recoveredTerminal) {
+                return Result<void>::fail(recoveredTerminal.error());
+            }
+            return executeRollbackRequest(plan, *installRoot.value(), recoveredTerminal.value(), dependencies, hooks);
+        }
+
+        auto terminal = journal.loadTerminal();
+        if (!terminal) {
+            return Result<void>::fail(terminal.error());
+        }
+        if (plan.intent == ApplyPlanIntent::Rollback) {
+            return executeRollbackRequest(plan, *installRoot.value(), terminal.value(), dependencies, hooks);
         }
 
         auto planDigest = applyPlanDigest(plan);
         if (!planDigest) {
             return Result<void>::fail(planDigest.error());
         }
-        auto terminal = journal.loadTerminal();
-        if (!terminal) {
-            return Result<void>::fail(terminal.error());
-        }
         if (terminal.value() && terminal.value()->planDigest == planDigest.value()) {
             return replayTerminalTransaction(plan, *installRoot.value(), *terminal.value(), dependencies, hooks);
         }
-
-        auto backupRoot = dependencies.fileSystem->openRoot(plan.backupDir, RootAccess::ReadWrite, true);
-        if (!backupRoot) {
-            return Result<void>::fail(backupRoot.error());
-        }
-        std::unique_ptr<IRootedDirectory> stagingRoot;
-        if (hasReplaceOperation(plan)) {
-            auto openedStaging = dependencies.fileSystem->openRoot(plan.stagingDir, RootAccess::ReadOnly, false);
-            if (!openedStaging) {
-                return Result<void>::fail(openedStaging.error());
-            }
-            stagingRoot = std::move(openedStaging.value());
-        }
-        auto transactionId = createApplyTransactionId(planDigest.value());
-        if (!transactionId) {
-            return Result<void>::fail(transactionId.error());
-        }
-        ApplyTransaction transaction(plan, *installRoot.value(), *backupRoot.value(), stagingRoot.get(),
-                                     *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits,
-                                     hooks, transactionId.value(), planDigest.value());
-        return transaction.start();
+        return startNewTransaction(plan, *installRoot.value(), dependencies, hooks);
     } catch (...) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Unexpected apply failure"});
     }

@@ -8,7 +8,6 @@
 #include "UpdatePlanner.h"
 #include "util/PathUtil.h"
 
-#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <utility>
@@ -49,15 +48,6 @@ std::string detectArch() {
 #else
     return "unknown";
 #endif
-}
-
-std::filesystem::perms sanitizedFilePermissions(std::filesystem::perms permissions) {
-    constexpr auto allowed = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
-                             std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
-                             std::filesystem::perms::group_write | std::filesystem::perms::group_exec |
-                             std::filesystem::perms::others_read | std::filesystem::perms::others_write |
-                             std::filesystem::perms::others_exec;
-    return permissions & allowed;
 }
 
 Result<void> validateResourceLimits(const ResourceLimits& resources) {
@@ -361,7 +351,12 @@ struct Updater::Impl {
                 pending.releaseId = envelope.manifest.releaseId;
                 pending.backupDir = written.value().plan.backupDir;
                 pending.applyPlanPath = written.value().path;
-                deps.stateStore->savePendingUpdate(pending);
+                pending.applyPlanDigest = written.value().digest;
+                auto saved = deps.stateStore->savePendingUpdate(pending);
+                if (!saved) {
+                    reportError(saved.error());
+                    return;
+                }
             }
 
             {
@@ -506,6 +501,19 @@ struct Updater::Impl {
                 reportError(written.error());
                 return;
             }
+            if (deps.stateStore) {
+                PendingUpdate pending;
+                pending.version = envelope.manifest.version;
+                pending.releaseId = envelope.manifest.releaseId;
+                pending.backupDir = written.value().plan.backupDir;
+                pending.applyPlanPath = written.value().path;
+                pending.applyPlanDigest = written.value().digest;
+                auto saved = deps.stateStore->savePendingUpdate(pending);
+                if (!saved) {
+                    reportError(saved.error());
+                    return;
+                }
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 lastConfig = effective;
@@ -538,7 +546,12 @@ struct Updater::Impl {
                 return;
             }
             setState(State::Applying);
-            auto launched = launchApplyProcess(*effective, plan->path, *deps.processLauncher);
+            if (!deps.processLauncher) {
+                reportError({ErrorCode::InvalidConfig, "Process launcher dependency is missing"});
+                return;
+            }
+            auto launched = launchApplyProcess(*effective, plan->path, plan->digest, ApplyLaunchIntent::Install,
+                                               *deps.processLauncher);
             if (!launched) {
                 reportError(launched.error());
                 return;
@@ -579,6 +592,9 @@ struct Updater::Impl {
         if (!deps.fileSystem) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
         }
+        if (!deps.processLauncher) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "Process launcher dependency is missing"});
+        }
         auto pending = deps.stateStore->loadPendingUpdate();
         if (!pending) {
             return Result<void>::fail(pending.error());
@@ -586,131 +602,12 @@ struct Updater::Impl {
         if (!pending.value()) {
             return Result<void>::ok();
         }
-        if (pending.value()->applyPlanPath.empty()) {
-            return Result<void>::fail({ErrorCode::ApplyFailed, "Pending update has no apply plan path"});
+        auto written = writeRollbackRequestPlan(config, *pending.value(), *deps.fileSystem);
+        if (!written) {
+            return Result<void>::fail(written.error());
         }
-
-        auto text = deps.fileSystem->readText(pending.value()->applyPlanPath, config.resources.maxApplyPlanBytes);
-        if (!text) {
-            return Result<void>::fail(text.error());
-        }
-        auto plan = ApplyPlan::parse(text.value(), config.resources);
-        if (!plan) {
-            return Result<void>::fail(plan.error());
-        }
-
-        if (!deps.hashProvider) {
-            return Result<void>::fail({ErrorCode::InvalidConfig, "Hash provider dependency is missing"});
-        }
-        auto installRoot = deps.fileSystem->openRoot(plan.value().installDir, RootAccess::ReadWrite, false,
-                                                     RootedDirectoryCreationMode::InstalledContent);
-        if (!installRoot) {
-            return Result<void>::fail(installRoot.error());
-        }
-        auto backupRoot = deps.fileSystem->openRoot(plan.value().backupDir, RootAccess::ReadOnly, false);
-        if (!backupRoot) {
-            return Result<void>::fail(backupRoot.error());
-        }
-
-        const auto copyOpenedFile = [](IRootedFile& source, IRootedFile& destination) -> Result<void> {
-            auto sourceStart = source.seek(0);
-            if (!sourceStart) {
-                return sourceStart;
-            }
-            auto cleared = destination.truncate(0);
-            if (!cleared) {
-                return cleared;
-            }
-            auto destinationStart = destination.seek(0);
-            if (!destinationStart) {
-                return destinationStart;
-            }
-            std::array<unsigned char, 64 * 1024> buffer{};
-            for (;;) {
-                auto read = source.read(buffer.data(), buffer.size());
-                if (!read) {
-                    return Result<void>::fail(read.error());
-                }
-                if (read.value() == 0) {
-                    return Result<void>::ok();
-                }
-                auto written = destination.write(buffer.data(), read.value());
-                if (!written) {
-                    return written;
-                }
-            }
-        };
-
-        for (auto it = plan.value().operations.rbegin(); it != plan.value().operations.rend(); ++it) {
-            auto backup = backupRoot.value()->openRegularFile(it->target, RootedFileOpenMode::ReadOnly);
-            if (!backup) {
-                return Result<void>::fail(backup.error());
-            }
-            auto target = installRoot.value()->openRegularFile(it->target, RootedFileOpenMode::ReadOnly);
-            if (!target) {
-                return Result<void>::fail(target.error());
-            }
-            RootedEntryExpectation targetExpectation = RootedEntryExpectation::missing();
-            if (target.value().exists()) {
-                auto metadata = target.value().file->metadata();
-                if (!metadata) {
-                    return Result<void>::fail(metadata.error());
-                }
-                targetExpectation = RootedEntryExpectation::matching(metadata.value());
-            }
-            target.value().file.reset();
-
-            if (backup.value().exists()) {
-                auto temporary = installRoot.value()->createAtomicReplacement(
-                    it->target, RootedDirectoryCreationMode::InstalledContent);
-                if (!temporary) {
-                    return Result<void>::fail(temporary.error());
-                }
-                auto copied = copyOpenedFile(*backup.value().file, temporary.value()->file());
-                if (!copied) {
-                    return copied;
-                }
-                auto backupMetadata = backup.value().file->metadata();
-                if (!backupMetadata) {
-                    return Result<void>::fail(backupMetadata.error());
-                }
-                auto permissions = temporary.value()->file().setPermissions(
-                    sanitizedFilePermissions(backupMetadata.value().permissions));
-                if (!permissions) {
-                    return permissions;
-                }
-                auto temporaryMetadata = temporary.value()->file().metadata();
-                if (!temporaryMetadata) {
-                    return Result<void>::fail(temporaryMetadata.error());
-                }
-                if (temporaryMetadata.value().size != backupMetadata.value().size) {
-                    return Result<void>::fail({ErrorCode::HashMismatch, "Rollback backup size mismatch"});
-                }
-                auto backupHash = deps.hashProvider->sha256Stream(*backup.value().file);
-                if (!backupHash) {
-                    return Result<void>::fail(backupHash.error());
-                }
-                auto temporaryHash = deps.hashProvider->sha256Stream(temporary.value()->file());
-                if (!temporaryHash) {
-                    return Result<void>::fail(temporaryHash.error());
-                }
-                if (backupHash.value() != temporaryHash.value()) {
-                    return Result<void>::fail({ErrorCode::HashMismatch, "Rollback backup SHA-256 mismatch"});
-                }
-                auto committed = temporary.value()->commit(targetExpectation);
-                if (!committed) {
-                    return committed;
-                }
-            } else if (it->type == ApplyOperationType::Replace &&
-                       targetExpectation.kind == RootedEntryExpectationKind::Identity) {
-                auto removed = installRoot.value()->removeRegularFile(it->target, targetExpectation);
-                if (!removed) {
-                    return removed;
-                }
-            }
-        }
-
-        return deps.stateStore->clearPendingUpdate();
+        return launchApplyProcess(config, written.value().path, written.value().digest, ApplyLaunchIntent::Rollback,
+                                  *deps.processLauncher);
     }
 
     Config config;

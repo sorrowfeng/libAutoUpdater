@@ -35,6 +35,19 @@ void testStateStoreDownloadResume() {
     LAU_REQUIRE(afterClear);
     LAU_REQUIRE(!afterClear.value().has_value());
 
+    autoupdater::PendingUpdate pending;
+    pending.version = autoupdater::Version::parse("2.0.0").value();
+    pending.releaseId = "release-2";
+    pending.backupDir = root / "backup";
+    pending.applyPlanPath = root / "apply-plan.json";
+    pending.applyPlanDigest = std::string(64, 'a');
+    LAU_REQUIRE(store->savePendingUpdate(pending));
+    auto loadedPending = store->loadPendingUpdate();
+    LAU_REQUIRE(loadedPending);
+    LAU_REQUIRE(loadedPending.value().has_value());
+    LAU_REQUIRE(loadedPending.value()->applyPlanDigest == pending.applyPlanDigest);
+    LAU_REQUIRE(loadedPending.value()->backupDir == pending.backupDir);
+
     const auto limitedPath = root / "limited-state.json";
     {
         std::ofstream output(limitedPath, std::ios::binary | std::ios::trunc);

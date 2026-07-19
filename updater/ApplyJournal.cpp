@@ -26,9 +26,7 @@ Error journalError(const std::string& message) {
 }
 
 bool isLowerHexDigest(const std::string& value) {
-    return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char character) {
-               return std::isdigit(character) != 0 || (character >= 'a' && character <= 'f');
-           });
+    return util::isLowerHexSha256(value);
 }
 
 Result<void> validateTransaction(const std::string& transactionId, const std::string& planDigest) {
@@ -358,6 +356,25 @@ Result<std::string> applyOperationId(const std::string& transactionId, std::size
         append(operation.target);
         append(operation.sha256);
         append(std::to_string(operation.size));
+        // Preserve the schema-v1 identity material exactly. Schema-v2-only
+        // fields extend the identity only when they are present.
+        if (operation.permissions) {
+            append("permissions");
+            append(std::to_string(*operation.permissions));
+        }
+        if (operation.precondition) {
+            append("precondition");
+            append(operation.precondition->exists ? "exists" : "missing");
+            if (operation.precondition->exists) {
+                append(std::to_string(operation.precondition->size));
+                append(operation.precondition->sha256);
+                if (operation.precondition->permissions) {
+                    append(std::to_string(*operation.precondition->permissions));
+                } else {
+                    append("permissions-unknown");
+                }
+            }
+        }
         return Result<std::string>::ok(util::sha256Bytes(material));
     } catch (...) {
         return Result<std::string>::fail(journalError("Failed to calculate apply operation identity"));
@@ -365,39 +382,11 @@ Result<std::string> applyOperationId(const std::string& transactionId, std::size
 }
 
 Result<std::string> serializeActiveTransaction(const ActiveTransaction& active) noexcept {
-    try {
-        auto valid = validateTransaction(active.transactionId, active.planDigest);
-        if (!valid) {
-            return Result<std::string>::fail(valid.error());
-        }
-        util::Json::Object object;
-        object.emplace("schemaVersion", static_cast<double>(kJournalSchemaVersion));
-        object.emplace("transactionId", active.transactionId);
-        object.emplace("planDigest", active.planDigest);
-        return Result<std::string>::ok(util::Json(std::move(object)).stringify(2));
-    } catch (...) {
-        return Result<std::string>::fail(journalError("Failed to serialize active apply transaction"));
-    }
+    return serializeApplyTransactionReceipt(active);
 }
 
 Result<ActiveTransaction> parseActiveTransaction(const std::string& text) noexcept {
-    try {
-        auto object = parseObject(text, "active apply transaction");
-        if (!object)
-            return Result<ActiveTransaction>::fail(object.error());
-        auto transactionId = requiredString(object.value(), "transactionId");
-        auto planDigest = requiredString(object.value(), "planDigest");
-        if (!transactionId)
-            return Result<ActiveTransaction>::fail(transactionId.error());
-        if (!planDigest)
-            return Result<ActiveTransaction>::fail(planDigest.error());
-        auto valid = validateTransaction(transactionId.value(), planDigest.value());
-        if (!valid)
-            return Result<ActiveTransaction>::fail(valid.error());
-        return Result<ActiveTransaction>::ok({transactionId.value(), planDigest.value()});
-    } catch (...) {
-        return Result<ActiveTransaction>::fail(journalError("Failed to parse active apply transaction"));
-    }
+    return parseApplyTransactionReceipt(text);
 }
 
 Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summary) noexcept {

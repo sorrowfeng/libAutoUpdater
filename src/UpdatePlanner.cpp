@@ -119,6 +119,10 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
 
     for (const auto& file : manifest.files) {
         const auto localPath = file.localPath.empty() ? file.path : file.localPath;
+        auto validTarget = util::validateManagedTargetPath(localPath);
+        if (!validTarget) {
+            return Result<UpdateDecision>::fail(validTarget.error());
+        }
         if (!util::pathAllowedByWhitelist(localPath, config.managedPathWhitelist)) {
             return Result<UpdateDecision>::fail(
                 {ErrorCode::SecurityPolicyViolation, "Manifest file is outside managed whitelist"});
@@ -156,6 +160,10 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
     }
 
     for (const auto& path : manifest.remove) {
+        auto validTarget = util::validateManagedTargetPath(path);
+        if (!validTarget) {
+            return Result<UpdateDecision>::fail(validTarget.error());
+        }
         if (!util::pathAllowedByWhitelist(path, config.managedPathWhitelist)) {
             return Result<UpdateDecision>::fail(
                 {ErrorCode::SecurityPolicyViolation, "Remove path is outside managed whitelist"});

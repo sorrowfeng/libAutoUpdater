@@ -17,6 +17,9 @@ struct PendingUpdate {
     std::string releaseId;
     std::filesystem::path backupDir;
     std::filesystem::path applyPlanPath;
+    /// Canonical SHA-256 of the exact forward apply plan authorized by the
+    /// terminal transaction receipt.
+    std::string applyPlanDigest;
 };
 
 /// Resume metadata for one partially downloaded file.

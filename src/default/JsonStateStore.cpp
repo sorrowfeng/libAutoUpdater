@@ -64,6 +64,7 @@ class JsonStateStore final : public IStateStore {
         object.emplace("releaseId", pending.releaseId);
         object.emplace("backupDir", util::pathToUtf8(pending.backupDir));
         object.emplace("applyPlanPath", util::pathToUtf8(pending.applyPlanPath));
+        object.emplace("applyPlanDigest", pending.applyPlanDigest);
         root.value()["pendingUpdate"] = util::Json(std::move(object));
         return saveRoot(root.value());
     }
@@ -99,6 +100,10 @@ class JsonStateStore final : public IStateStore {
         const auto* applyPlanPath = object.get("applyPlanPath");
         if (applyPlanPath && applyPlanPath->isString()) {
             pending.applyPlanPath = util::pathFromUtf8(applyPlanPath->asString());
+        }
+        const auto* applyPlanDigest = object.get("applyPlanDigest");
+        if (applyPlanDigest && applyPlanDigest->isString()) {
+            pending.applyPlanDigest = applyPlanDigest->asString();
         }
         return Result<std::optional<PendingUpdate>>::ok(pending);
     }

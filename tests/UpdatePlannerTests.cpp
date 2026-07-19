@@ -54,6 +54,21 @@ void testUpdatePlannerCreatesOperations() {
     LAU_REQUIRE(decision.value().operations.size() == 2);
     LAU_REQUIRE(decision.value().operations[0].type == autoupdater::ApplyOperationType::Replace);
     LAU_REQUIRE(decision.value().operations[1].type == autoupdater::ApplyOperationType::Remove);
+
+    auto reservedFileEnvelope = plannerEnvelope();
+    reservedFileEnvelope.manifest.files.push_back(
+        {"artifacts/app.exe", ".AUToupdater/staging/rollback-plan.json", "newhash", 7});
+    const auto reservedFile =
+        autoupdater::planUpdate(config, reservedFileEnvelope, {}, std::nullopt);
+    LAU_REQUIRE(!reservedFile);
+    LAU_REQUIRE(reservedFile.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+
+    auto reservedRemoveEnvelope = plannerEnvelope();
+    reservedRemoveEnvelope.manifest.remove.push_back(".autoupdater/journal/terminal.json");
+    const auto reservedRemove =
+        autoupdater::planUpdate(config, reservedRemoveEnvelope, {}, std::nullopt);
+    LAU_REQUIRE(!reservedRemove);
+    LAU_REQUIRE(reservedRemove.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
 }
 
 void testUpdatePlannerPercentEncodesArtifactPaths() {

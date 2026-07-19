@@ -3,6 +3,7 @@
 #include "ApplyJournal.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
+#include "util/PathUtil.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1430,6 +1431,89 @@ void testInterruptedRestartIsNotRepeated(const std::filesystem::path& helper) {
     }
 }
 
+void testPublicRollbackCrashRecovery(const std::filesystem::path& helper) {
+    {
+        TemporaryDirectory terminalCrash("public-rollback-forward-terminal-crash");
+        auto interruptedForward = replacePlan(terminalCrash, true);
+        interruptedForward.releaseId = "public-rollback-forward-terminal-crash";
+        const auto interruptedPath = savePlanAs(terminalCrash, interruptedForward, "forward-plan.json");
+        const auto interruptedTarget = interruptedForward.installDir / "bin/app.txt";
+
+        LAU_REQUIRE(crashAt(helper, interruptedPath, "journal.terminal.after", false) == kCrashExitCode);
+        requireActiveJournalState(interruptedForward, true, "forward terminal publication");
+        LAU_REQUIRE(readFile(interruptedTarget) == kNewContents);
+        const auto interruptedTerminal = readTerminalTransaction(interruptedForward);
+
+        autoupdater::ApplyPlan interruptedRequest;
+        interruptedRequest.intent = autoupdater::ApplyPlanIntent::Rollback;
+        interruptedRequest.rollbackOf = autoupdater::ApplyTransactionReference{
+            interruptedTerminal.transactionId, interruptedTerminal.planDigest};
+        interruptedRequest.appId = interruptedForward.appId;
+        interruptedRequest.fromVersion = interruptedForward.toVersion;
+        interruptedRequest.releaseId = interruptedForward.releaseId;
+        interruptedRequest.installDir = interruptedForward.installDir;
+        interruptedRequest.stagingDir = interruptedForward.backupDir;
+        interruptedRequest.backupDir =
+            autoupdater::util::defaultStagingRoot(interruptedForward.installDir) / "backup" / "rollback" /
+            autoupdater::util::pathFromUtf8(interruptedTerminal.transactionId);
+        const auto interruptedRequestPath =
+            savePlanAs(terminalCrash, interruptedRequest, "rollback-request.json");
+
+        LAU_REQUIRE(recover(helper, interruptedRequestPath) == 0);
+        requireActiveJournalCleared(interruptedRequest, "rollback after forward terminal publication");
+        LAU_REQUIRE(readFile(interruptedTarget) == kOldContents);
+        LAU_REQUIRE(readTerminalTransaction(interruptedRequest).transactionId !=
+                    interruptedTerminal.transactionId);
+    }
+
+    TemporaryDirectory temporary("public-rollback-crash-recovery");
+    auto forward = replacePlan(temporary, true);
+    forward.releaseId = "public-rollback-crash-recovery";
+    const auto forwardPath = savePlanAs(temporary, forward, "forward-plan.json");
+    const auto target = forward.installDir / "bin/app.txt";
+
+    LAU_REQUIRE(recover(helper, forwardPath) == 0);
+    LAU_REQUIRE(readFile(target) == kNewContents);
+    const auto forwardTerminal = readTerminalTransaction(forward);
+
+    autoupdater::ApplyPlan request;
+    request.intent = autoupdater::ApplyPlanIntent::Rollback;
+    request.rollbackOf =
+        autoupdater::ApplyTransactionReference{forwardTerminal.transactionId, forwardTerminal.planDigest};
+    request.appId = forward.appId;
+    request.fromVersion = forward.toVersion;
+    request.releaseId = forward.releaseId;
+    request.installDir = forward.installDir;
+    request.stagingDir = forward.backupDir;
+    request.backupDir = autoupdater::util::defaultStagingRoot(forward.installDir) / "backup" / "rollback" /
+                        autoupdater::util::pathFromUtf8(forwardTerminal.transactionId);
+    const auto requestPath = savePlanAs(temporary, request, "rollback-request.json");
+
+    LAU_REQUIRE(crashAt(helper, requestPath, "replace.after", true) == kCrashExitCode);
+    requireActiveJournalState(request, true, "public rollback replace.after");
+    LAU_REQUIRE(readFile(target) == kOldContents);
+    LAU_REQUIRE(readFile(request.backupDir / "bin/app.txt") == kNewContents);
+
+    LAU_REQUIRE(recover(helper, requestPath) == 0);
+    requireActiveJournalCleared(request, "public rollback compensation recovery");
+    LAU_REQUIRE(readFile(target) == kOldContents);
+    const auto terminalAfterRecovery = readTerminalTransaction(forward);
+    LAU_REQUIRE(terminalAfterRecovery.transactionId != forwardTerminal.transactionId);
+
+    LAU_REQUIRE(recover(helper, requestPath) == 0);
+    LAU_REQUIRE(readFile(target) == kOldContents);
+    const auto rollbackTerminal = readTerminalTransaction(request);
+    LAU_REQUIRE(rollbackTerminal.transactionId == terminalAfterRecovery.transactionId);
+    LAU_REQUIRE(rollbackTerminal.planDigest == terminalAfterRecovery.planDigest);
+    const auto rollbackSnapshot = autoupdater::ApplyPlan::parse(
+        readFile(planJournal(request, rollbackTerminal.transactionId)));
+    LAU_REQUIRE(rollbackSnapshot);
+    LAU_REQUIRE(rollbackSnapshot.value().intent == autoupdater::ApplyPlanIntent::Rollback);
+    LAU_REQUIRE(rollbackSnapshot.value().rollbackOf.has_value());
+    LAU_REQUIRE(rollbackSnapshot.value().rollbackOf->transactionId == forwardTerminal.transactionId);
+    LAU_REQUIRE(rollbackSnapshot.value().rollbackOf->planDigest == forwardTerminal.planDigest);
+}
+
 } // namespace
 
 void testApplyExecutorRecoversAfterForcedTermination() {
@@ -1459,4 +1543,5 @@ void testApplyExecutorRecoversAfterForcedTermination() {
     testCorruptTerminalBlocksNewApply(helper);
     testRepeatedPlanReplaysTerminalReceipt(helper);
     testInterruptedRestartIsNotRepeated(helper);
+    testPublicRollbackCrashRecovery(helper);
 }

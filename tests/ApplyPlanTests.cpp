@@ -57,3 +57,57 @@ void testApplyPlanRoundTripPreservesUnicodePaths() {
     LAU_REQUIRE(parsed.value().operations.size() == 1);
     LAU_REQUIRE(parsed.value().operations[0].target == u8"资源/应用.txt");
 }
+
+void testApplyPlanRollbackContract() {
+    const std::string transactionId(64, '1');
+    const std::string planDigest(64, 'a');
+
+    autoupdater::ApplyPlan rollback;
+    rollback.intent = autoupdater::ApplyPlanIntent::Rollback;
+    rollback.rollbackOf = autoupdater::ApplyTransactionReference{transactionId, planDigest};
+    rollback.installDir = "install";
+    rollback.stagingDir = "install/.autoupdater/backup/forward";
+    rollback.backupDir = "install/.autoupdater/backup/rollback/transaction";
+    rollback.operations.emplace_back(autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app",
+                                     std::string(64, 'b'), 4, 0751U);
+    rollback.operations[0].precondition =
+        autoupdater::ApplyOperationPrecondition{true, 5, std::string(64, 'c'), 0755U};
+
+    auto parsed = autoupdater::ApplyPlan::parse(rollback.toJson());
+    LAU_REQUIRE(parsed);
+    LAU_REQUIRE(parsed.value().schemaVersion == 2);
+    LAU_REQUIRE(parsed.value().intent == autoupdater::ApplyPlanIntent::Rollback);
+    LAU_REQUIRE(parsed.value().rollbackOf.has_value());
+    LAU_REQUIRE(parsed.value().rollbackOf->transactionId == transactionId);
+    LAU_REQUIRE(parsed.value().rollbackOf->planDigest == planDigest);
+    LAU_REQUIRE(parsed.value().operations[0].permissions.has_value());
+    LAU_REQUIRE(*parsed.value().operations[0].permissions == 0751U);
+    LAU_REQUIRE(parsed.value().operations[0].precondition.has_value());
+    LAU_REQUIRE(parsed.value().operations[0].precondition->exists);
+    LAU_REQUIRE(parsed.value().operations[0].precondition->size == 5);
+    LAU_REQUIRE(parsed.value().operations[0].precondition->sha256 == std::string(64, 'c'));
+    LAU_REQUIRE(parsed.value().operations[0].precondition->permissions == 0755U);
+
+    auto missingReference = rollback;
+    missingReference.rollbackOf.reset();
+    LAU_REQUIRE(!autoupdater::ApplyPlan::parse(missingReference.toJson()));
+
+    auto installWithReference = rollback;
+    installWithReference.intent = autoupdater::ApplyPlanIntent::Install;
+    LAU_REQUIRE(!autoupdater::ApplyPlan::parse(installWithReference.toJson()));
+
+    auto reservedTarget = rollback;
+    reservedTarget.operations[0].target = "AUTOUP~1/staging/rollback-plan.json";
+    LAU_REQUIRE(!autoupdater::ApplyPlan::parse(reservedTarget.toJson()));
+
+    const auto legacy = autoupdater::ApplyPlan::parse(R"json({
+      "schemaVersion": 1,
+      "installDir": "install",
+      "stagingDir": "staging",
+      "backupDir": "backup",
+      "operations": []
+    })json");
+    LAU_REQUIRE(legacy);
+    LAU_REQUIRE(legacy.value().intent == autoupdater::ApplyPlanIntent::Install);
+    LAU_REQUIRE(!legacy.value().rollbackOf.has_value());
+}

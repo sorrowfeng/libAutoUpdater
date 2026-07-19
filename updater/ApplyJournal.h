@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ApplyTransactionReceipt.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/ResourceLimits.h"
 #include "libAutoUpdater/Result.h"
@@ -46,10 +47,7 @@ enum class JournalBackupState { Pending, Intent, Durable, NotRequired };
 enum class JournalApplyState { Pending, Intent, Complete };
 enum class JournalRollbackState { NotStarted, Intent, Complete, Failed, NotRequired };
 
-struct ActiveTransaction {
-    std::string transactionId;
-    std::string planDigest;
-};
+using ActiveTransaction = ApplyTransactionReceipt;
 
 struct ApplyJournalSummary {
     int schemaVersion = 2;

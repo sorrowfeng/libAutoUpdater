@@ -93,6 +93,7 @@ set(LIBAUTOUPDATER_SOURCES
     src/ApplyLauncher.cpp
     src/ApplyPlan.cpp
     src/ApplyPlanWriter.cpp
+    src/ApplyTransactionReceipt.cpp
     src/DownloadExecutor.cpp
     src/Error.cpp
     src/LocalSnapshotBuilder.cpp

@@ -37,6 +37,23 @@ bool isUnsafePortableSegment(const std::string& segment) {
     return std::any_of(segment.begin(), segment.end(), [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; });
 }
 
+bool isUpdaterStateSegment(const std::string& segment) {
+    constexpr const char* kUpdaterState = ".autoupdater";
+    if (segment.size() != std::char_traits<char>::length(kUpdaterState)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < segment.size(); ++index) {
+        auto character = segment[index];
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+        if (character != kUpdaterState[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept {
@@ -80,6 +97,25 @@ Result<void> validateManagedPath(const std::string& path) noexcept {
         start = end + 1;
     }
 
+    return Result<void>::ok();
+}
+
+Result<void> validateManagedTargetPath(const std::string& path) noexcept {
+    auto valid = validateManagedPath(path);
+    if (!valid) {
+        return valid;
+    }
+    const auto separator = path.find('/');
+    const auto firstSegment = path.substr(0, separator);
+    // A tilde in the top-level segment is rejected conservatively because on
+    // Windows it can be an NTFS 8.3 alias (for example AUTOUP~1) for the
+    // reserved updater state directory. String case-folding alone cannot
+    // distinguish such an alias without opening an attacker-selected path.
+    if (isUpdaterStateSegment(firstSegment) || firstSegment.find('~') != std::string::npos) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation,
+             "Managed targets cannot use the reserved or alias-ambiguous updater namespace"});
+    }
     return Result<void>::ok();
 }
 

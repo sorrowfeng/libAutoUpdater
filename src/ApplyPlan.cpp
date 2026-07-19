@@ -2,6 +2,7 @@
 
 #include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Sha256.h"
 
 #include <cmath>
 #include <limits>
@@ -31,6 +32,20 @@ void addString(util::Json::Object& object, const std::string& key, const std::st
 
 std::string opToString(ApplyOperationType type) {
     return type == ApplyOperationType::Replace ? "replace" : "remove";
+}
+
+std::string intentToString(ApplyPlanIntent intent) {
+    return intent == ApplyPlanIntent::Rollback ? "rollback" : "install";
+}
+
+Result<ApplyPlanIntent> intentFromString(const std::string& text) {
+    if (text == "install") {
+        return Result<ApplyPlanIntent>::ok(ApplyPlanIntent::Install);
+    }
+    if (text == "rollback") {
+        return Result<ApplyPlanIntent>::ok(ApplyPlanIntent::Rollback);
+    }
+    return Result<ApplyPlanIntent>::fail({ErrorCode::ManifestParseFailed, "Unknown apply plan intent"});
 }
 
 Result<ApplyOperationType> opFromString(const std::string& text) {
@@ -66,6 +81,75 @@ Result<std::uint64_t> operationSize(const util::Json& object, const ResourceLimi
     return Result<std::uint64_t>::ok(parsed);
 }
 
+Result<std::optional<std::uint32_t>> operationPermissions(const util::Json& object, int schemaVersion) {
+    const auto* value = object.get("permissions");
+    if (!value) {
+        return Result<std::optional<std::uint32_t>>::ok(std::nullopt);
+    }
+    if (schemaVersion < 2) {
+        return Result<std::optional<std::uint32_t>>::fail(
+            {ErrorCode::ManifestParseFailed, "operation permissions require apply plan schemaVersion 2"});
+    }
+    if (!value->isNumber()) {
+        return Result<std::optional<std::uint32_t>>::fail(
+            {ErrorCode::ManifestParseFailed, "operation permissions must be a number"});
+    }
+    const double number = value->asNumber();
+    constexpr double kPortablePermissionMask = 0777.0;
+    if (!std::isfinite(number) || number < 0 || number > kPortablePermissionMask || std::floor(number) != number) {
+        return Result<std::optional<std::uint32_t>>::fail(
+            {ErrorCode::ManifestParseFailed, "operation permissions must be portable rwx bits"});
+    }
+    return Result<std::optional<std::uint32_t>>::ok(static_cast<std::uint32_t>(number));
+}
+
+Result<std::optional<ApplyOperationPrecondition>> operationPrecondition(const util::Json& object,
+                                                                         int schemaVersion,
+                                                                         const ResourceLimits& limits) {
+    const auto* value = object.get("precondition");
+    if (!value) {
+        return Result<std::optional<ApplyOperationPrecondition>>::ok(std::nullopt);
+    }
+    if (schemaVersion < 2 || !value->isObject()) {
+        return Result<std::optional<ApplyOperationPrecondition>>::fail(
+            {ErrorCode::ManifestParseFailed, "operation precondition requires a schemaVersion 2 object"});
+    }
+    const auto* exists = value->get("exists");
+    if (!exists || !exists->isBool()) {
+        return Result<std::optional<ApplyOperationPrecondition>>::fail(
+            {ErrorCode::ManifestParseFailed, "operation precondition exists flag is required"});
+    }
+
+    ApplyOperationPrecondition precondition;
+    precondition.exists = exists->asBool();
+    const auto* size = value->get("size");
+    const auto* sha256 = value->get("sha256");
+    const auto* permissions = value->get("permissions");
+    if (!precondition.exists) {
+        if (size || sha256 || permissions) {
+            return Result<std::optional<ApplyOperationPrecondition>>::fail(
+                {ErrorCode::ManifestParseFailed, "missing-file preconditions cannot contain file evidence"});
+        }
+        return Result<std::optional<ApplyOperationPrecondition>>::ok(precondition);
+    }
+    if (!size || !sha256 || !sha256->isString() || !util::isLowerHexSha256(sha256->asString())) {
+        return Result<std::optional<ApplyOperationPrecondition>>::fail(
+            {ErrorCode::ManifestParseFailed, "existing-file precondition evidence is invalid"});
+    }
+    auto parsedSize = operationSize(*value, limits);
+    if (!parsedSize) {
+        return Result<std::optional<ApplyOperationPrecondition>>::fail(parsedSize.error());
+    }
+    auto parsedPermissions = operationPermissions(*value, schemaVersion);
+    if (!parsedPermissions) {
+        return Result<std::optional<ApplyOperationPrecondition>>::fail(parsedPermissions.error());
+    }
+    precondition.size = parsedSize.value();
+    precondition.sha256 = sha256->asString();
+    precondition.permissions = parsedPermissions.value();
+    return Result<std::optional<ApplyOperationPrecondition>>::ok(std::move(precondition));
+}
+
 bool checkedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t& result) {
     if (right > std::numeric_limits<std::uint64_t>::max() - left) {
         return false;
@@ -96,11 +180,54 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
         ApplyPlan plan;
         std::uint64_t totalArtifactBytes = 0;
         const auto* schema = json.value().get("schemaVersion");
-        if (!schema || !schema->isNumber() || schema->asInt() != 1) {
+        if (!schema || !schema->isNumber() ||
+            (schema->asNumber() != 1.0 && schema->asNumber() != 2.0)) {
             return Result<ApplyPlan>::fail(
                 {ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
         }
-        plan.schemaVersion = 1;
+        plan.schemaVersion = static_cast<int>(schema->asNumber());
+        const auto* intent = json.value().get("intent");
+        const auto* rollbackOf = json.value().get("rollbackOf");
+        if (plan.schemaVersion == 1) {
+            if (intent || rollbackOf) {
+                return Result<ApplyPlan>::fail(
+                    {ErrorCode::ManifestParseFailed, "Apply plan schemaVersion 1 cannot contain transaction intent"});
+            }
+            plan.intent = ApplyPlanIntent::Install;
+        } else {
+            if (!intent || !intent->isString()) {
+                return Result<ApplyPlan>::fail(
+                    {ErrorCode::ManifestParseFailed, "Apply plan intent is required"});
+            }
+            auto parsedIntent = intentFromString(intent->asString());
+            if (!parsedIntent) {
+                return Result<ApplyPlan>::fail(parsedIntent.error());
+            }
+            plan.intent = parsedIntent.value();
+            if (plan.intent == ApplyPlanIntent::Rollback) {
+                if (!rollbackOf || !rollbackOf->isObject()) {
+                    return Result<ApplyPlan>::fail(
+                        {ErrorCode::ManifestParseFailed, "Rollback plans require rollbackOf"});
+                }
+                auto transactionId = requiredString(*rollbackOf, "transactionId");
+                auto planDigest = requiredString(*rollbackOf, "planDigest");
+                if (!transactionId) {
+                    return Result<ApplyPlan>::fail(transactionId.error());
+                }
+                if (!planDigest) {
+                    return Result<ApplyPlan>::fail(planDigest.error());
+                }
+                if (!util::isLowerHexSha256(transactionId.value()) ||
+                    !util::isLowerHexSha256(planDigest.value())) {
+                    return Result<ApplyPlan>::fail(
+                        {ErrorCode::ManifestParseFailed, "Rollback transaction reference is invalid"});
+                }
+                plan.rollbackOf = ApplyTransactionReference{transactionId.value(), planDigest.value()};
+            } else if (rollbackOf) {
+                return Result<ApplyPlan>::fail(
+                    {ErrorCode::ManifestParseFailed, "Install plans cannot contain rollbackOf"});
+            }
+        }
         plan.appId = optionalString(json.value(), "appId");
         plan.fromVersion = optionalString(json.value(), "fromVersion");
         plan.toVersion = optionalString(json.value(), "toVersion");
@@ -163,7 +290,17 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                 return Result<ApplyPlan>::fail(size.error());
             }
             op.size = size.value();
-            auto validTarget = util::validateManagedPath(op.target);
+            auto permissions = operationPermissions(item, plan.schemaVersion);
+            if (!permissions) {
+                return Result<ApplyPlan>::fail(permissions.error());
+            }
+            op.permissions = permissions.value();
+            auto precondition = operationPrecondition(item, plan.schemaVersion, limits);
+            if (!precondition) {
+                return Result<ApplyPlan>::fail(precondition.error());
+            }
+            op.precondition = std::move(precondition.value());
+            auto validTarget = util::validateManagedTargetPath(op.target);
             if (!validTarget) {
                 return Result<ApplyPlan>::fail(validTarget.error());
             }
@@ -179,6 +316,9 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                         {ErrorCode::ResourceLimitExceeded, "Apply operations exceed the total artifact byte limit"});
                 }
                 totalArtifactBytes = updatedTotal;
+            } else if (op.permissions) {
+                return Result<ApplyPlan>::fail(
+                    {ErrorCode::ManifestParseFailed, "Remove operations cannot specify permissions"});
             }
             plan.operations.push_back(std::move(op));
         }
@@ -192,6 +332,15 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
 std::string ApplyPlan::toJson() const {
     util::Json::Object root;
     root.emplace("schemaVersion", static_cast<double>(schemaVersion));
+    if (schemaVersion >= 2) {
+        root.emplace("intent", intentToString(intent));
+        if (rollbackOf) {
+            util::Json::Object reference;
+            reference.emplace("transactionId", rollbackOf->transactionId);
+            reference.emplace("planDigest", rollbackOf->planDigest);
+            root.emplace("rollbackOf", std::move(reference));
+        }
+    }
     addString(root, "appId", appId);
     addString(root, "fromVersion", fromVersion);
     addString(root, "toVersion", toVersion);
@@ -219,6 +368,22 @@ std::string ApplyPlan::toJson() const {
             item.emplace("sha256", operation.sha256);
         }
         item.emplace("size", static_cast<double>(operation.size));
+        if (schemaVersion >= 2 && operation.permissions) {
+            item.emplace("permissions", static_cast<double>(*operation.permissions));
+        }
+        if (schemaVersion >= 2 && operation.precondition) {
+            util::Json::Object precondition;
+            precondition.emplace("exists", operation.precondition->exists);
+            if (operation.precondition->exists) {
+                precondition.emplace("size", static_cast<double>(operation.precondition->size));
+                precondition.emplace("sha256", operation.precondition->sha256);
+                if (operation.precondition->permissions) {
+                    precondition.emplace("permissions",
+                                         static_cast<double>(*operation.precondition->permissions));
+                }
+            }
+            item.emplace("precondition", std::move(precondition));
+        }
         operationItems.emplace_back(std::move(item));
     }
     root.emplace("operations", std::move(operationItems));

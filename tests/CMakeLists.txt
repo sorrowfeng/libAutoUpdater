@@ -49,6 +49,13 @@ add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)
     add_test(
+        NAME libAutoUpdater_apply_plan_handoff
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/apply_plan_handoff.py
+            --updater $<TARGET_FILE:autoupdater_apply>
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/apply-plan-handoff)
+    add_test(
         NAME libAutoUpdater_e2e_flow
         COMMAND
             ${Python3_EXECUTABLE}

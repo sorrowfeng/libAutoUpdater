@@ -32,11 +32,14 @@ void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
+void testApplyPlanRollbackContract();
 void testApplyExecutorUsesSafeAtomicJournalName();
 void testApplyExecutorRequiresWritableJournal();
 void testApplyExecutorRollsBackCurrentFailedOperation();
 void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
+void testApplyExecutorExecutesOperationFreePublicRollback();
+void testApplyExecutorRecoversFailedPublicRollbackOfRollback();
 void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
@@ -48,6 +51,7 @@ void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 void testUpdaterQueuedCallbacksOutliveUpdater();
+void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
 void testFuzzSmokeParsersAndPaths();
 
 int main() {
@@ -84,11 +88,15 @@ int main() {
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
+        {"ApplyPlanRollbackContract", testApplyPlanRollbackContract},
         {"ApplyExecutorUsesSafeAtomicJournalName", testApplyExecutorUsesSafeAtomicJournalName},
         {"ApplyExecutorRequiresWritableJournal", testApplyExecutorRequiresWritableJournal},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
         {"ApplyExecutorRejectsExistingLock", testApplyExecutorRejectsExistingLock},
         {"ApplyExecutorReplacesFilesInUnicodeDirectory", testApplyExecutorReplacesFilesInUnicodeDirectory},
+        {"ApplyExecutorExecutesOperationFreePublicRollback", testApplyExecutorExecutesOperationFreePublicRollback},
+        {"ApplyExecutorRecoversFailedPublicRollbackOfRollback",
+         testApplyExecutorRecoversFailedPublicRollbackOfRollback},
         {"ApplyExecutorRecoversAfterForcedTermination", testApplyExecutorRecoversAfterForcedTermination},
         {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
@@ -101,6 +109,8 @@ int main() {
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
         {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
+        {"UpdaterDelegatesRollbackToTerminalBoundExternalPlan",
+         testUpdaterDelegatesRollbackToTerminalBoundExternalPlan},
         {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},
     };
 
