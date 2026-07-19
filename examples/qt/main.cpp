@@ -23,8 +23,8 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     const auto args = app.arguments();
 
-    if (args.size() < 4) {
-        qInfo() << "Usage: libAutoUpdater_qt <manifest-url> <current-version> <install-dir>";
+    if (args.size() < 5) {
+        qInfo() << "Usage: libAutoUpdater_qt <manifest-url> <current-version> <install-dir> <allowed-base-url>";
         return 2;
     }
 
@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     config.manifestUrl = toUtf8String(args.at(1));
     config.currentVersion = version.value();
     config.installDir = autoupdater::util::pathFromUtf8(toUtf8String(args.at(3)));
+    config.security.allowedBaseUrls.push_back(toUtf8String(args.at(4)));
 
     auto dispatcher = std::make_shared<QtDispatcher>();
     auto network = std::make_shared<QtNetworkClient>();

@@ -56,7 +56,7 @@ likelihood of affecting production update flows.
       operation.
     - Cross-platform regression tests cover source, target, and backup links.
 
-- [ ] **AU-003 — Validate the initial URL and every redirect hop**
+- [x] **AU-003 — Validate the initial URL and every redirect hop**
   - Classification: Verified security issue; medium severity; CWE-918.
   - Key code: `src/ManifestFetcher.cpp:64,80-84`,
     `src/UpdatePlanner.cpp:51-52`, `src/util/UrlUtil.cpp:60-73`,

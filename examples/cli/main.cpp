@@ -59,8 +59,8 @@ std::vector<std::string> commandLineArgs(int argc, char** argv) {
 
 void usage() {
     std::cout << "Usage:\n"
-              << "  libAutoUpdater_cli --manifest <url-or-file> --version <x.y.z> --install <dir> [--updater <path>] "
-                 "[--apply]\n";
+              << "  libAutoUpdater_cli --manifest <url> --version <x.y.z> --install <dir> "
+                 "[--allow-base <url>] [--allow-local-file-urls] [--updater <path>] [--apply]\n";
 }
 
 const char* stateName(autoupdater::State state) noexcept {
@@ -110,6 +110,10 @@ int main(int argc, char** argv) {
         const auto& arg = args[i];
         if (arg == "--manifest" && i + 1 < args.size()) {
             config.manifestUrl = args[++i];
+        } else if (arg == "--allow-base" && i + 1 < args.size()) {
+            config.security.allowedBaseUrls.push_back(args[++i]);
+        } else if (arg == "--allow-local-file-urls") {
+            config.security.allowLocalFileUrls = true;
         } else if (arg == "--version" && i + 1 < args.size()) {
             auto parsed = autoupdater::Version::parse(args[++i]);
             if (!parsed) {

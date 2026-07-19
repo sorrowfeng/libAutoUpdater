@@ -102,33 +102,37 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
     if (util::isFileUrl(url)) {
         return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
     }
-    if (url.find("://") == std::string::npos) {
-        return Result<std::filesystem::path>::ok(util::pathFromUtf8(url));
-    }
     return Result<std::filesystem::path>::fail(
-        {ErrorCode::NetworkError, "CFNetwork supports only HTTP and HTTPS URLs"});
+        {ErrorCode::NetworkError, "CFNetwork accepts only HTTP, HTTPS, and explicit file: URLs"});
 }
 
-Result<std::string> readLocalText(const std::string& url, CancellationToken& cancel) {
+Result<TextResponse> readLocalText(const std::string& url, CancellationToken& cancel) {
     if (cancel.isCancelled()) {
-        return Result<std::string>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
     }
 
     auto path = localPathFromUrl(url);
     if (!path) {
-        return Result<std::string>::fail(path.error());
+        return Result<TextResponse>::fail(path.error());
     }
 
     try {
         std::ifstream input(path.value(), std::ios::binary);
         if (!input) {
-            return Result<std::string>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
+            return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
         }
         std::ostringstream stream;
         stream << input.rdbuf();
-        return Result<std::string>::ok(stream.str());
+        if (input.bad()) {
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        }
+        TextResponse response;
+        response.response.statusCode = 200;
+        response.response.effectiveUrl = url;
+        response.body = stream.str();
+        return Result<TextResponse>::ok(std::move(response));
     } catch (...) {
-        return Result<std::string>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
     }
 }
 
@@ -178,6 +182,8 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& targ
         }
 
         DownloadResult result;
+        result.response.statusCode = 200;
+        result.response.effectiveUrl = url;
         result.bytesWritten = written;
         return Result<DownloadResult>::ok(result);
     } catch (...) {
@@ -248,7 +254,10 @@ Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const Netw
         return Result<CfRef<CFReadStreamRef>>::fail({ErrorCode::NetworkError, "Failed to create CFNetwork stream"});
     }
 
-    CFReadStreamSetProperty(stream.get(), kCFStreamPropertyHTTPShouldAutoredirect, kCFBooleanTrue);
+    if (!CFReadStreamSetProperty(stream.get(), kCFStreamPropertyHTTPShouldAutoredirect, kCFBooleanFalse)) {
+        return Result<CfRef<CFReadStreamRef>>::fail(
+            {ErrorCode::NetworkError, "Failed to disable CFNetwork automatic redirects"});
+    }
 
     if (request.secure && !options.verifyTls) {
         const void* keys[] = {kCFStreamSSLValidatesCertificateChain};
@@ -274,6 +283,82 @@ CfRef<CFHTTPMessageRef> copyResponseHeaders(CFReadStreamRef stream) {
     }
     auto response = static_cast<CFHTTPMessageRef>(const_cast<void*>(value));
     return CfRef<CFHTTPMessageRef>(response);
+}
+
+void trimOptionalWhitespace(std::string& value) {
+    const auto begin = value.find_first_not_of(" \t");
+    if (begin == std::string::npos) {
+        value.clear();
+        return;
+    }
+    const auto end = value.find_last_not_of(" \t");
+    value = value.substr(begin, end - begin + 1);
+}
+
+std::vector<NetworkHeader> responseHeaders(CFHTTPMessageRef response) {
+    std::vector<NetworkHeader> headers;
+    auto serialized = CfRef<CFDataRef>(CFHTTPMessageCopySerializedMessage(response));
+    if (!serialized) {
+        return headers;
+    }
+
+    const auto length = CFDataGetLength(serialized.get());
+    const auto* bytes = CFDataGetBytePtr(serialized.get());
+    if (!bytes || length <= 0) {
+        return headers;
+    }
+
+    const std::string raw(reinterpret_cast<const char*>(bytes), static_cast<std::size_t>(length));
+    std::size_t position = 0;
+    bool firstLine = true;
+    while (position <= raw.size()) {
+        const auto end = raw.find("\r\n", position);
+        const auto count = end == std::string::npos ? raw.size() - position : end - position;
+        const auto line = raw.substr(position, count);
+        if (!firstLine && !line.empty()) {
+            const auto colon = line.find(':');
+            if (colon != std::string::npos) {
+                auto name = line.substr(0, colon);
+                auto value = line.substr(colon + 1);
+                std::transform(name.begin(), name.end(), name.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                trimOptionalWhitespace(value);
+                headers.push_back({std::move(name), std::move(value)});
+            }
+        }
+        firstLine = false;
+        if (end == std::string::npos || count == 0) {
+            break;
+        }
+        position = end + 2;
+    }
+    return headers;
+}
+
+std::string responseHeader(const NetworkResponseInfo& response, const std::string& name) {
+    for (const auto& header : response.headers) {
+        if (header.name == name) {
+            return header.value;
+        }
+    }
+    return {};
+}
+
+NetworkResponseInfo responseInfo(CFReadStreamRef stream, CFHTTPMessageRef headers, const std::string& requestedUrl) {
+    NetworkResponseInfo response;
+    response.statusCode = static_cast<int>(CFHTTPMessageGetResponseStatusCode(headers));
+    response.headers = responseHeaders(headers);
+    response.effectiveUrl = requestedUrl;
+
+    auto finalUrl = CfRef<CFTypeRef>(CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL));
+    if (finalUrl && CFGetTypeID(finalUrl.get()) == CFURLGetTypeID()) {
+        const auto url = reinterpret_cast<CFURLRef>(finalUrl.get());
+        const auto serialized = cfStringToStd(CFURLGetString(url));
+        if (!serialized.empty()) {
+            response.effectiveUrl = serialized;
+        }
+    }
+    return response;
 }
 
 struct ResponseStart {
@@ -379,8 +464,8 @@ void setResumeHeaders(CFHTTPMessageRef request, const NetworkOptions& options,
 
 class CfNetworkClient final : public INetworkClient {
   public:
-    Result<std::string> getText(const std::string& url, const NetworkOptions& options,
-                                CancellationToken& cancel) noexcept override {
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
+                                 CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return readLocalText(url, cancel);
         }
@@ -388,30 +473,30 @@ class CfNetworkClient final : public INetworkClient {
         try {
             auto request = makeRequest(url);
             if (!request) {
-                return Result<std::string>::fail(request.error());
+                return Result<TextResponse>::fail(request.error());
             }
             auto stream = openStream(request.value(), options);
             if (!stream) {
-                return Result<std::string>::fail(stream.error());
+                return Result<TextResponse>::fail(stream.error());
             }
             auto response = waitForResponse(stream.value().get(), cancel);
             if (!response) {
-                return Result<std::string>::fail(response.error());
+                return Result<TextResponse>::fail(response.error());
             }
-            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().headers.get());
-            if (status >= 400) {
-                return Result<std::string>::fail({ErrorCode::NetworkError, "HTTP error " + std::to_string(status)});
-            }
+            auto info = responseInfo(stream.value().get(), response.value().headers.get(), url);
 
             auto bytes =
                 readResponse(stream.value().get(), cancel, {}, {}, 0, contentLength(response.value().headers.get()),
                              nullptr, response.value().bufferedBody);
             if (!bytes) {
-                return Result<std::string>::fail(bytes.error());
+                return Result<TextResponse>::fail(bytes.error());
             }
-            return Result<std::string>::ok(std::string(bytes.value().begin(), bytes.value().end()));
+            TextResponse result;
+            result.response = std::move(info);
+            result.body.assign(bytes.value().begin(), bytes.value().end());
+            return Result<TextResponse>::ok(std::move(result));
         } catch (...) {
-            return Result<std::string>::fail({ErrorCode::NetworkError, "Unexpected CFNetwork request failure"});
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Unexpected CFNetwork request failure"});
         }
     }
 
@@ -419,7 +504,8 @@ class CfNetworkClient final : public INetworkClient {
                                           const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
-            return copyLocalToFile(url, target, resume, std::move(progress), cancel);
+            const auto effectiveResume = options.enableResume ? resume : std::nullopt;
+            return copyLocalToFile(url, target, effectiveResume, std::move(progress), cancel);
         }
 
         try {
@@ -438,41 +524,35 @@ class CfNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail(response.error());
             }
 
-            const auto status = CFHTTPMessageGetResponseStatusCode(response.value().headers.get());
-            if (options.enableResume && resume && resume->offset > 0 && status == 200) {
-                auto truncated = target.truncate(0);
-                if (!truncated) {
-                    return Result<DownloadResult>::fail(truncated.error());
-                }
-                auto rewound = target.seek(0);
-                if (!rewound) {
-                    return Result<DownloadResult>::fail(rewound.error());
-                }
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
-            }
-            if (status >= 400) {
-                return Result<DownloadResult>::fail(
-                    {ErrorCode::DownloadFailed, "HTTP error " + std::to_string(status)});
-            }
+            auto info = responseInfo(stream.value().get(), response.value().headers.get(), url);
 
-            const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes =
-                readResponse(stream.value().get(), cancel, std::move(progress), {}, initialBytes,
-                             contentLength(response.value().headers.get()), &target, response.value().bufferedBody);
-            if (!bytes) {
-                const auto code =
-                    bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;
-                return Result<DownloadResult>::fail({code, bytes.error().message});
+            const bool appending = options.enableResume && resume && resume->offset > 0;
+            const auto initialBytes = appending ? resume->offset : 0;
+            const int writableStatus = appending ? 206 : 200;
+            if (info.statusCode == writableStatus) {
+                auto bytes =
+                    readResponse(stream.value().get(), cancel, std::move(progress), {}, initialBytes,
+                                 contentLength(response.value().headers.get()), &target, response.value().bufferedBody);
+                if (!bytes) {
+                    const auto code =
+                        bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;
+                    return Result<DownloadResult>::fail({code, bytes.error().message});
+                }
+            } else if (cancel.isCancelled()) {
+                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
             }
 
             DownloadResult result;
+            result.response = std::move(info);
             result.bytesWritten = initialBytes;
-            auto metadata = target.metadata();
-            if (metadata) {
-                result.bytesWritten = metadata.value().size;
+            if (result.response.statusCode == writableStatus) {
+                auto metadata = target.metadata();
+                if (metadata) {
+                    result.bytesWritten = metadata.value().size;
+                }
             }
-            result.etag = queryHeader(response.value().headers.get(), CFSTR("ETag"));
-            result.lastModified = queryHeader(response.value().headers.get(), CFSTR("Last-Modified"));
+            result.etag = responseHeader(result.response, "etag");
+            result.lastModified = responseHeader(result.response, "last-modified");
             return Result<DownloadResult>::ok(std::move(result));
         } catch (...) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Unexpected CFNetwork download failure"});

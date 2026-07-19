@@ -44,14 +44,18 @@ class QueuedDispatcher final : public autoupdater::IEventDispatcher {
 
 class StaticManifestNetwork final : public autoupdater::INetworkClient {
   public:
-    autoupdater::Result<std::string> getText(const std::string&, const autoupdater::NetworkOptions&,
-                                             autoupdater::CancellationToken&) noexcept override {
-        return autoupdater::Result<std::string>::ok(R"json({
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string& url, const autoupdater::NetworkOptions&,
+                                                           autoupdater::CancellationToken&) noexcept override {
+        autoupdater::TextResponse response;
+        response.response.statusCode = 200;
+        response.response.effectiveUrl = url;
+        response.body = R"json({
           "schemaVersion": 1,
           "version": "1.0.0",
-          "baseUrl": "file:///release/",
+          "baseUrl": "https://updates.example.test/release/",
           "files": []
-        })json");
+        })json";
+        return autoupdater::Result<autoupdater::TextResponse>::ok(std::move(response));
     }
 
     autoupdater::Result<autoupdater::DownloadResult>
@@ -80,9 +84,10 @@ void testUpdaterQueuedCallbacksOutliveUpdater() {
 
     {
         autoupdater::Config config;
-        config.manifestUrl = "mock://manifest";
+        config.manifestUrl = "https://updates.example.test/manifest.json";
         config.currentVersion = autoupdater::Version::parse("1.0.0").value();
         config.installDir = installDir;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
 
         autoupdater::Updater updater(config);
         updater.setNetworkClient(std::make_shared<StaticManifestNetwork>());

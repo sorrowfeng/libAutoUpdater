@@ -4,6 +4,7 @@
 #include "libAutoUpdater/Version.h"
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -20,6 +21,8 @@ struct RetryOptions {
 struct NetworkOptions {
     std::chrono::milliseconds connectTimeout{10000};
     std::chrono::milliseconds transferTimeout{60000};
+    /// Maximum number of redirects followed by the core redirect coordinator.
+    std::size_t maxRedirects = 5;
     bool verifyTls = true;
     bool enableResume = true;
 };
@@ -29,7 +32,10 @@ struct SecurityOptions {
     bool requireManifestSignature = false;
     std::string manifestSignatureUrl;
     std::string publicKeyPem;
+    /// Trusted HTTP(S) URL roots. Network updates fail closed when this is empty.
     std::vector<std::string> allowedBaseUrls;
+    /// Explicit opt-in for absolute file: URLs beneath the manifest directory.
+    bool allowLocalFileUrls = false;
     bool rejectExpiredManifest = true;
     bool rejectDowngrade = true;
 };

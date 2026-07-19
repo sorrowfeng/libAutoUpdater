@@ -1,11 +1,13 @@
 #include "UpdatePlanner.h"
 
+#include "UrlPolicy.h"
 #include "util/PathUtil.h"
 #include "util/UrlUtil.h"
 
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace autoupdater {
 
@@ -24,7 +26,9 @@ std::string currentUtcIsoLike() {
     return stream.str();
 }
 
-Result<void> validateManifestAgainstConfig(const Config& config, const Manifest& manifest) {
+Result<void> validateManifestAgainstConfig(const Config& config, const ManifestEnvelope& envelope,
+                                           const UrlPolicy& policy) {
+    const auto& manifest = envelope.manifest;
     if (config.installLayout == InstallLayout::PackageManagerOwned) {
         return Result<void>::fail(
             {ErrorCode::UnsupportedInstallLayout, "Package-manager-owned installs are not self-updated"});
@@ -48,8 +52,21 @@ Result<void> validateManifestAgainstConfig(const Config& config, const Manifest&
         currentUtcIsoLike() > manifest.expiresAt) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest has expired"});
     }
-    if (!util::urlStartsWithAny(manifest.baseUrl, config.security.allowedBaseUrls)) {
-        return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest baseUrl is not allowed"});
+    auto source = policy.authorize(envelope.sourceUrl);
+    if (!source) {
+        return Result<void>::fail(source.error());
+    }
+    auto artifactBase = policy.authorize(envelope.artifactBaseUrl);
+    if (!artifactBase) {
+        return Result<void>::fail(artifactBase.error());
+    }
+    if (artifactBase.value().path.empty() || artifactBase.value().path.back() != '/' || artifactBase.value().hasQuery) {
+        return Result<void>::fail(
+            {ErrorCode::SecurityPolicyViolation, "Resolved artifact base URL is not a query-free directory"});
+    }
+    auto transition = policy.authorizeTransition(source.value(), artifactBase.value());
+    if (!transition) {
+        return transition;
     }
     return Result<void>::ok();
 }
@@ -59,9 +76,17 @@ Result<void> validateManifestAgainstConfig(const Config& config, const Manifest&
 Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& envelope, const LocalSnapshot& snapshot,
                                   const std::optional<Version>& lastAcceptedVersion) {
     const auto& manifest = envelope.manifest;
-    auto validation = validateManifestAgainstConfig(config, manifest);
+    auto policy = UrlPolicy::fromConfig(config);
+    if (!policy) {
+        return Result<UpdateDecision>::fail(policy.error());
+    }
+    auto validation = validateManifestAgainstConfig(config, envelope, policy.value());
     if (!validation) {
         return Result<UpdateDecision>::fail(validation.error());
+    }
+    auto artifactBase = policy.value().authorize(envelope.artifactBaseUrl);
+    if (!artifactBase) {
+        return Result<UpdateDecision>::fail(artifactBase.error());
     }
 
     UpdateDecision decision;
@@ -112,7 +137,15 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
 
             PlannedDownload download;
             download.file = file;
-            download.url = util::joinUrl(manifest.baseUrl, file.path);
+            auto artifactUrl = util::appendEncodedPath(artifactBase.value(), file.path);
+            if (!artifactUrl) {
+                return Result<UpdateDecision>::fail(artifactUrl.error());
+            }
+            auto allowed = policy.value().authorizeTransition(artifactBase.value(), artifactUrl.value());
+            if (!allowed) {
+                return Result<UpdateDecision>::fail(allowed.error());
+            }
+            download.url = std::move(artifactUrl.value().canonical);
             auto stagingPath = util::safeJoin(config.tempDir, file.path);
             if (!stagingPath) {
                 return Result<UpdateDecision>::fail(stagingPath.error());

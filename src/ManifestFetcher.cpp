@@ -1,28 +1,59 @@
 #include "ManifestFetcher.h"
 
+#include "NetworkRequest.h"
+#include "UrlPolicy.h"
 #include "util/UrlUtil.h"
+
+#include <string>
+#include <utility>
 
 namespace autoupdater {
 
 namespace {
 
-Result<std::string> fetchTextAndVerify(const std::string& url, const std::string& signatureUrlOverride,
-                                       const Config& config, INetworkClient& network,
-                                       ISignatureVerifier& signatureVerifier, CancellationToken& cancel) {
-    auto raw = network.getText(url, config.network, cancel);
+Result<util::ParsedUrl> signatureUrlFor(const RedirectedTextResult& document, const std::string& signatureUrlOverride,
+                                        const UrlPolicy& policy) {
+    auto source = policy.authorize(document.effectiveUrl);
+    if (!source) {
+        return Result<util::ParsedUrl>::fail(source.error());
+    }
+    if (!signatureUrlOverride.empty()) {
+        return policy.resolveAndAuthorize(source.value(), signatureUrlOverride);
+    }
+
+    auto signature = util::appendUrlPathSuffix(source.value(), ".sig");
+    if (!signature) {
+        return signature;
+    }
+    auto allowed = policy.authorizeTransition(source.value(), signature.value());
+    if (!allowed) {
+        return Result<util::ParsedUrl>::fail(allowed.error());
+    }
+    return signature;
+}
+
+Result<RedirectedTextResult> fetchTextAndVerify(const std::string& url, const std::string& signatureUrlOverride,
+                                                const Config& config, const UrlPolicy& policy, INetworkClient& network,
+                                                ISignatureVerifier& signatureVerifier, CancellationToken& cancel) {
+    auto raw = fetchTextWithRedirects(url, config.network, policy, network, cancel);
     if (!raw) {
-        return Result<std::string>::fail(raw.error());
+        return Result<RedirectedTextResult>::fail(raw.error());
     }
 
     if (config.security.requireManifestSignature) {
-        const auto signatureUrl = signatureUrlOverride.empty() ? url + ".sig" : signatureUrlOverride;
-        auto signature = network.getText(signatureUrl, config.network, cancel);
-        if (!signature) {
-            return Result<std::string>::fail(signature.error());
+        auto signatureUrl = signatureUrlFor(raw.value(), signatureUrlOverride, policy);
+        if (!signatureUrl) {
+            return Result<RedirectedTextResult>::fail(signatureUrl.error());
         }
-        auto verified = signatureVerifier.verify(raw.value(), signature.value(), config.security.publicKeyPem);
+        auto signature =
+            fetchTextWithRedirects(signatureUrl.value().canonical, config.network, policy, network, cancel);
+        if (!signature) {
+            return Result<RedirectedTextResult>::fail(signature.error());
+        }
+        auto verified =
+            signatureVerifier.verify(raw.value().body, signature.value().body, config.security.publicKeyPem);
         if (!verified) {
-            return Result<std::string>::fail(verified.error());
+            return Result<RedirectedTextResult>::fail(verified.error());
         }
     }
 
@@ -52,6 +83,30 @@ Result<std::string> selectIndexTarget(const Config& config, const IndexManifest&
         {ErrorCode::ManifestParseFailed, "No matching release manifest target in index manifest"});
 }
 
+Result<util::ParsedUrl> resolveArtifactBase(const Manifest& manifest, const std::string& sourceUrl,
+                                            const UrlPolicy& policy) {
+    auto source = policy.authorize(sourceUrl);
+    if (!source) {
+        return Result<util::ParsedUrl>::fail(source.error());
+    }
+
+    Result<util::ParsedUrl> base = manifest.baseUrl.empty()
+                                       ? util::directoryUrl(source.value())
+                                       : policy.resolveAndAuthorize(source.value(), manifest.baseUrl);
+    if (!base) {
+        return base;
+    }
+    auto directory = util::asDirectoryUrl(base.value());
+    if (!directory) {
+        return directory;
+    }
+    auto allowed = policy.authorizeTransition(source.value(), directory.value());
+    if (!allowed) {
+        return Result<util::ParsedUrl>::fail(allowed.error());
+    }
+    return directory;
+}
+
 } // namespace
 
 Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkClient& network,
@@ -60,16 +115,20 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
     if (config.manifestUrl.empty()) {
         return Result<ManifestEnvelope>::fail({ErrorCode::InvalidConfig, "manifestUrl is required"});
     }
+    auto policy = UrlPolicy::fromConfig(config);
+    if (!policy) {
+        return Result<ManifestEnvelope>::fail(policy.error());
+    }
 
-    auto raw = fetchTextAndVerify(config.manifestUrl, config.security.manifestSignatureUrl, config, network,
-                                  signatureVerifier, cancel);
+    auto raw = fetchTextAndVerify(policy.value().initialUrl().canonical, config.security.manifestSignatureUrl, config,
+                                  policy.value(), network, signatureVerifier, cancel);
     if (!raw) {
         return Result<ManifestEnvelope>::fail(raw.error());
     }
 
-    auto parsed = Manifest::parse(raw.value());
+    auto parsed = Manifest::parse(raw.value().body);
     if (!parsed && parsed.error().code == ErrorCode::ManifestParseFailed) {
-        auto index = IndexManifest::parse(raw.value());
+        auto index = IndexManifest::parse(raw.value().body);
         if (!index) {
             return Result<ManifestEnvelope>::fail(parsed.error());
         }
@@ -77,29 +136,40 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         if (!target) {
             return Result<ManifestEnvelope>::fail(target.error());
         }
-        if (!util::urlStartsWithAny(target.value(), config.security.allowedBaseUrls)) {
-            return Result<ManifestEnvelope>::fail(
-                {ErrorCode::SecurityPolicyViolation, "Release manifest URL is not allowed"});
+        auto indexSource = policy.value().authorize(raw.value().effectiveUrl);
+        if (!indexSource) {
+            return Result<ManifestEnvelope>::fail(indexSource.error());
         }
-        raw = fetchTextAndVerify(target.value(), {}, config, network, signatureVerifier, cancel);
+        auto releaseUrl = policy.value().resolveAndAuthorize(indexSource.value(), target.value());
+        if (!releaseUrl) {
+            return Result<ManifestEnvelope>::fail(releaseUrl.error());
+        }
+        raw = fetchTextAndVerify(releaseUrl.value().canonical, {}, config, policy.value(), network, signatureVerifier,
+                                 cancel);
         if (!raw) {
             return Result<ManifestEnvelope>::fail(raw.error());
         }
-        parsed = Manifest::parse(raw.value());
+        parsed = Manifest::parse(raw.value().body);
     }
 
     if (!parsed) {
         return Result<ManifestEnvelope>::fail(parsed.error());
     }
-    auto manifestHash = hashProvider.sha256Bytes(raw.value());
+    auto artifactBase = resolveArtifactBase(parsed.value(), raw.value().effectiveUrl, policy.value());
+    if (!artifactBase) {
+        return Result<ManifestEnvelope>::fail(artifactBase.error());
+    }
+    auto manifestHash = hashProvider.sha256Bytes(raw.value().body);
     if (!manifestHash) {
         return Result<ManifestEnvelope>::fail(manifestHash.error());
     }
 
     ManifestEnvelope envelope;
     envelope.manifest = std::move(parsed.value());
-    envelope.rawBytes = std::move(raw.value());
+    envelope.rawBytes = std::move(raw.value().body);
     envelope.sha256 = std::move(manifestHash.value());
+    envelope.sourceUrl = std::move(raw.value().effectiveUrl);
+    envelope.artifactBaseUrl = std::move(artifactBase.value().canonical);
     return Result<ManifestEnvelope>::ok(std::move(envelope));
 }
 

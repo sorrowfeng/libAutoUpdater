@@ -1,5 +1,8 @@
 #include "DownloadExecutor.h"
 
+#include "NetworkRequest.h"
+#include "UrlPolicy.h"
+
 #include <chrono>
 #include <thread>
 
@@ -19,6 +22,11 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
     std::uint64_t totalBytes = 0;
     for (const auto& download : decision.downloads) {
         totalBytes += download.file.size;
+    }
+
+    auto policy = UrlPolicy::fromConfig(config);
+    if (!policy) {
+        return Result<void>::fail(policy.error());
     }
 
     auto stagingRoot = fileSystem.openRoot(config.tempDir, RootAccess::ReadWrite, true);
@@ -59,6 +67,11 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
             }
         }
         existing.value().file.reset();
+
+        auto canonicalDownloadUrl = policy.value().authorize(download.url);
+        if (!canonicalDownloadUrl) {
+            return Result<void>::fail(canonicalDownloadUrl.error());
+        }
 
         Error lastError{ErrorCode::DownloadFailed, "Download failed"};
         bool success = false;
@@ -106,8 +119,8 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                 }
             }
 
-            auto result = network.downloadToFile(
-                download.url, *temporary.value().file, config.network, resume,
+            auto result = downloadWithRedirects(
+                download.url, *temporary.value().file, config.network, policy.value(), network, resume,
                 [&](const Progress& current) {
                     if (progress) {
                         Progress aggregate;
@@ -126,10 +139,9 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                     state.key = download.url;
                     state.offset = failedMetadata.value().size;
                     state.sha256 = download.file.sha256;
-                    if (resume) {
-                        state.etag = resume->etag;
-                        state.lastModified = resume->lastModified;
-                    }
+                    // The coordinator may have crossed a redirect or discarded
+                    // stale resume metadata before this failure. Persisting the
+                    // caller's old validator would bind it to the wrong resource.
                     stateStore->saveDownloadResume(state);
                 }
             } else {
@@ -147,8 +159,10 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
                     DownloadResumeState state;
                     state.key = download.url;
                     state.offset = completedMetadata.value().size;
-                    state.etag = result.value().etag;
-                    state.lastModified = result.value().lastModified;
+                    if (result.value().effectiveUrl == canonicalDownloadUrl.value().canonical) {
+                        state.etag = result.value().download.etag;
+                        state.lastModified = result.value().download.lastModified;
+                    }
                     state.sha256 = download.file.sha256;
                     stateStore->saveDownloadResume(state);
                 }

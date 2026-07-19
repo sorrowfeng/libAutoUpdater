@@ -4,6 +4,8 @@ add_executable(libAutoUpdater_tests
     VersionTests.cpp
     ManifestTests.cpp
     ManifestFetcherTests.cpp
+    UrlPolicyTests.cpp
+    NetworkRequestTests.cpp
     UpdatePlannerTests.cpp
     ApplyPlanTests.cpp
     HashTests.cpp

@@ -8,7 +8,25 @@ void testManifestRejectsPathTraversal();
 void testManifestFetcherRoutesIndexManifest();
 void testManifestFetcherRejectsDisallowedIndexTarget();
 void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
+void testManifestFetcherRejectsInitialUrlBeforeNetwork();
+void testManifestFetcherResolvesIndexTargetFromEffectiveUrl();
+void testManifestFetcherResolvesSignaturesFromEffectiveUrl();
+void testManifestFetcherResolvesEmptyAndRelativeArtifactBases();
+void testUrlPolicyFailsClosedAndRejectsMalformedUrls();
+void testUrlPolicyCanonicalizesAndEnforcesScopeBoundaries();
+void testUrlPolicyRejectsLocalAndAmbiguousAddressLiterals();
+void testNetworkRequestRejectsInitialUrlBeforeTransport();
+void testNetworkRequestFollowsAllAllowedRedirectStatuses();
+void testNetworkRequestEnforcesRedirectOriginsAndProtocols();
+void testNetworkRequestRequiresOneLocationHeader();
+void testNetworkRequestDetectsLoopsAndRedirectLimit();
+void testNetworkRequestRejectsForgedEffectiveUrl();
+void testNetworkDownloadRestoresBodiesWrittenByRedirects();
+void testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus();
+void testNetworkDownloadRestartsIgnoredHttpResume();
+void testNetworkDownloadPreservesLocalFileResume();
 void testUpdatePlannerCreatesOperations();
+void testUpdatePlannerPercentEncodesArtifactPaths();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
 void testApplyExecutorUsesSafeAtomicJournalName();
@@ -20,6 +38,7 @@ void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
 void testDownloadExecutorContainsSwapsAndHardLinks();
+void testDownloadExecutorKeepsValidatorsBoundToTheirResource();
 void testApplyExecutorUsesSafePosixPermissions();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
@@ -35,7 +54,27 @@ int main() {
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
         {"ManifestFetcherRejectsDisallowedIndexTarget", testManifestFetcherRejectsDisallowedIndexTarget},
         {"ManifestFetcherRejectsAllowedBaseUrlPrefixBypass", testManifestFetcherRejectsAllowedBaseUrlPrefixBypass},
+        {"ManifestFetcherRejectsInitialUrlBeforeNetwork", testManifestFetcherRejectsInitialUrlBeforeNetwork},
+        {"ManifestFetcherResolvesIndexTargetFromEffectiveUrl", testManifestFetcherResolvesIndexTargetFromEffectiveUrl},
+        {"ManifestFetcherResolvesSignaturesFromEffectiveUrl", testManifestFetcherResolvesSignaturesFromEffectiveUrl},
+        {"ManifestFetcherResolvesEmptyAndRelativeArtifactBases",
+         testManifestFetcherResolvesEmptyAndRelativeArtifactBases},
+        {"UrlPolicyFailsClosedAndRejectsMalformedUrls", testUrlPolicyFailsClosedAndRejectsMalformedUrls},
+        {"UrlPolicyCanonicalizesAndEnforcesScopeBoundaries", testUrlPolicyCanonicalizesAndEnforcesScopeBoundaries},
+        {"UrlPolicyRejectsLocalAndAmbiguousAddressLiterals", testUrlPolicyRejectsLocalAndAmbiguousAddressLiterals},
+        {"NetworkRequestRejectsInitialUrlBeforeTransport", testNetworkRequestRejectsInitialUrlBeforeTransport},
+        {"NetworkRequestFollowsAllAllowedRedirectStatuses", testNetworkRequestFollowsAllAllowedRedirectStatuses},
+        {"NetworkRequestEnforcesRedirectOriginsAndProtocols", testNetworkRequestEnforcesRedirectOriginsAndProtocols},
+        {"NetworkRequestRequiresOneLocationHeader", testNetworkRequestRequiresOneLocationHeader},
+        {"NetworkRequestDetectsLoopsAndRedirectLimit", testNetworkRequestDetectsLoopsAndRedirectLimit},
+        {"NetworkRequestRejectsForgedEffectiveUrl", testNetworkRequestRejectsForgedEffectiveUrl},
+        {"NetworkDownloadRestoresBodiesWrittenByRedirects", testNetworkDownloadRestoresBodiesWrittenByRedirects},
+        {"NetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus",
+         testNetworkDownloadResetsResumeAndRejectsUnexpectedSuccessStatus},
+        {"NetworkDownloadRestartsIgnoredHttpResume", testNetworkDownloadRestartsIgnoredHttpResume},
+        {"NetworkDownloadPreservesLocalFileResume", testNetworkDownloadPreservesLocalFileResume},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
+        {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
         {"ApplyExecutorUsesSafeAtomicJournalName", testApplyExecutorUsesSafeAtomicJournalName},
@@ -47,6 +86,8 @@ int main() {
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
         {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},
         {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},
+        {"DownloadExecutorKeepsValidatorsBoundToTheirResource",
+         testDownloadExecutorKeepsValidatorsBoundToTheirResource},
         {"ApplyExecutorUsesSafePosixPermissions", testApplyExecutorUsesSafePosixPermissions},
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},

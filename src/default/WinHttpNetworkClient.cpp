@@ -213,8 +213,11 @@ Result<WinHttpRequest> openRequest(const std::string& url, const NetworkOptions&
         return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpOpenRequest");
     }
 
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(requestHandle.get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    if (!WinHttpSetOption(requestHandle.get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy,
+                          sizeof(redirectPolicy))) {
+        return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpSetOption redirect policy");
+    }
 
     if (!options.verifyTls && parsed.value().secure) {
         DWORD securityFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
@@ -248,22 +251,107 @@ Result<DWORD> statusCode(HINTERNET request) {
     return Result<DWORD>::ok(status);
 }
 
-std::string queryHeader(HINTERNET request, const wchar_t* name) {
+void trimOptionalWhitespace(std::string& value) {
+    const auto begin = value.find_first_not_of(" \t");
+    if (begin == std::string::npos) {
+        value.clear();
+        return;
+    }
+    const auto end = value.find_last_not_of(" \t");
+    value = value.substr(begin, end - begin + 1);
+}
+
+Result<std::vector<NetworkHeader>> responseHeaders(HINTERNET request) {
     DWORD size = 0;
-    WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name, WINHTTP_NO_OUTPUT_BUFFER, &size, WINHTTP_NO_HEADER_INDEX);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, WINHTTP_NO_OUTPUT_BUFFER,
+                        &size, WINHTTP_NO_HEADER_INDEX);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
-        return {};
+        return failLast<std::vector<NetworkHeader>>(ErrorCode::NetworkError, "WinHttpQueryHeaders raw headers");
     }
 
-    std::wstring value(size / sizeof(wchar_t), L'\0');
-    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, name, value.data(), &size, WINHTTP_NO_HEADER_INDEX)) {
-        return {};
+    std::wstring raw(size / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, raw.data(), &size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        return failLast<std::vector<NetworkHeader>>(ErrorCode::NetworkError, "WinHttpQueryHeaders raw headers");
     }
-    value.resize(size / sizeof(wchar_t));
-    while (!value.empty() && value.back() == L'\0') {
-        value.pop_back();
+    raw.resize(size / sizeof(wchar_t));
+    while (!raw.empty() && raw.back() == L'\0') {
+        raw.pop_back();
     }
-    return narrow(value);
+
+    std::vector<NetworkHeader> headers;
+    std::size_t position = 0;
+    bool firstLine = true;
+    while (position <= raw.size()) {
+        const auto end = raw.find(L"\r\n", position);
+        const auto count = end == std::wstring::npos ? raw.size() - position : end - position;
+        const auto line = narrow(raw.substr(position, count));
+        if (!firstLine && !line.empty()) {
+            const auto colon = line.find(':');
+            if (colon != std::string::npos) {
+                auto name = line.substr(0, colon);
+                auto value = line.substr(colon + 1);
+                std::transform(name.begin(), name.end(), name.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                trimOptionalWhitespace(value);
+                headers.push_back({std::move(name), std::move(value)});
+            }
+        }
+        firstLine = false;
+        if (end == std::wstring::npos) {
+            break;
+        }
+        position = end + 2;
+    }
+    return Result<std::vector<NetworkHeader>>::ok(std::move(headers));
+}
+
+Result<std::string> responseUrl(HINTERNET request) {
+    DWORD size = 0;
+    WinHttpQueryOption(request, WINHTTP_OPTION_URL, WINHTTP_NO_OUTPUT_BUFFER, &size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return failLast<std::string>(ErrorCode::NetworkError, "WinHttpQueryOption URL");
+    }
+
+    std::wstring url(size / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryOption(request, WINHTTP_OPTION_URL, url.data(), &size)) {
+        return failLast<std::string>(ErrorCode::NetworkError, "WinHttpQueryOption URL");
+    }
+    url.resize(size / sizeof(wchar_t));
+    while (!url.empty() && url.back() == L'\0') {
+        url.pop_back();
+    }
+    return Result<std::string>::ok(narrow(url));
+}
+
+Result<NetworkResponseInfo> responseInfo(HINTERNET request) {
+    auto status = statusCode(request);
+    if (!status) {
+        return Result<NetworkResponseInfo>::fail(status.error());
+    }
+    auto headers = responseHeaders(request);
+    if (!headers) {
+        return Result<NetworkResponseInfo>::fail(headers.error());
+    }
+    auto url = responseUrl(request);
+    if (!url) {
+        return Result<NetworkResponseInfo>::fail(url.error());
+    }
+
+    NetworkResponseInfo response;
+    response.statusCode = static_cast<int>(status.value());
+    response.headers = std::move(headers.value());
+    response.effectiveUrl = std::move(url.value());
+    return Result<NetworkResponseInfo>::ok(std::move(response));
+}
+
+std::string responseHeader(const NetworkResponseInfo& response, const std::string& name) {
+    for (const auto& header : response.headers) {
+        if (header.name == name) {
+            return header.value;
+        }
+    }
+    return {};
 }
 
 std::uint64_t queryContentLength(HINTERNET request) {
@@ -337,30 +425,35 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
     if (util::isFileUrl(url)) {
         return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
     }
-    if (url.find("://") == std::string::npos) {
-        return Result<std::filesystem::path>::ok(util::pathFromUtf8(url));
-    }
-    return Result<std::filesystem::path>::fail({ErrorCode::NetworkError, "WinHTTP supports only HTTP and HTTPS URLs"});
+    return Result<std::filesystem::path>::fail(
+        {ErrorCode::NetworkError, "WinHTTP accepts only HTTP, HTTPS, and explicit file: URLs"});
 }
 
-Result<std::string> readLocalText(const std::string& url, CancellationToken& cancel) {
+Result<TextResponse> readLocalText(const std::string& url, CancellationToken& cancel) {
     if (cancel.isCancelled()) {
-        return Result<std::string>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
     }
     auto path = localPathFromUrl(url);
     if (!path) {
-        return Result<std::string>::fail(path.error());
+        return Result<TextResponse>::fail(path.error());
     }
     try {
         std::ifstream input(path.value(), std::ios::binary);
         if (!input) {
-            return Result<std::string>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
+            return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
         }
         std::ostringstream stream;
         stream << input.rdbuf();
-        return Result<std::string>::ok(stream.str());
+        if (input.bad()) {
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        }
+        TextResponse response;
+        response.response.statusCode = 200;
+        response.response.effectiveUrl = url;
+        response.body = stream.str();
+        return Result<TextResponse>::ok(std::move(response));
     } catch (...) {
-        return Result<std::string>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
     }
 }
 
@@ -409,6 +502,8 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& targ
         }
 
         DownloadResult result;
+        result.response.statusCode = 200;
+        result.response.effectiveUrl = url;
         result.bytesWritten = written;
         return Result<DownloadResult>::ok(result);
     } catch (...) {
@@ -432,8 +527,8 @@ std::wstring resumeHeaders(const NetworkOptions& options, const std::optional<Do
 
 class WinHttpNetworkClient final : public INetworkClient {
   public:
-    Result<std::string> getText(const std::string& url, const NetworkOptions& options,
-                                CancellationToken& cancel) noexcept override {
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions& options,
+                                 CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
             return readLocalText(url, cancel);
         }
@@ -441,24 +536,23 @@ class WinHttpNetworkClient final : public INetworkClient {
         try {
             auto request = openRequest(url, options, {});
             if (!request) {
-                return Result<std::string>::fail(request.error());
+                return Result<TextResponse>::fail(request.error());
             }
-            auto status = statusCode(request.value().get());
-            if (!status) {
-                return Result<std::string>::fail(status.error());
-            }
-            if (status.value() >= 400) {
-                return Result<std::string>::fail(
-                    {ErrorCode::NetworkError, "HTTP error " + std::to_string(status.value())});
+            auto info = responseInfo(request.value().get());
+            if (!info) {
+                return Result<TextResponse>::fail(info.error());
             }
 
             auto bytes = readResponseBytes(request.value().get(), cancel, {}, {}, 0, nullptr);
             if (!bytes) {
-                return Result<std::string>::fail(bytes.error());
+                return Result<TextResponse>::fail(bytes.error());
             }
-            return Result<std::string>::ok(std::string(bytes.value().begin(), bytes.value().end()));
+            TextResponse response;
+            response.response = std::move(info.value());
+            response.body.assign(bytes.value().begin(), bytes.value().end());
+            return Result<TextResponse>::ok(std::move(response));
         } catch (...) {
-            return Result<std::string>::fail({ErrorCode::NetworkError, "Unexpected WinHTTP request failure"});
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Unexpected WinHTTP request failure"});
         }
     }
 
@@ -466,7 +560,8 @@ class WinHttpNetworkClient final : public INetworkClient {
                                           const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         if (!isHttpUrl(url)) {
-            return copyLocalToFile(url, target, resume, std::move(progress), cancel);
+            const auto effectiveResume = options.enableResume ? resume : std::nullopt;
+            return copyLocalToFile(url, target, effectiveResume, std::move(progress), cancel);
         }
 
         try {
@@ -476,43 +571,38 @@ class WinHttpNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail(request.error());
             }
 
-            auto status = statusCode(request.value().get());
-            if (!status) {
-                return Result<DownloadResult>::fail(status.error());
+            auto info = responseInfo(request.value().get());
+            if (!info) {
+                return Result<DownloadResult>::fail(info.error());
             }
-            if (options.enableResume && resume && resume->offset > 0 && status.value() == 200) {
-                auto truncated = target.truncate(0);
-                if (!truncated) {
-                    return Result<DownloadResult>::fail(truncated.error());
-                }
-                auto rewound = target.seek(0);
-                if (!rewound) {
-                    return Result<DownloadResult>::fail(rewound.error());
-                }
-                return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Server ignored Range request"});
-            }
-            if (status.value() >= 400) {
-                return Result<DownloadResult>::fail(
-                    {ErrorCode::DownloadFailed, "HTTP error " + std::to_string(status.value())});
+            if (cancel.isCancelled()) {
+                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
             }
 
-            const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes =
-                readResponseBytes(request.value().get(), cancel, std::move(progress), {}, initialBytes, &target);
-            if (!bytes) {
-                return Result<DownloadResult>::fail(
-                    {bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code,
-                     bytes.error().message});
+            const bool appending = options.enableResume && resume && resume->offset > 0;
+            const auto initialBytes = appending ? resume->offset : 0;
+            const int writableStatus = appending ? 206 : 200;
+            if (info.value().statusCode == writableStatus) {
+                auto bytes =
+                    readResponseBytes(request.value().get(), cancel, std::move(progress), {}, initialBytes, &target);
+                if (!bytes) {
+                    return Result<DownloadResult>::fail(
+                        {bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code,
+                         bytes.error().message});
+                }
             }
 
             DownloadResult result;
+            result.response = std::move(info.value());
             result.bytesWritten = initialBytes;
-            auto metadata = target.metadata();
-            if (metadata) {
-                result.bytesWritten = metadata.value().size;
+            if (result.response.statusCode == writableStatus) {
+                auto metadata = target.metadata();
+                if (metadata) {
+                    result.bytesWritten = metadata.value().size;
+                }
             }
-            result.etag = queryHeader(request.value().get(), L"ETag");
-            result.lastModified = queryHeader(request.value().get(), L"Last-Modified");
+            result.etag = responseHeader(result.response, "etag");
+            result.lastModified = responseHeader(result.response, "last-modified");
             return Result<DownloadResult>::ok(std::move(result));
         } catch (...) {
             return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Unexpected WinHTTP download failure"});

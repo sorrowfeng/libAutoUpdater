@@ -49,6 +49,8 @@ struct ManifestEnvelope {
     Manifest manifest;
     std::string rawBytes;
     std::string sha256;
+    std::string sourceUrl;
+    std::string artifactBaseUrl;
 };
 
 } // namespace autoupdater

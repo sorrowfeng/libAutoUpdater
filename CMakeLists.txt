@@ -98,8 +98,10 @@ set(LIBAUTOUPDATER_SOURCES
     src/Manifest.cpp
     src/ManifestFetcher.cpp
     src/ManifestVerifier.cpp
+    src/NetworkRequest.cpp
     src/UpdatePlanner.cpp
     src/Updater.cpp
+    src/UrlPolicy.cpp
     src/Version.cpp
     src/default/BasicNetworkClient.cpp
     src/default/DirectDispatcher.cpp

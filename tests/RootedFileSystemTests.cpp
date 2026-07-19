@@ -6,12 +6,14 @@
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/INetworkClient.h"
+#include "libAutoUpdater/interfaces/IStateStore.h"
 
 #include <array>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -302,14 +304,14 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
   public:
     explicit StaticDownloadClient(std::string contents) : contents_(std::move(contents)) {}
 
-    autoupdater::Result<std::string> getText(const std::string&, const autoupdater::NetworkOptions&,
-                                             autoupdater::CancellationToken&) noexcept override {
-        return autoupdater::Result<std::string>::fail(
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
     }
 
     autoupdater::Result<autoupdater::DownloadResult>
-    downloadToFile(const std::string&, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
+    downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
                    const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         called = true;
@@ -318,6 +320,8 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
             return autoupdater::Result<autoupdater::DownloadResult>::fail(written.error());
         }
         autoupdater::DownloadResult result;
+        result.response.statusCode = 200;
+        result.response.effectiveUrl = url;
         result.bytesWritten = contents_.size();
         return autoupdater::Result<autoupdater::DownloadResult>::ok(result);
     }
@@ -335,14 +339,14 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
         : originalParent_(std::move(originalParent)), movedParent_(std::move(movedParent)),
           outside_(std::move(outside)), contents_(std::move(contents)) {}
 
-    autoupdater::Result<std::string> getText(const std::string&, const autoupdater::NetworkOptions&,
-                                             autoupdater::CancellationToken&) noexcept override {
-        return autoupdater::Result<std::string>::fail(
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
     }
 
     autoupdater::Result<autoupdater::DownloadResult>
-    downloadToFile(const std::string&, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
+    downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
                    const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         try {
@@ -358,6 +362,8 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
                 return autoupdater::Result<autoupdater::DownloadResult>::fail(written.error());
             }
             autoupdater::DownloadResult result;
+            result.response.statusCode = 200;
+            result.response.effectiveUrl = url;
             result.bytesWritten = contents_.size();
             return autoupdater::Result<autoupdater::DownloadResult>::ok(result);
         } catch (const std::exception& error) {
@@ -373,6 +379,134 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
     std::string contents_;
 };
 
+class RecordingStateStore final : public autoupdater::IStateStore {
+  public:
+    autoupdater::Result<void> saveLastAcceptedVersion(const autoupdater::Version&,
+                                                      const std::string&) noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<std::optional<autoupdater::Version>> loadLastAcceptedVersion() noexcept override {
+        return autoupdater::Result<std::optional<autoupdater::Version>>::ok(std::nullopt);
+    }
+
+    autoupdater::Result<std::string> loadLastAcceptedReleaseId() noexcept override {
+        return autoupdater::Result<std::string>::ok({});
+    }
+
+    autoupdater::Result<void> savePendingUpdate(const autoupdater::PendingUpdate&) noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<std::optional<autoupdater::PendingUpdate>> loadPendingUpdate() noexcept override {
+        return autoupdater::Result<std::optional<autoupdater::PendingUpdate>>::ok(std::nullopt);
+    }
+
+    autoupdater::Result<void> clearPendingUpdate() noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<void> saveDownloadResume(const autoupdater::DownloadResumeState& state) noexcept override {
+        saved.push_back(state);
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>
+    loadDownloadResume(const std::string& key) noexcept override {
+        if (loaded && loaded->key == key) {
+            return autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>::ok(loaded);
+        }
+        return autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>::ok(std::nullopt);
+    }
+
+    autoupdater::Result<void> clearDownloadResume(const std::string& key) noexcept override {
+        cleared.push_back(key);
+        return autoupdater::Result<void>::ok();
+    }
+
+    std::optional<autoupdater::DownloadResumeState> loaded;
+    std::vector<autoupdater::DownloadResumeState> saved;
+    std::vector<std::string> cleared;
+};
+
+class RedirectingValidatorDownloadClient final : public autoupdater::INetworkClient {
+  public:
+    RedirectingValidatorDownloadClient(std::string initialUrl, std::string finalUrl, std::string contents)
+        : initialUrl_(std::move(initialUrl)), finalUrl_(std::move(finalUrl)), contents_(std::move(contents)) {}
+
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
+            {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
+    }
+
+    autoupdater::Result<autoupdater::DownloadResult>
+    downloadToFile(const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
+                   const std::optional<autoupdater::DownloadResumeInfo>& resume, autoupdater::ProgressCallback,
+                   autoupdater::CancellationToken&) noexcept override {
+        requests.push_back(url);
+        resumes.push_back(resume);
+        autoupdater::DownloadResult result;
+        result.response.effectiveUrl = url;
+        if (url == initialUrl_) {
+            result.response.statusCode = 302;
+            result.response.headers.push_back({"Location", finalUrl_});
+            return autoupdater::Result<autoupdater::DownloadResult>::ok(std::move(result));
+        }
+        if (url != finalUrl_) {
+            return autoupdater::Result<autoupdater::DownloadResult>::fail(
+                {autoupdater::ErrorCode::NetworkError, "Unexpected download URL"});
+        }
+
+        auto written = target.write(contents_.data(), contents_.size());
+        if (!written) {
+            return autoupdater::Result<autoupdater::DownloadResult>::fail(written.error());
+        }
+        result.response.statusCode = 200;
+        result.etag = "final-etag";
+        result.lastModified = "Wed, 01 Jul 2026 12:00:00 GMT";
+        result.bytesWritten = contents_.size();
+        return autoupdater::Result<autoupdater::DownloadResult>::ok(std::move(result));
+    }
+
+    std::vector<std::string> requests;
+    std::vector<std::optional<autoupdater::DownloadResumeInfo>> resumes;
+
+  private:
+    std::string initialUrl_;
+    std::string finalUrl_;
+    std::string contents_;
+};
+
+class FailingPartialDownloadClient final : public autoupdater::INetworkClient {
+  public:
+    explicit FailingPartialDownloadClient(std::string partial) : partial_(std::move(partial)) {}
+
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                                           autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
+            {autoupdater::ErrorCode::NetworkError, "Text request is not supported by this test client"});
+    }
+
+    autoupdater::Result<autoupdater::DownloadResult>
+    downloadToFile(const std::string&, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions&,
+                   const std::optional<autoupdater::DownloadResumeInfo>& resume, autoupdater::ProgressCallback,
+                   autoupdater::CancellationToken&) noexcept override {
+        resumes.push_back(resume);
+        auto written = target.write(partial_.data(), partial_.size());
+        if (!written) {
+            return autoupdater::Result<autoupdater::DownloadResult>::fail(written.error());
+        }
+        return autoupdater::Result<autoupdater::DownloadResult>::fail(
+            {autoupdater::ErrorCode::NetworkError, "Injected transport failure"});
+    }
+
+    std::vector<std::optional<autoupdater::DownloadResumeInfo>> resumes;
+
+  private:
+    std::string partial_;
+};
+
 autoupdater::UpdateDecision oneFileDecision(const std::string& contents) {
     auto hash = autoupdater::createDefaultHashProvider();
     auto expected = hash->sha256Bytes(contents);
@@ -382,7 +516,7 @@ autoupdater::UpdateDecision oneFileDecision(const std::string& contents) {
     download.file.path = "managed/file.bin";
     download.file.sha256 = expected.value();
     download.file.size = contents.size();
-    download.url = "test://artifact";
+    download.url = "https://updates.example.test/artifact";
     decision.downloads.push_back(std::move(download));
     return decision;
 }
@@ -847,9 +981,11 @@ void testDownloadExecutorContainsSwapsAndHardLinks() {
         std::filesystem::create_directories(staging / "managed");
         writeFile(outside / "sentinel.txt", "outside");
         autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
         config.tempDir = staging;
         config.retry.maxRetries = 0;
         config.network.enableResume = false;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
         auto decision = oneFileDecision("downloaded");
         SwappingDownloadClient network(staging / "managed", staging / "pinned", outside, "downloaded");
         autoupdater::CancellationToken cancel;
@@ -871,9 +1007,11 @@ void testDownloadExecutorContainsSwapsAndHardLinks() {
         std::filesystem::create_hard_link(outside, staging / "managed/file.bin.download", ec);
         LAU_REQUIRE(!ec);
         autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
         config.tempDir = staging;
         config.retry.maxRetries = 0;
         config.network.enableResume = false;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
         auto decision = oneFileDecision("downloaded");
         StaticDownloadClient network("downloaded");
         autoupdater::CancellationToken cancel;
@@ -888,9 +1026,11 @@ void testDownloadExecutorContainsSwapsAndHardLinks() {
         const auto root = makeTestRoot("libAutoUpdater-download-hash-mismatch-cleanup");
         const auto staging = root / "staging";
         autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
         config.tempDir = staging;
         config.retry.maxRetries = 0;
         config.network.enableResume = false;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
         auto decision = oneFileDecision("expected");
         StaticDownloadClient network("tampered");
         autoupdater::CancellationToken cancel;
@@ -899,6 +1039,78 @@ void testDownloadExecutorContainsSwapsAndHardLinks() {
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::HashMismatch);
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin"));
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+}
+
+void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto hash = autoupdater::createDefaultHashProvider();
+    const std::string initialUrl = "https://updates.example.test/artifacts/file.bin";
+    const std::string finalUrl = "https://cdn.example.test/releases/file.bin";
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-redirect-validator-binding");
+        const auto staging = root / "staging";
+        const std::string contents = "downloaded";
+        autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
+        config.tempDir = staging;
+        config.retry.maxRetries = 0;
+        config.security.allowedBaseUrls = {"https://updates.example.test/", "https://cdn.example.test/"};
+        auto decision = oneFileDecision(contents);
+        decision.downloads[0].url = initialUrl;
+        RedirectingValidatorDownloadClient network(initialUrl, finalUrl, contents);
+        RecordingStateStore stateStore;
+        autoupdater::CancellationToken cancel;
+
+        auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+        LAU_REQUIRE(result);
+        LAU_REQUIRE(network.requests == std::vector<std::string>({initialUrl, finalUrl}));
+        LAU_REQUIRE(network.resumes.size() == 2);
+        LAU_REQUIRE(!network.resumes[0]);
+        LAU_REQUIRE(!network.resumes[1]);
+        LAU_REQUIRE(stateStore.saved.size() == 1);
+        LAU_REQUIRE(stateStore.saved[0].key == initialUrl);
+        LAU_REQUIRE(stateStore.saved[0].etag.empty());
+        LAU_REQUIRE(stateStore.saved[0].lastModified.empty());
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({initialUrl}));
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-failed-validator-reset");
+        const auto staging = root / "staging";
+        writeFile(staging / "managed/file.bin.download", "partial");
+        autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
+        config.tempDir = staging;
+        config.retry.maxRetries = 0;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
+        auto decision = oneFileDecision("complete-payload");
+        decision.downloads[0].url = initialUrl;
+        RecordingStateStore stateStore;
+        stateStore.loaded = autoupdater::DownloadResumeState{initialUrl, 7, "old-etag", "Tue, 30 Jun 2026 12:00:00 GMT",
+                                                             decision.downloads[0].file.sha256};
+        FailingPartialDownloadClient network("-tail");
+        autoupdater::CancellationToken cancel;
+
+        auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::NetworkError);
+        LAU_REQUIRE(network.resumes.size() == 1);
+        LAU_REQUIRE(network.resumes[0]);
+        LAU_REQUIRE(network.resumes[0]->etag == "old-etag");
+        LAU_REQUIRE(network.resumes[0]->lastModified == "Tue, 30 Jun 2026 12:00:00 GMT");
+        LAU_REQUIRE(stateStore.saved.size() == 1);
+        LAU_REQUIRE(stateStore.saved[0].key == initialUrl);
+        LAU_REQUIRE(stateStore.saved[0].offset == 12);
+        LAU_REQUIRE(stateStore.saved[0].etag.empty());
+        LAU_REQUIRE(stateStore.saved[0].lastModified.empty());
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }

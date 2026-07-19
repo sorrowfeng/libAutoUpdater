@@ -16,37 +16,42 @@ Result<std::filesystem::path> localPathFromUrl(const std::string& url) {
     if (util::isFileUrl(url)) {
         return Result<std::filesystem::path>::ok(util::fileUrlToPath(url));
     }
-    if (url.find("://") == std::string::npos) {
-        return Result<std::filesystem::path>::ok(util::pathFromUtf8(url));
-    }
-    return Result<std::filesystem::path>::fail({ErrorCode::NetworkError, "No HTTP network adapter is available"});
+    return Result<std::filesystem::path>::fail(
+        {ErrorCode::NetworkError, "The basic network adapter accepts only explicit file: URLs"});
 }
 
 class BasicNetworkClient final : public INetworkClient {
   public:
-    Result<std::string> getText(const std::string& url, const NetworkOptions&,
-                                CancellationToken& cancel) noexcept override {
+    Result<TextResponse> getText(const std::string& url, const NetworkOptions&,
+                                 CancellationToken& cancel) noexcept override {
         if (cancel.isCancelled()) {
-            return Result<std::string>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+            return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
         }
         auto path = localPathFromUrl(url);
         if (!path) {
-            return Result<std::string>::fail(path.error());
+            return Result<TextResponse>::fail(path.error());
         }
         try {
             std::ifstream input(path.value(), std::ios::binary);
             if (!input) {
-                return Result<std::string>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
+                return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
             }
             std::ostringstream stream;
             stream << input.rdbuf();
-            return Result<std::string>::ok(stream.str());
+            if (input.bad()) {
+                return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+            }
+            TextResponse response;
+            response.response.statusCode = 200;
+            response.response.effectiveUrl = url;
+            response.body = stream.str();
+            return Result<TextResponse>::ok(std::move(response));
         } catch (...) {
-            return Result<std::string>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
         }
     }
 
-    Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions&,
+    Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target, const NetworkOptions& options,
                                           const std::optional<DownloadResumeInfo>& resume, ProgressCallback progress,
                                           CancellationToken& cancel) noexcept override {
         auto source = localPathFromUrl(url);
@@ -60,7 +65,8 @@ class BasicNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, ec.message()});
             }
             std::ifstream input(source.value(), std::ios::binary);
-            if (resume && resume->offset > 0) {
+            const bool appending = options.enableResume && resume && resume->offset > 0;
+            if (appending) {
                 input.seekg(static_cast<std::streamoff>(resume->offset), std::ios::beg);
             }
             if (!input) {
@@ -68,7 +74,7 @@ class BasicNetworkClient final : public INetworkClient {
             }
 
             std::array<char, 64 * 1024> buffer{};
-            std::uint64_t written = resume ? resume->offset : 0;
+            std::uint64_t written = appending ? resume->offset : 0;
             while (input) {
                 if (cancel.isCancelled()) {
                     return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
@@ -91,6 +97,8 @@ class BasicNetworkClient final : public INetworkClient {
             }
 
             DownloadResult result;
+            result.response.statusCode = 200;
+            result.response.effectiveUrl = url;
             result.bytesWritten = written;
             return Result<DownloadResult>::ok(result);
         } catch (...) {

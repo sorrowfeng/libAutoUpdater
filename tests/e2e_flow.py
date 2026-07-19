@@ -114,6 +114,7 @@ def main() -> int:
             str(args.cli),
             "--manifest",
             path_uri(release_dir / "manifest.json"),
+            "--allow-local-file-urls",
             "--version",
             "1.0.0",
             "--install",
