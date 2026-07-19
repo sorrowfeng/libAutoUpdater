@@ -679,3 +679,55 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
 
     std::filesystem::remove_all(root, ec);
 }
+
+void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-apply-target-conflicts-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    const std::vector<std::vector<autoupdater::ApplyOperation>> conflictingOperations = {
+        {
+            {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", "hash", 4},
+            {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", "hash", 4},
+        },
+        {
+            {autoupdater::ApplyOperationType::Remove, "", "Bin/App.exe", "", 0},
+            {autoupdater::ApplyOperationType::Remove, "", "bin/app.EXE", "", 0},
+        },
+        {
+            {autoupdater::ApplyOperationType::Remove, "", "obsolete.dll", "", 0},
+            {autoupdater::ApplyOperationType::Remove, "", "obsolete.dll", "", 0},
+        },
+        {
+            {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", "hash", 4},
+            {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+        },
+        {
+            {autoupdater::ApplyOperationType::Remove, "", "bin", "", 0},
+            {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+        },
+        {
+            {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+            {autoupdater::ApplyOperationType::Remove, "", "bin", "", 0},
+        },
+        {
+            {autoupdater::ApplyOperationType::Remove, "", ".autoupdater/journal/active.json", "", 0},
+        },
+    };
+
+    for (std::size_t index = 0; index < conflictingOperations.size(); ++index) {
+        autoupdater::ApplyPlan plan;
+        plan.installDir = root / ("install-" + std::to_string(index));
+        plan.stagingDir = root / ("staging-" + std::to_string(index));
+        plan.backupDir = root / ("backup-" + std::to_string(index));
+        plan.operations = conflictingOperations[index];
+
+        const auto result = autoupdater::updater::executeApplyPlan(plan);
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+        LAU_REQUIRE(!std::filesystem::exists(plan.installDir));
+        LAU_REQUIRE(!std::filesystem::exists(plan.installDir / ".autoupdater" / "journal"));
+    }
+
+    LAU_REQUIRE(!std::filesystem::exists(root));
+}

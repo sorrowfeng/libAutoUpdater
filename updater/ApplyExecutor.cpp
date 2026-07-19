@@ -12,7 +12,6 @@
 #include <chrono>
 #include <limits>
 #include <optional>
-#include <set>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -73,6 +72,15 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
     if (plan.operations.size() > limits.json.maxContainerEntries ||
         plan.restartCommand.size() > limits.json.maxContainerEntries) {
         return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Apply plan entry limit exceeded"});
+    }
+    std::vector<std::string> managedTargets;
+    managedTargets.reserve(plan.operations.size());
+    for (const auto& operation : plan.operations) {
+        managedTargets.push_back(operation.target);
+    }
+    auto validTargets = util::validateManagedTargetPaths(managedTargets);
+    if (!validTargets) {
+        return validTargets;
     }
 
     std::uint64_t consumedBytes = 1024;
@@ -1543,12 +1551,14 @@ Result<ApplyPlan> deriveRollbackPlan(const ApplyPlan& request, const ApplyPlan& 
         return Result<ApplyPlan>::fail(
             {ErrorCode::ApplyFailed, "Rollback source operation records are incomplete"});
     }
-    std::set<std::string> targets;
+    std::vector<std::string> targets;
+    targets.reserve(sourcePlan.operations.size());
     for (const auto& operation : sourcePlan.operations) {
-        if (!targets.insert(operation.target).second) {
-            return Result<ApplyPlan>::fail(
-                {ErrorCode::SecurityPolicyViolation, "Rollback source contains duplicate managed targets"});
-        }
+        targets.push_back(operation.target);
+    }
+    auto validTargets = util::validateManagedTargetPaths(targets);
+    if (!validTargets) {
+        return Result<ApplyPlan>::fail(validTargets.error());
     }
 
     ApplyPlan rollback;

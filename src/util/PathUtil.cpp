@@ -54,6 +54,22 @@ bool isUpdaterStateSegment(const std::string& segment) {
     return true;
 }
 
+std::string portableCollisionKey(std::string path) {
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char character) {
+        // Managed paths reject control characters, so NUL is an unambiguous
+        // segment separator that sorts before every legal segment byte. This
+        // keeps each parent adjacent to its first descendant after sorting.
+        if (character == '/') {
+            return '\0';
+        }
+        if (character >= 'A' && character <= 'Z') {
+            return static_cast<char>(character - 'A' + 'a');
+        }
+        return static_cast<char>(character);
+    });
+    return path;
+}
+
 } // namespace
 
 std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept {
@@ -117,6 +133,41 @@ Result<void> validateManagedTargetPath(const std::string& path) noexcept {
              "Managed targets cannot use the reserved or alias-ambiguous updater namespace"});
     }
     return Result<void>::ok();
+}
+
+Result<void> validateManagedTargetPaths(const std::vector<std::string>& paths) noexcept {
+    try {
+        std::vector<std::string> keys;
+        keys.reserve(paths.size());
+        for (const auto& path : paths) {
+            auto valid = validateManagedTargetPath(path);
+            if (!valid) {
+                return valid;
+            }
+            keys.push_back(portableCollisionKey(path));
+        }
+
+        std::sort(keys.begin(), keys.end());
+        for (std::size_t index = 1; index < keys.size(); ++index) {
+            const auto& previous = keys[index - 1];
+            const auto& current = keys[index];
+            if (previous == current) {
+                return Result<void>::fail(
+                    {ErrorCode::SecurityPolicyViolation,
+                     "Managed operation targets collide under portable filesystem semantics"});
+            }
+            if (current.size() > previous.size() &&
+                current.compare(0, previous.size(), previous) == 0 && current[previous.size()] == '\0') {
+                return Result<void>::fail(
+                    {ErrorCode::SecurityPolicyViolation,
+                     "Managed operation targets have an ancestor/descendant conflict"});
+            }
+        }
+        return Result<void>::ok();
+    } catch (...) {
+        return Result<void>::fail(
+            {ErrorCode::InternalError, "Failed to validate the managed operation target set"});
+    }
 }
 
 Result<std::filesystem::path> safeJoin(const std::filesystem::path& root, const std::string& relativePath) noexcept {

@@ -165,7 +165,7 @@ likelihood of affecting production update flows.
     - Remote `allowDowngrade` is ineffective unless this exact manifest has a
       valid signature and a separate local policy permits downgrade.
 
-- [ ] **AU-010 — Reject duplicate, conflicting, and reserved operations**
+- [x] **AU-010 — Reject duplicate, conflicting, and reserved operations**
   - Classification: Verified medium-impact correctness defect.
   - Key code: `src/Manifest.cpp:116-165`,
     `src/ApplyPlan.cpp:97-134`, `updater/ApplyExecutor.cpp:230-247`.

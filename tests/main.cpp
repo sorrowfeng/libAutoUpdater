@@ -6,6 +6,10 @@
 void testVersionParsingAndOrdering();
 void testManifestParsing();
 void testManifestRejectsPathTraversal();
+void testManifestRejectsConflictingManagedTargets();
+void testManifestRejectsReservedUpdaterTargetsFromEveryTargetForm();
+void testManifestAllowsSharedSourceForDistinctManagedTargets();
+void testManifestAllowsNonConflictingTargetPrefixesAndSiblings();
 void testManifestFetcherRoutesIndexManifest();
 void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex();
 void testManifestFetcherRejectsDisallowedIndexTarget();
@@ -36,9 +40,13 @@ void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization();
 void testUpdatePlannerUsesHighestDowngradeBaseline();
 void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision();
 void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics();
+void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly();
+void testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
 void testApplyPlanRollbackContract();
+void testApplyPlanRejectsConflictingManagedTargets();
+void testApplyPlanAllowsSharedSourceForDistinctManagedTargets();
 void testApplyExecutorUsesSafeAtomicJournalName();
 void testApplyExecutorRequiresWritableJournal();
 void testApplyExecutorRollsBackCurrentFailedOperation();
@@ -48,6 +56,7 @@ void testApplyExecutorExecutesOperationFreePublicRollback();
 void testApplyExecutorRecoversFailedPublicRollbackOfRollback();
 void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
+void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
 void testDownloadExecutorContainsSwapsAndHardLinks();
@@ -93,6 +102,13 @@ int main(int argc, char* argv[]) {
         {"VersionParsingAndOrdering", testVersionParsingAndOrdering},
         {"ManifestParsing", testManifestParsing},
         {"ManifestRejectsPathTraversal", testManifestRejectsPathTraversal},
+        {"ManifestRejectsConflictingManagedTargets", testManifestRejectsConflictingManagedTargets},
+        {"ManifestRejectsReservedUpdaterTargetsFromEveryTargetForm",
+         testManifestRejectsReservedUpdaterTargetsFromEveryTargetForm},
+        {"ManifestAllowsSharedSourceForDistinctManagedTargets",
+         testManifestAllowsSharedSourceForDistinctManagedTargets},
+        {"ManifestAllowsNonConflictingTargetPrefixesAndSiblings",
+         testManifestAllowsNonConflictingTargetPrefixesAndSiblings},
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
         {"ManifestFetcherRejectsInvalidReleaseBehindSignedIndex",
          testManifestFetcherRejectsInvalidReleaseBehindSignedIndex},
@@ -129,9 +145,16 @@ int main(int argc, char* argv[]) {
          testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision},
         {"UpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics",
          testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics},
+        {"UpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly",
+         testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly},
+        {"UpdatePlannerAllowsSharedSourceForDistinctManagedTargets",
+         testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
         {"ApplyPlanRollbackContract", testApplyPlanRollbackContract},
+        {"ApplyPlanRejectsConflictingManagedTargets", testApplyPlanRejectsConflictingManagedTargets},
+        {"ApplyPlanAllowsSharedSourceForDistinctManagedTargets",
+         testApplyPlanAllowsSharedSourceForDistinctManagedTargets},
         {"ApplyExecutorUsesSafeAtomicJournalName", testApplyExecutorUsesSafeAtomicJournalName},
         {"ApplyExecutorRequiresWritableJournal", testApplyExecutorRequiresWritableJournal},
         {"ApplyExecutorRollsBackCurrentFailedOperation", testApplyExecutorRollsBackCurrentFailedOperation},
@@ -142,6 +165,8 @@ int main(int argc, char* argv[]) {
          testApplyExecutorRecoversFailedPublicRollbackOfRollback},
         {"ApplyExecutorRecoversAfterForcedTermination", testApplyExecutorRecoversAfterForcedTermination},
         {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
+        {"ApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly",
+         testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly},
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
         {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},
         {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},

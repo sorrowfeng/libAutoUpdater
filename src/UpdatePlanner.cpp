@@ -29,6 +29,16 @@ std::string currentUtcIsoLike() {
 Result<void> validateManifestAgainstConfig(const Config& config, const ManifestEnvelope& envelope,
                                            const UrlPolicy& policy) {
     const auto& manifest = envelope.manifest;
+    std::vector<std::string> managedTargets;
+    managedTargets.reserve(manifest.files.size() + manifest.remove.size());
+    for (const auto& file : manifest.files) {
+        managedTargets.push_back(file.localPath.empty() ? file.path : file.localPath);
+    }
+    managedTargets.insert(managedTargets.end(), manifest.remove.begin(), manifest.remove.end());
+    auto validTargets = util::validateManagedTargetPaths(managedTargets);
+    if (!validTargets) {
+        return validTargets;
+    }
     if (config.installLayout == InstallLayout::PackageManagerOwned) {
         return Result<void>::fail(
             {ErrorCode::UnsupportedInstallLayout, "Package-manager-owned installs are not self-updated"});

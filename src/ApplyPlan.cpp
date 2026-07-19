@@ -263,6 +263,8 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
         if (!operations || !operations->isArray()) {
             return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "operations array is required"});
         }
+        std::vector<std::string> managedTargets;
+        managedTargets.reserve(operations->asArray().size());
         for (const auto& item : operations->asArray()) {
             if (!item.isObject()) {
                 return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "operation must be object"});
@@ -320,7 +322,13 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                 return Result<ApplyPlan>::fail(
                     {ErrorCode::ManifestParseFailed, "Remove operations cannot specify permissions"});
             }
+            managedTargets.push_back(op.target);
             plan.operations.push_back(std::move(op));
+        }
+
+        auto validTargets = util::validateManagedTargetPaths(managedTargets);
+        if (!validTargets) {
+            return Result<ApplyPlan>::fail(validTargets.error());
         }
 
         return Result<ApplyPlan>::ok(std::move(plan));

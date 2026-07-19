@@ -57,8 +57,19 @@ All manifest file paths must be managed relative paths:
 - Windows drive prefixes are rejected.
 - Empty paths are rejected.
 - Paths use forward slashes.
+- The top-level `.autoupdater` namespace and alias-ambiguous variants are
+  reserved for updater state.
+- The complete target set is rejected when two operations have the same
+  portable target, differ only by ASCII case, or have an ancestor/descendant
+  conflict. This applies to replace/replace, remove/remove, and replace/remove
+  combinations before any version or local-file shortcut is taken.
 
 Files are downloaded into the staging directory first. They are only written into the apply plan after SHA-256 verification succeeds.
+
+The portable collision check deliberately does not rewrite input paths. Full
+Unicode case-folding and normalization are not part of the current C++17 path
+contract; integrations that rely on filesystem-specific Unicode aliases must
+apply a stricter platform policy.
 
 ## Downgrade and Replay
 

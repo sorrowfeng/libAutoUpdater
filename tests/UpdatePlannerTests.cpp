@@ -4,6 +4,8 @@
 
 #include <array>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -216,4 +218,84 @@ void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics() {
     const auto sameVersion = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
     LAU_REQUIRE(sameVersion);
     LAU_REQUIRE(!sameVersion.value().checkResult.updateAvailable);
+}
+
+void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly() {
+    const auto config = plannerConfig();
+    const auto requireRejectedAtCurrentVersion = [&](std::vector<autoupdater::ManifestFile> files,
+                                                     std::vector<std::string> remove = {}) {
+        auto envelope = plannerEnvelope();
+        envelope.manifest.version = config.currentVersion;
+        envelope.manifest.files = std::move(files);
+        envelope.manifest.remove = std::move(remove);
+
+        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+        LAU_REQUIRE(!decision);
+        LAU_REQUIRE(decision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+    };
+
+    requireRejectedAtCurrentVersion({
+        {"objects/first.bin", "bin/app.exe", "same-hash", 4},
+        {"objects/second.bin", "bin/app.exe", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({
+        {"objects/first.bin", "Bin/App.exe", "same-hash", 4},
+        {"objects/second.bin", "bin/app.EXE", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({}, {"obsolete.dll", "obsolete.dll"});
+    requireRejectedAtCurrentVersion(
+        {{"objects/app.bin", "bin/app.exe", "same-hash", 4}}, {"bin/app.exe"});
+    requireRejectedAtCurrentVersion({
+        {"bin/app.exe", "", "same-hash", 4},
+        {"objects/app.bin", "bin/app.exe", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({
+        {"objects/directory", "bin", "same-hash", 4},
+        {"objects/child.bin", "bin/app.exe", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({
+        {"objects/child.bin", "bin/app.exe", "same-hash", 4},
+        {"objects/directory", "bin", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({
+        {"objects/payload.bin", ".autoupdater/staging/payload.bin", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({
+        {".autoupdater/staging/payload.bin", "", "same-hash", 4},
+    });
+    requireRejectedAtCurrentVersion({}, {".autoupdater/journal/active.json"});
+
+    auto snapshotEnvelope = plannerEnvelope();
+    snapshotEnvelope.manifest.files = {
+        {"objects/first.bin", "bin/app.exe", "same-hash", 4},
+        {"objects/second.bin", "bin/app.exe", "same-hash", 4},
+    };
+    autoupdater::LocalSnapshot snapshot;
+    snapshot.files.push_back({"bin/app.exe", true, "same-hash", 4});
+
+    const auto snapshotDecision =
+        autoupdater::planUpdate(config, snapshotEnvelope, snapshot, std::nullopt);
+    LAU_REQUIRE(!snapshotDecision);
+    LAU_REQUIRE(snapshotDecision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+}
+
+void testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets() {
+    const auto config = plannerConfig();
+    auto envelope = plannerEnvelope();
+    envelope.manifest.files = {
+        {"objects/shared.bin", "a", "same-hash", 9},
+        {"objects/shared.bin", "ab", "same-hash", 9},
+        {"objects/shared.bin", "shared/first.bin", "same-hash", 9},
+        {"objects/shared.bin", "shared/second.bin", "same-hash", 9},
+    };
+
+    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(decision);
+    LAU_REQUIRE(decision.value().checkResult.updateAvailable);
+    LAU_REQUIRE(decision.value().operations.size() == 4);
+    LAU_REQUIRE(!decision.value().downloads.empty());
+    LAU_REQUIRE(decision.value().operations[0].target == "a");
+    LAU_REQUIRE(decision.value().operations[1].target == "ab");
+    LAU_REQUIRE(decision.value().operations[2].target == "shared/first.bin");
+    LAU_REQUIRE(decision.value().operations[3].target == "shared/second.bin");
 }

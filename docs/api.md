@@ -40,6 +40,12 @@ The output directory is `build/docs/html`.
 
 `ManifestFile::path` is the server path. `ManifestFile::localPath` is an optional installation path. Content-addressed storage relies on this separation.
 
+The effective installation targets (`localPath`, or `path` when `localPath` is
+empty, plus `remove[]`) must be unique under portable ASCII case-insensitive
+comparison. Duplicate, replace/remove, ancestor/descendant, and reserved
+`.autoupdater` targets are rejected by manifest parsing, planning, apply-plan
+parsing, and the external updater boundary.
+
 ## Result and Error
 
 The public API does not leak exceptions to callers. Failures are represented through:

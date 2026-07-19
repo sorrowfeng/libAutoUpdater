@@ -4,6 +4,27 @@
 #include "util/PathUtil.h"
 
 #include <filesystem>
+#include <utility>
+#include <vector>
+
+namespace {
+
+autoupdater::ApplyPlan applyPlanWithOperations(std::vector<autoupdater::ApplyOperation> operations) {
+    autoupdater::ApplyPlan plan;
+    plan.installDir = "install";
+    plan.stagingDir = "staging";
+    plan.backupDir = "backup";
+    plan.operations = std::move(operations);
+    return plan;
+}
+
+void requireApplyPlanTargetConflict(std::vector<autoupdater::ApplyOperation> operations) {
+    const auto parsed = autoupdater::ApplyPlan::parse(applyPlanWithOperations(std::move(operations)).toJson());
+    LAU_REQUIRE(!parsed);
+    LAU_REQUIRE(parsed.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+}
+
+} // namespace
 
 void testApplyPlanRoundTrip() {
     autoupdater::ApplyPlan plan;
@@ -110,4 +131,56 @@ void testApplyPlanRollbackContract() {
     LAU_REQUIRE(legacy);
     LAU_REQUIRE(legacy.value().intent == autoupdater::ApplyPlanIntent::Install);
     LAU_REQUIRE(!legacy.value().rollbackOf.has_value());
+}
+
+void testApplyPlanRejectsConflictingManagedTargets() {
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Replace, "objects/first.bin", "bin/app.exe", "hash", 4},
+        {autoupdater::ApplyOperationType::Replace, "objects/second.bin", "bin/app.exe", "hash", 4},
+    });
+
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Remove, "", "Bin/App.exe", "", 0},
+        {autoupdater::ApplyOperationType::Remove, "", "bin/app.EXE", "", 0},
+    });
+
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Remove, "", "obsolete.dll", "", 0},
+        {autoupdater::ApplyOperationType::Remove, "", "obsolete.dll", "", 0},
+    });
+
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Replace, "objects/app.bin", "bin/app.exe", "hash", 4},
+        {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+    });
+
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Remove, "", "bin", "", 0},
+        {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+    });
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Remove, "", "bin/app.exe", "", 0},
+        {autoupdater::ApplyOperationType::Remove, "", "bin", "", 0},
+    });
+
+    requireApplyPlanTargetConflict({
+        {autoupdater::ApplyOperationType::Remove, "", ".AUToupdater/journal/active.json", "", 0},
+    });
+}
+
+void testApplyPlanAllowsSharedSourceForDistinctManagedTargets() {
+    const auto parsed = autoupdater::ApplyPlan::parse(applyPlanWithOperations({
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/first.exe", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/second.exe", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "a", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "ab", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/first", "same-hash", 9},
+        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/second", "same-hash", 9},
+    }).toJson());
+
+    LAU_REQUIRE(parsed);
+    LAU_REQUIRE(parsed.value().schemaVersion == 2);
+    LAU_REQUIRE(parsed.value().operations.size() == 6);
+    LAU_REQUIRE(parsed.value().operations[0].source == parsed.value().operations[1].source);
+    LAU_REQUIRE(parsed.value().operations[0].target != parsed.value().operations[1].target);
 }

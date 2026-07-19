@@ -360,8 +360,16 @@ All manifest paths must satisfy:
 - Not be absolute.
 - Not contain a Windows drive prefix.
 - Resolve inside `installDir` or `stagingDir`.
+- Never target the reserved top-level `.autoupdater` namespace.
+- Be unique under portable ASCII case-insensitive comparison.
+- Not overlap another target as its ancestor or descendant.
 
-These rules prevent path traversal and accidental replacement of system files.
+The target rules are evaluated over the complete `files` and `remove` set, so
+duplicate replaces, duplicate removes, and replace/remove conflicts fail before
+snapshot or version short-circuits. The same invariant is rechecked when an
+apply plan is parsed and immediately before the external updater opens the
+installation root. These rules prevent path traversal, ambiguous transactions,
+and accidental replacement of system or updater-internal files.
 
 ## 6. Apply Plan Design
 

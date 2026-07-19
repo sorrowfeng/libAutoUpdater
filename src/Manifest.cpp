@@ -102,6 +102,7 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
 
         Manifest manifest;
         std::uint64_t totalArtifactBytes = 0;
+        std::vector<std::string> managedTargets;
         const auto* schema = json.value().get("schemaVersion");
         if (!schema || !schema->isNumber()) {
             return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "schemaVersion is required"});
@@ -190,6 +191,7 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
                         return Result<Manifest>::fail(validLocalPath.error());
                     }
                 }
+                managedTargets.push_back(file.localPath.empty() ? file.path : file.localPath);
                 manifest.files.push_back(std::move(file));
             }
         }
@@ -207,8 +209,14 @@ Result<Manifest> Manifest::parse(const std::string& jsonText, const ResourceLimi
                 if (!validPath) {
                     return Result<Manifest>::fail(validPath.error());
                 }
+                managedTargets.push_back(item.asString());
                 manifest.remove.push_back(item.asString());
             }
+        }
+
+        auto validTargets = util::validateManagedTargetPaths(managedTargets);
+        if (!validTargets) {
+            return Result<Manifest>::fail(validTargets.error());
         }
 
         return Result<Manifest>::ok(std::move(manifest));
