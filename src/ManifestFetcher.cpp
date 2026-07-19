@@ -12,6 +12,11 @@ namespace autoupdater {
 
 namespace {
 
+struct VerifiedTextResult {
+    RedirectedTextResult document;
+    bool signatureVerified = false;
+};
+
 Result<util::ParsedUrl> signatureUrlFor(const RedirectedTextResult& document, const std::string& signatureUrlOverride,
                                         const UrlPolicy& policy) {
     auto source = policy.authorize(document.effectiveUrl);
@@ -33,33 +38,38 @@ Result<util::ParsedUrl> signatureUrlFor(const RedirectedTextResult& document, co
     return signature;
 }
 
-Result<RedirectedTextResult> fetchTextAndVerify(const std::string& url, const std::string& signatureUrlOverride,
-                                                std::uint64_t maxDocumentBytes, const Config& config,
-                                                const UrlPolicy& policy, INetworkClient& network,
-                                                ISignatureVerifier& signatureVerifier, CancellationToken& cancel) {
+Result<VerifiedTextResult> fetchTextAndVerify(const std::string& url, const std::string& signatureUrlOverride,
+                                              std::uint64_t maxDocumentBytes, const Config& config,
+                                              const UrlPolicy& policy, INetworkClient& network,
+                                              ISignatureVerifier& signatureVerifier, CancellationToken& cancel) {
     auto raw = fetchTextWithRedirects(url, config.network, maxDocumentBytes, policy, network, cancel);
     if (!raw) {
-        return Result<RedirectedTextResult>::fail(raw.error());
+        return Result<VerifiedTextResult>::fail(raw.error());
     }
 
+    bool signatureVerified = false;
     if (config.security.requireManifestSignature) {
         auto signatureUrl = signatureUrlFor(raw.value(), signatureUrlOverride, policy);
         if (!signatureUrl) {
-            return Result<RedirectedTextResult>::fail(signatureUrl.error());
+            return Result<VerifiedTextResult>::fail(signatureUrl.error());
         }
         auto signature = fetchTextWithRedirects(signatureUrl.value().canonical, config.network,
                                                 config.resources.maxSignatureBytes, policy, network, cancel);
         if (!signature) {
-            return Result<RedirectedTextResult>::fail(signature.error());
+            return Result<VerifiedTextResult>::fail(signature.error());
         }
         auto verified =
             signatureVerifier.verify(raw.value().body, signature.value().body, config.security.publicKeyPem);
         if (!verified) {
-            return Result<RedirectedTextResult>::fail(verified.error());
+            return Result<VerifiedTextResult>::fail(verified.error());
         }
+        signatureVerified = true;
     }
 
-    return raw;
+    VerifiedTextResult result;
+    result.document = std::move(raw.value());
+    result.signatureVerified = signatureVerified;
+    return Result<VerifiedTextResult>::ok(std::move(result));
 }
 
 Result<std::string> selectIndexTarget(const Config& config, const IndexManifest& index) {
@@ -129,15 +139,15 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         return Result<ManifestEnvelope>::fail(raw.error());
     }
 
-    const bool withinManifestLimit = raw.value().body.size() <= config.resources.maxManifestBytes;
-    const bool withinIndexLimit = raw.value().body.size() <= config.resources.maxIndexBytes;
+    const bool withinManifestLimit = raw.value().document.body.size() <= config.resources.maxManifestBytes;
+    const bool withinIndexLimit = raw.value().document.body.size() <= config.resources.maxIndexBytes;
     auto parsed = withinManifestLimit
-                      ? Manifest::parse(raw.value().body, config.resources)
+                      ? Manifest::parse(raw.value().document.body, config.resources)
                       : Result<Manifest>::fail({ErrorCode::ResourceLimitExceeded, "Manifest exceeds its byte limit"});
     const bool mayBeIndex = !parsed && (parsed.error().code == ErrorCode::ManifestParseFailed ||
                                         (!withinManifestLimit && withinIndexLimit));
     if (!parsed && mayBeIndex) {
-        auto index = IndexManifest::parse(raw.value().body, config.resources);
+        auto index = IndexManifest::parse(raw.value().document.body, config.resources);
         if (!index) {
             return Result<ManifestEnvelope>::fail(
                 parsed.error().code == ErrorCode::ResourceLimitExceeded ? parsed.error() : index.error());
@@ -146,7 +156,7 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         if (!target) {
             return Result<ManifestEnvelope>::fail(target.error());
         }
-        auto indexSource = policy.value().authorize(raw.value().effectiveUrl);
+        auto indexSource = policy.value().authorize(raw.value().document.effectiveUrl);
         if (!indexSource) {
             return Result<ManifestEnvelope>::fail(indexSource.error());
         }
@@ -159,27 +169,28 @@ Result<ManifestEnvelope> fetchAndVerifyManifest(const Config& config, INetworkCl
         if (!raw) {
             return Result<ManifestEnvelope>::fail(raw.error());
         }
-        parsed = Manifest::parse(raw.value().body, config.resources);
+        parsed = Manifest::parse(raw.value().document.body, config.resources);
     }
 
     if (!parsed) {
         return Result<ManifestEnvelope>::fail(parsed.error());
     }
-    auto artifactBase = resolveArtifactBase(parsed.value(), raw.value().effectiveUrl, policy.value());
+    auto artifactBase = resolveArtifactBase(parsed.value(), raw.value().document.effectiveUrl, policy.value());
     if (!artifactBase) {
         return Result<ManifestEnvelope>::fail(artifactBase.error());
     }
-    auto manifestHash = hashProvider.sha256Bytes(raw.value().body);
+    auto manifestHash = hashProvider.sha256Bytes(raw.value().document.body);
     if (!manifestHash) {
         return Result<ManifestEnvelope>::fail(manifestHash.error());
     }
 
     ManifestEnvelope envelope;
     envelope.manifest = std::move(parsed.value());
-    envelope.rawBytes = std::move(raw.value().body);
+    envelope.rawBytes = std::move(raw.value().document.body);
     envelope.sha256 = std::move(manifestHash.value());
-    envelope.sourceUrl = std::move(raw.value().effectiveUrl);
+    envelope.sourceUrl = std::move(raw.value().document.effectiveUrl);
     envelope.artifactBaseUrl = std::move(artifactBase.value().canonical);
+    envelope.releaseManifestSignatureVerified = raw.value().signatureVerified;
     return Result<ManifestEnvelope>::ok(std::move(envelope));
 }
 

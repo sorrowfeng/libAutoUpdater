@@ -588,7 +588,11 @@ Persist locally:
 - `lastAcceptedVersion`
 - `lastAcceptedReleaseId`
 
-By default, manifests older than the accepted version are rejected. Downgrades should only be allowed when `allowDowngrade=true` and the manifest signature is valid.
+By default, manifests older than the greater of the running and last accepted
+versions are rejected. A downgrade is allowed only when the exact release
+manifest has a valid signature, that manifest sets `allowDowngrade=true`, and
+the local application explicitly sets `rejectDowngrade=false`. A verified index
+manifest never substitutes for verification of the selected release manifest.
 
 ### 8.5 Anti-Replay
 

@@ -13,17 +13,32 @@ namespace {
 
 class CountingSignatureVerifier final : public autoupdater::ISignatureVerifier {
   public:
+    CountingSignatureVerifier() = default;
+
+    explicit CountingSignatureVerifier(std::vector<bool> scriptedResults)
+        : scriptedResults_(std::move(scriptedResults)) {}
+
     autoupdater::Result<void> verify(std::string_view data, std::string_view signature,
-                                     std::string_view) noexcept override {
+                                     std::string_view publicKey) noexcept override {
+        const auto callIndex = static_cast<std::size_t>(calls);
         ++calls;
         verifiedData.emplace_back(data);
         verifiedSignatures.emplace_back(signature);
+        verifiedPublicKeys.emplace_back(publicKey);
+        if (callIndex < scriptedResults_.size() && !scriptedResults_[callIndex]) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::ManifestSignatureInvalid, "Scripted signature rejection"});
+        }
         return autoupdater::Result<void>::ok();
     }
 
     int calls = 0;
     std::vector<std::string> verifiedData;
     std::vector<std::string> verifiedSignatures;
+    std::vector<std::string> verifiedPublicKeys;
+
+  private:
+    std::vector<bool> scriptedResults_;
 };
 
 autoupdater::Config manifestConfig(const std::string& manifestUrl) {
@@ -100,7 +115,50 @@ void testManifestFetcherRoutesIndexManifest() {
     LAU_REQUIRE(envelope);
     LAU_REQUIRE(envelope.value().manifest.version.toString() == "1.2.0");
     LAU_REQUIRE(envelope.value().manifest.platform == "windows");
+    LAU_REQUIRE(envelope.value().releaseManifestSignatureVerified);
     LAU_REQUIRE(verifier.calls == 2);
+    LAU_REQUIRE(verifier.verifiedData.back() == envelope.value().rawBytes);
+    LAU_REQUIRE(verifier.verifiedPublicKeys == std::vector<std::string>({"fake-key", "fake-key"}));
+    LAU_REQUIRE(network.textRequests ==
+                std::vector<std::string>({indexUrl, indexUrl + ".sig", releaseUrl, releaseUrl + ".sig"}));
+}
+
+void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex() {
+    const std::string indexUrl = "https://updates.example.test/index.json";
+    const std::string releaseUrl = "https://updates.example.test/releases/1.2.0/windows-x64/manifest.json";
+    const std::string indexDocument = R"json({
+      "schemaVersion": 1,
+      "appId": "com.example.app",
+      "channel": "stable",
+      "targets": [
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "manifestUrl": "https://updates.example.test/releases/1.2.0/windows-x64/manifest.json"
+        }
+      ]
+    })json";
+    const auto releaseDocument =
+        releaseManifest("https://updates.example.test/releases/1.2.0/windows-x64/");
+
+    autoupdater::test::ScriptedNetworkClient network;
+    network.queueText(indexUrl, autoupdater::test::textResponse(indexDocument));
+    network.queueText(indexUrl + ".sig", autoupdater::test::textResponse("index-signature"));
+    network.queueText(releaseUrl, autoupdater::test::textResponse(releaseDocument));
+    network.queueText(releaseUrl + ".sig", autoupdater::test::textResponse("release-signature"));
+
+    auto config = manifestConfig(indexUrl);
+    config.security.requireManifestSignature = true;
+    config.security.publicKeyPem = "fake-key";
+    CountingSignatureVerifier verifier({true, false});
+
+    const auto envelope = fetch(config, network, verifier);
+    LAU_REQUIRE(!envelope);
+    LAU_REQUIRE(envelope.error().code == autoupdater::ErrorCode::ManifestSignatureInvalid);
+    LAU_REQUIRE(verifier.calls == 2);
+    LAU_REQUIRE(verifier.verifiedData == std::vector<std::string>({indexDocument, releaseDocument}));
+    LAU_REQUIRE(verifier.verifiedSignatures ==
+                std::vector<std::string>({"index-signature", "release-signature"}));
     LAU_REQUIRE(network.textRequests ==
                 std::vector<std::string>({indexUrl, indexUrl + ".sig", releaseUrl, releaseUrl + ".sig"}));
 }
@@ -209,8 +267,10 @@ void testManifestFetcherResolvesSignaturesFromEffectiveUrl() {
         CountingSignatureVerifier verifier;
         auto envelope = fetch(config, network, verifier);
         LAU_REQUIRE(envelope);
+        LAU_REQUIRE(envelope.value().releaseManifestSignatureVerified);
         LAU_REQUIRE(verifier.calls == 1);
         LAU_REQUIRE(verifier.verifiedSignatures == std::vector<std::string>({"default-signature"}));
+        LAU_REQUIRE(verifier.verifiedPublicKeys == std::vector<std::string>({"fake-key"}));
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({initial, effective, effective + ".sig"}));
     }
 
@@ -227,8 +287,10 @@ void testManifestFetcherResolvesSignaturesFromEffectiveUrl() {
         CountingSignatureVerifier verifier;
         auto envelope = fetch(config, network, verifier);
         LAU_REQUIRE(envelope);
+        LAU_REQUIRE(envelope.value().releaseManifestSignatureVerified);
         LAU_REQUIRE(verifier.calls == 1);
         LAU_REQUIRE(verifier.verifiedSignatures == std::vector<std::string>({"relative-signature"}));
+        LAU_REQUIRE(verifier.verifiedPublicKeys == std::vector<std::string>({"fake-key"}));
         LAU_REQUIRE(network.textRequests == std::vector<std::string>({initial, effective, relativeSignature}));
     }
 }
@@ -243,6 +305,8 @@ void testManifestFetcherResolvesEmptyAndRelativeArtifactBases() {
         CountingSignatureVerifier verifier;
         auto envelope = fetch(config, network, verifier);
         LAU_REQUIRE(envelope);
+        LAU_REQUIRE(!envelope.value().releaseManifestSignatureVerified);
+        LAU_REQUIRE(verifier.calls == 0);
         LAU_REQUIRE(envelope.value().artifactBaseUrl == "https://updates.example.test/releases/1.2.0/");
     }
 
@@ -253,6 +317,8 @@ void testManifestFetcherResolvesEmptyAndRelativeArtifactBases() {
         CountingSignatureVerifier verifier;
         auto envelope = fetch(config, network, verifier);
         LAU_REQUIRE(envelope);
+        LAU_REQUIRE(!envelope.value().releaseManifestSignatureVerified);
+        LAU_REQUIRE(verifier.calls == 0);
         LAU_REQUIRE(envelope.value().artifactBaseUrl == "https://updates.example.test/releases/1.2.0/artifacts/");
     }
 }

@@ -2,6 +2,7 @@
 
 #include "UpdatePlanner.h"
 
+#include <array>
 #include <string>
 
 namespace {
@@ -85,4 +86,134 @@ void testUpdatePlannerPercentEncodesArtifactPaths() {
     LAU_REQUIRE(decision.value().downloads.size() == 1);
     LAU_REQUIRE(decision.value().downloads[0].url == "https://updates.example.test/releases/1.1.0/artifacts/"
                                                      "%E8%B5%84%E6%BA%90/My%20App%23100%25.bin");
+}
+
+void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization() {
+    struct DowngradeCase {
+        bool remoteAllows = false;
+        bool signatureVerified = false;
+        bool localAllows = false;
+        bool accepted = false;
+    };
+    constexpr std::array<DowngradeCase, 8> cases{{
+        {false, false, false, false},
+        {false, false, true, false},
+        {false, true, false, false},
+        {false, true, true, false},
+        {true, false, false, false},
+        {true, false, true, false},
+        {true, true, false, false},
+        {true, true, true, true},
+    }};
+
+    for (const auto& testCase : cases) {
+        auto config = plannerConfig();
+        config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+        config.security.rejectDowngrade = !testCase.localAllows;
+        config.security.requireManifestSignature = testCase.signatureVerified;
+
+        auto envelope = plannerEnvelope();
+        envelope.manifest.version = autoupdater::Version::parse("1.5.0").value();
+        envelope.manifest.allowDowngrade = testCase.remoteAllows;
+        envelope.releaseManifestSignatureVerified = testCase.signatureVerified;
+
+        const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+        if (testCase.accepted) {
+            LAU_REQUIRE(decision);
+            LAU_REQUIRE(decision.value().checkResult.updateAvailable);
+        } else {
+            LAU_REQUIRE(!decision);
+            LAU_REQUIRE(decision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+        }
+    }
+
+    auto config = plannerConfig();
+    config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+    config.security.rejectDowngrade = false;
+    auto envelope = plannerEnvelope();
+    envelope.manifest.version = autoupdater::Version::parse("1.5.0").value();
+    envelope.manifest.allowDowngrade = true;
+    envelope.releaseManifestSignatureVerified = true;
+
+    config.security.requireManifestSignature = false;
+    const auto signaturePolicyDisabled = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(!signaturePolicyDisabled);
+    LAU_REQUIRE(signaturePolicyDisabled.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+
+    config.security.requireManifestSignature = true;
+    envelope.releaseManifestSignatureVerified = false;
+    const auto releaseSignatureUnverified = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(!releaseSignatureUnverified);
+    LAU_REQUIRE(releaseSignatureUnverified.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+}
+
+void testUpdatePlannerUsesHighestDowngradeBaseline() {
+    struct BaselineCase {
+        const char* currentVersion = nullptr;
+        const char* lastAcceptedVersion = nullptr;
+        const char* remoteVersion = nullptr;
+    };
+    constexpr std::array<BaselineCase, 2> cases{{
+        {"3.0.0", "2.0.0", "2.5.0"},
+        {"1.0.0", "3.0.0", "2.0.0"},
+    }};
+
+    for (const auto& testCase : cases) {
+        auto config = plannerConfig();
+        config.currentVersion = autoupdater::Version::parse(testCase.currentVersion).value();
+        const auto lastAccepted = autoupdater::Version::parse(testCase.lastAcceptedVersion).value();
+
+        auto envelope = plannerEnvelope();
+        envelope.manifest.version = autoupdater::Version::parse(testCase.remoteVersion).value();
+
+        const auto rejected = autoupdater::planUpdate(config, envelope, {}, lastAccepted);
+        LAU_REQUIRE(!rejected);
+        LAU_REQUIRE(rejected.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+
+        config.security.rejectDowngrade = false;
+        config.security.requireManifestSignature = true;
+        envelope.manifest.allowDowngrade = true;
+        envelope.releaseManifestSignatureVerified = true;
+        const auto accepted = autoupdater::planUpdate(config, envelope, {}, lastAccepted);
+        LAU_REQUIRE(accepted);
+        LAU_REQUIRE(accepted.value().checkResult.updateAvailable);
+    }
+}
+
+void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision() {
+    auto config = plannerConfig();
+    config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+    config.security.rejectDowngrade = false;
+    config.security.requireManifestSignature = true;
+
+    auto envelope = plannerEnvelope();
+    envelope.manifest.version = autoupdater::Version::parse("1.5.0").value();
+    envelope.manifest.minVersion = autoupdater::Version::parse("3.0.0").value();
+    envelope.manifest.allowDowngrade = true;
+    envelope.releaseManifestSignatureVerified = false;
+
+    const auto decision = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(!decision);
+    LAU_REQUIRE(decision.error().code == autoupdater::ErrorCode::SecurityPolicyViolation);
+}
+
+void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics() {
+    auto config = plannerConfig();
+    auto envelope = plannerEnvelope();
+
+    envelope.releaseManifestSignatureVerified = false;
+    envelope.manifest.allowDowngrade = false;
+    config.security.rejectDowngrade = true;
+    const auto upgrade = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(upgrade);
+    LAU_REQUIRE(upgrade.value().checkResult.updateAvailable);
+
+    config.security.rejectDowngrade = false;
+    config.security.requireManifestSignature = true;
+    envelope.manifest.version = config.currentVersion;
+    envelope.manifest.allowDowngrade = true;
+    envelope.releaseManifestSignatureVerified = true;
+    const auto sameVersion = autoupdater::planUpdate(config, envelope, {}, std::nullopt);
+    LAU_REQUIRE(sameVersion);
+    LAU_REQUIRE(!sameVersion.value().checkResult.updateAvailable);
 }

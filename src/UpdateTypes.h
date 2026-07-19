@@ -51,6 +51,9 @@ struct ManifestEnvelope {
     std::string sha256;
     std::string sourceUrl;
     std::string artifactBaseUrl;
+    /// True only when the signature over rawBytes for this exact release
+    /// manifest was successfully verified. An index signature is not enough.
+    bool releaseManifestSignatureVerified = false;
 };
 
 } // namespace autoupdater

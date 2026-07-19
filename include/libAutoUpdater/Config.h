@@ -38,6 +38,8 @@ struct SecurityOptions {
     /// Explicit opt-in for absolute file: URLs beneath the manifest directory.
     bool allowLocalFileUrls = false;
     bool rejectExpiredManifest = true;
+    /// Set false only to locally permit a downgrade that is also requested by
+    /// the release manifest and authorized by its verified signature.
     bool rejectDowngrade = true;
 };
 

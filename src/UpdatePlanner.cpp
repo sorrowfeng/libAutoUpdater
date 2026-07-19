@@ -96,22 +96,28 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
     decision.checkResult.releaseId = manifest.releaseId;
     decision.checkResult.notes = manifest.notes;
 
+    auto downgradeBaseline = config.currentVersion;
+    if (lastAcceptedVersion && downgradeBaseline < *lastAcceptedVersion) {
+        downgradeBaseline = *lastAcceptedVersion;
+    }
+    const bool isDowngrade = manifest.version < downgradeBaseline;
+    const bool downgradeAuthorized =
+        isDowngrade && !config.security.rejectDowngrade && config.security.requireManifestSignature &&
+        envelope.releaseManifestSignatureVerified && manifest.allowDowngrade;
+    if (isDowngrade && !downgradeAuthorized) {
+        decision.checkResult.downgradeRejected = true;
+        return Result<UpdateDecision>::fail(
+            {ErrorCode::SecurityPolicyViolation,
+             "Manifest version is lower than the local baseline without verified downgrade authorization"});
+    }
+
     if (manifest.minVersion && config.currentVersion < *manifest.minVersion) {
         decision.checkResult.reinstallRequired = true;
         return Result<UpdateDecision>::ok(std::move(decision));
     }
 
-    if (config.security.rejectDowngrade && !manifest.allowDowngrade) {
-        const auto baseline = lastAcceptedVersion ? *lastAcceptedVersion : config.currentVersion;
-        if (manifest.version < baseline) {
-            decision.checkResult.downgradeRejected = true;
-            return Result<UpdateDecision>::fail(
-                {ErrorCode::SecurityPolicyViolation, "Manifest version is lower than accepted version"});
-        }
-    }
-
     if (!(config.currentVersion < manifest.version) &&
-        !(manifest.allowDowngrade && manifest.version != config.currentVersion)) {
+        !(downgradeAuthorized && manifest.version != config.currentVersion)) {
         return Result<UpdateDecision>::ok(std::move(decision));
     }
 

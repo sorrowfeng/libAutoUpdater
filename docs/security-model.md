@@ -74,7 +74,14 @@ The manifest may include:
 - `releaseId`
 - `allowDowngrade`
 
-Downgrades should only be accepted when explicitly allowed.
+Downgrades are accepted only when all of the following are true:
+
+- The exact release manifest has a valid detached signature.
+- The release manifest sets `allowDowngrade=true`.
+- The local application explicitly sets `rejectDowngrade=false`.
+
+An index-manifest signature does not authorize a downgrade of the selected
+release manifest. The selected release manifest must be verified separately.
 
 ## Apply and Rollback
 

@@ -7,6 +7,7 @@ void testVersionParsingAndOrdering();
 void testManifestParsing();
 void testManifestRejectsPathTraversal();
 void testManifestFetcherRoutesIndexManifest();
+void testManifestFetcherRejectsInvalidReleaseBehindSignedIndex();
 void testManifestFetcherRejectsDisallowedIndexTarget();
 void testManifestFetcherRejectsAllowedBaseUrlPrefixBypass();
 void testManifestFetcherRejectsInitialUrlBeforeNetwork();
@@ -31,6 +32,10 @@ void testJsonResourceLimits();
 void testManifestAndSignatureResourceLimits();
 void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
+void testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization();
+void testUpdatePlannerUsesHighestDowngradeBaseline();
+void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision();
+void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
 void testApplyPlanRollbackContract();
@@ -89,6 +94,8 @@ int main(int argc, char* argv[]) {
         {"ManifestParsing", testManifestParsing},
         {"ManifestRejectsPathTraversal", testManifestRejectsPathTraversal},
         {"ManifestFetcherRoutesIndexManifest", testManifestFetcherRoutesIndexManifest},
+        {"ManifestFetcherRejectsInvalidReleaseBehindSignedIndex",
+         testManifestFetcherRejectsInvalidReleaseBehindSignedIndex},
         {"ManifestFetcherRejectsDisallowedIndexTarget", testManifestFetcherRejectsDisallowedIndexTarget},
         {"ManifestFetcherRejectsAllowedBaseUrlPrefixBypass", testManifestFetcherRejectsAllowedBaseUrlPrefixBypass},
         {"ManifestFetcherRejectsInitialUrlBeforeNetwork", testManifestFetcherRejectsInitialUrlBeforeNetwork},
@@ -115,6 +122,13 @@ int main(int argc, char* argv[]) {
         {"ManifestAndSignatureResourceLimits", testManifestAndSignatureResourceLimits},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
+        {"UpdatePlannerRequiresVerifiedLocalDowngradeAuthorization",
+         testUpdatePlannerRequiresVerifiedLocalDowngradeAuthorization},
+        {"UpdatePlannerUsesHighestDowngradeBaseline", testUpdatePlannerUsesHighestDowngradeBaseline},
+        {"UpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision",
+         testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision},
+        {"UpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics",
+         testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
         {"ApplyPlanRollbackContract", testApplyPlanRollbackContract},

@@ -31,7 +31,7 @@ The output directory is `build/docs/html`.
 - Versions: `currentVersion`, `clientVersion`.
 - Paths: `installDir`, `tempDir`, `updaterExecutable`.
 - Network policy: timeouts, TLS, resumable downloads.
-- Security policy: signatures, public key, URL allowlist, anti-downgrade, expired manifest rejection.
+- Security policy: signatures, public key, URL allowlist, anti-downgrade, expired manifest rejection. Setting `rejectDowngrade=false` permits only downgrades requested by an independently verified release manifest; it does not make unsigned downgrade requests effective.
 - Apply policy: process wait timeout and healthy-confirmation timeout.
 
 ## Manifest

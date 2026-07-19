@@ -156,7 +156,7 @@ likelihood of affecting production update flows.
 
 ## P1: Near-term security and reliability work
 
-- [ ] **AU-009 — Bind downgrade authorization to a verified signature and local policy**
+- [x] **AU-009 — Bind downgrade authorization to a verified signature and local policy**
   - Classification: Verified low-severity security policy defect; CWE-345.
   - Key code: `include/libAutoUpdater/Config.h:29`,
     `src/Manifest.cpp:96-97`, `src/ManifestFetcher.cpp:17-27`,
