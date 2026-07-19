@@ -396,6 +396,12 @@ class RecordingStateStore final : public autoupdater::IStateStore {
         return autoupdater::Result<std::string>::ok({});
     }
 
+    autoupdater::Result<void>
+    commitHealthyVersion(const autoupdater::Version&, const std::string&,
+                         const std::optional<autoupdater::PendingUpdate>&) noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
     autoupdater::Result<void> savePendingUpdate(const autoupdater::PendingUpdate&) noexcept override {
         return autoupdater::Result<void>::ok();
     }

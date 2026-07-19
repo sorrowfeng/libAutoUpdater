@@ -1,5 +1,6 @@
 #include "TestCommon.h"
 
+#include <string>
 #include <vector>
 
 void testVersionParsingAndOrdering();
@@ -50,6 +51,13 @@ void testApplyExecutorUsesSafePosixPermissions();
 void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
+void testStateStoreDistinguishesMissingAndCorruptState();
+void testStateStorePreservesLastKnownGoodSnapshot();
+void testStateStoreConcurrentInstancesDoNotLoseUpdates();
+void testStateStoreHealthyCommitUsesCompareAndSet();
+void testStateStoreWriteFailuresPreservePrimary();
+void testStateStoreCrossProcessLockingAndCrashRecovery();
+int runStateStoreHelper(int argc, char* argv[]);
 void testUpdaterQueuedCallbacksOutliveUpdater();
 void testUpdaterDirectCallbacksAreExceptionSafeAndReentrant();
 void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated();
@@ -64,9 +72,18 @@ void testUpdaterQueueOverflowErrorReentryIsBounded();
 void testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction();
 void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt();
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
+void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable();
 void testFuzzSmokeParsersAndPaths();
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc >= 2) {
+        const std::string command = argv[1];
+        if (command == "--state-store-helper-write" || command == "--state-store-helper-crash-backup" ||
+            command == "--state-store-helper-crash-primary") {
+            return runStateStoreHelper(argc, argv);
+        }
+    }
+
     const std::vector<TestCase> tests = {
         {"VersionParsingAndOrdering", testVersionParsingAndOrdering},
         {"ManifestParsing", testManifestParsing},
@@ -120,6 +137,12 @@ int main() {
         {"Sha256Provider", testSha256Provider},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
+        {"StateStoreDistinguishesMissingAndCorruptState", testStateStoreDistinguishesMissingAndCorruptState},
+        {"StateStorePreservesLastKnownGoodSnapshot", testStateStorePreservesLastKnownGoodSnapshot},
+        {"StateStoreConcurrentInstancesDoNotLoseUpdates", testStateStoreConcurrentInstancesDoNotLoseUpdates},
+        {"StateStoreHealthyCommitUsesCompareAndSet", testStateStoreHealthyCommitUsesCompareAndSet},
+        {"StateStoreWriteFailuresPreservePrimary", testStateStoreWriteFailuresPreservePrimary},
+        {"StateStoreCrossProcessLockingAndCrashRecovery", testStateStoreCrossProcessLockingAndCrashRecovery},
         {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
         {"UpdaterDirectCallbacksAreExceptionSafeAndReentrant",
          testUpdaterDirectCallbacksAreExceptionSafeAndReentrant},
@@ -139,6 +162,8 @@ int main() {
          testUpdaterHealthyMarkRequiresMatchingTerminalReceipt},
         {"UpdaterDelegatesRollbackToTerminalBoundExternalPlan",
          testUpdaterDelegatesRollbackToTerminalBoundExternalPlan},
+        {"UpdaterFailsClosedWhenAcceptedStateIsUnreadable",
+         testUpdaterFailsClosedWhenAcceptedStateIsUnreadable},
         {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},
     };
 

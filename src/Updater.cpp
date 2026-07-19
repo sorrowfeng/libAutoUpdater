@@ -414,9 +414,10 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         std::optional<Version> lastAccepted;
         if (deps.stateStore) {
             auto loaded = deps.stateStore->loadLastAcceptedVersion();
-            if (loaded) {
-                lastAccepted = loaded.value();
+            if (!loaded) {
+                return Result<UpdateDecision>::fail(loaded.error());
             }
+            lastAccepted = loaded.value();
         }
 
         auto decision = planUpdate(effectiveConfig, envelope.value(), snapshot.value(), lastAccepted);
@@ -1047,11 +1048,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             releaseId = pending.value()->releaseId;
         }
-        auto save = deps.stateStore->saveLastAcceptedVersion(config.currentVersion, releaseId);
-        if (!save) {
-            return save;
-        }
-        return deps.stateStore->clearPendingUpdate();
+        return deps.stateStore->commitHealthyVersion(config.currentVersion, releaseId, pending.value());
     }
 
     Result<void> rollbackLastUpdate() noexcept {

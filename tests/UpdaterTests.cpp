@@ -207,12 +207,40 @@ class PendingStateStore final : public autoupdater::IStateStore {
 
     autoupdater::Result<std::optional<autoupdater::Version>> loadLastAcceptedVersion() noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (failAcceptedLoads_) {
+            return autoupdater::Result<std::optional<autoupdater::Version>>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "scripted accepted-state corruption"});
+        }
         return autoupdater::Result<std::optional<autoupdater::Version>>::ok(lastAcceptedVersion_);
     }
 
     autoupdater::Result<std::string> loadLastAcceptedReleaseId() noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         return autoupdater::Result<std::string>::ok(lastAcceptedReleaseId_);
+    }
+
+    autoupdater::Result<void>
+    commitHealthyVersion(const autoupdater::Version& version, const std::string& releaseId,
+                         const std::optional<autoupdater::PendingUpdate>& expectedPending) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto samePending = [](const autoupdater::PendingUpdate& left,
+                                    const autoupdater::PendingUpdate& right) {
+            return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
+                   left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
+                   left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
+                   left.applyPlanDigest == right.applyPlanDigest;
+        };
+        if (pending_.has_value() != expectedPending.has_value() ||
+            (pending_ && !samePending(*pending_, *expectedPending))) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "scripted pending state changed"});
+        }
+        ++saveLastAcceptedCalls_;
+        ++clearCalls_;
+        lastAcceptedVersion_ = version;
+        lastAcceptedReleaseId_ = releaseId;
+        pending_.reset();
+        return autoupdater::Result<void>::ok();
     }
 
     autoupdater::Result<void> savePendingUpdate(const autoupdater::PendingUpdate& pending) noexcept override {
@@ -276,6 +304,11 @@ class PendingStateStore final : public autoupdater::IStateStore {
         failSavePending_ = fail;
     }
 
+    void failAcceptedLoads(bool fail) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        failAcceptedLoads_ = fail;
+    }
+
     int savePendingCalls() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return savePendingCalls_;
@@ -292,6 +325,7 @@ class PendingStateStore final : public autoupdater::IStateStore {
     std::optional<autoupdater::Version> lastAcceptedVersion_;
     std::string lastAcceptedReleaseId_;
     bool failSavePending_ = false;
+    bool failAcceptedLoads_ = false;
     int savePendingCalls_ = 0;
     int saveLastAcceptedCalls_ = 0;
     int clearCalls_ = 0;
@@ -1279,4 +1313,39 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
 
     requireRejectedRollbackWithoutTerminal(false);
     requireRejectedRollbackWithoutTerminal(true);
+}
+
+void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable() {
+    ScopedTempDir temp;
+    const auto config = updaterConfig(temp.path());
+    auto network = std::make_shared<ScriptedManifestNetwork>(
+        std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+    auto stateStore = std::make_shared<PendingStateStore>();
+    stateStore->failAcceptedLoads(true);
+
+    autoupdater::Updater updater(config);
+    updater.setNetworkClient(network);
+    updater.setStateStore(stateStore);
+
+    std::atomic<int> checkCallbacks{0};
+    std::atomic<int> stateErrors{0};
+    autoupdater::Callbacks callbacks;
+    callbacks.onCheckResult = [&](const autoupdater::CheckResult&) {
+        checkCallbacks.fetch_add(1, std::memory_order_relaxed);
+    };
+    callbacks.onError = [&](const autoupdater::Error& error) {
+        if (error.code == autoupdater::ErrorCode::StateStoreError) {
+            stateErrors.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    updater.setCallbacks(std::move(callbacks));
+
+    updater.checkAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        return updater.state() == autoupdater::State::Failed &&
+               stateErrors.load(std::memory_order_relaxed) == 1;
+    }));
+    LAU_REQUIRE(checkCallbacks.load(std::memory_order_relaxed) == 0);
+    LAU_REQUIRE(network->calls() == 1);
 }

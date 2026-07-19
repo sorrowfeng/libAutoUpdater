@@ -137,7 +137,7 @@ likelihood of affecting production update flows.
     - Callback re-entry, thrown callbacks, cancellation, destruction, stale
       plans, and overlapping API calls have deterministic tests and results.
 
-- [ ] **AU-008 — Make state persistence atomic, locked, and fail-closed**
+- [x] **AU-008 — Make state persistence atomic, locked, and fail-closed**
   - Classification: Verified high-impact correctness issue with security
     implications for anti-replay state.
   - Key code: `src/default/JsonStateStore.cpp:17-225`,

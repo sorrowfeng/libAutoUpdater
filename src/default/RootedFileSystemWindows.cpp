@@ -983,7 +983,12 @@ class WindowsRootedDirectory final : public IRootedDirectory {
             }
             Handle lock;
             const auto status =
-                createRelative(parent.value().get(), components.value().back(), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                // A zero share mask only conflicts with another open when the
+                // handle requests a share-checked data/delete access. Attribute
+                // access alone allowed multiple processes to believe they held
+                // this lock concurrently.
+                createRelative(parent.value().get(), components.value().back(),
+                               FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                                FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE, lock, 0);
             if (status == kStatusSharingViolation || status == kStatusFileIsADirectory) {
                 return Result<std::unique_ptr<IRootedLock>>::fail(
