@@ -120,7 +120,7 @@ likelihood of affecting production update flows.
     - `rollbackLastUpdate()` never modifies managed install files in-process.
     - Partial rollback and rollback-of-rollback failures are recoverable.
 
-- [ ] **AU-007 — Repair the updater task/state machine**
+- [x] **AU-007 — Repair the updater task/state machine**
   - Classification: Verified high-impact correctness and lifecycle defect.
   - Key code: `src/Updater.cpp:133-136,217-229,315-322,407-503`,
     `src/default/DirectDispatcher.cpp:9-12`.

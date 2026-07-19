@@ -21,7 +21,9 @@ namespace autoupdater {
 ///
 /// Operations run asynchronously. User callbacks are delivered through the
 /// configured IEventDispatcher; GUI applications should inject a dispatcher that
-/// posts back to the UI thread.
+/// posts back to the UI thread. Overlapping asynchronous requests are processed
+/// in FIFO order, and exceptions thrown by callbacks are contained at the
+/// dispatcher boundary.
 class Updater {
   public:
     explicit Updater(Config config);
@@ -45,9 +47,11 @@ class Updater {
     void checkOnStartupAsync(bool downloadWhenAvailable = false) noexcept;
     /// Check and immediately download changed or missing files.
     void checkAndDownloadAsync() noexcept;
-    /// Download the update selected by the latest successful check.
+    /// Download the update selected by the generation that is current when this
+    /// method is called. If no check has started, a check is queued first.
     void downloadAsync() noexcept;
-    /// Launch the external updater with the prepared apply plan.
+    /// Launch the external updater only for the current persisted Ready-to-Apply
+    /// generation. Calling this before readiness is reported is rejected.
     void applyAndRestartAsync() noexcept;
     /// Start periodic background checks until stopPeriodicCheck() is called.
     void startPeriodicCheck(std::chrono::milliseconds interval, bool downloadWhenAvailable = false,
@@ -64,7 +68,7 @@ class Updater {
 
   private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace autoupdater

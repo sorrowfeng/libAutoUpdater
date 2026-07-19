@@ -51,6 +51,18 @@ void testSha256Provider();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 void testUpdaterQueuedCallbacksOutliveUpdater();
+void testUpdaterDirectCallbacksAreExceptionSafeAndReentrant();
+void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated();
+void testUpdaterCanBeDestroyedFromDirectCallback();
+void testUpdaterNewGenerationInvalidatesReadyPlan();
+void testUpdaterQueuedDownloadKeepsRequestedGeneration();
+void testUpdaterRequiresPersistedPendingBeforeReady();
+void testUpdaterApplyRequiresMatchingPersistedPending();
+void testUpdaterHealthyMarkPreservesFuturePending();
+void testUpdaterPeriodicCheckPreservesReadyGeneration();
+void testUpdaterQueueOverflowErrorReentryIsBounded();
+void testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction();
+void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt();
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
 void testFuzzSmokeParsersAndPaths();
 
@@ -109,6 +121,22 @@ int main() {
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
         {"UpdaterQueuedCallbacksOutliveUpdater", testUpdaterQueuedCallbacksOutliveUpdater},
+        {"UpdaterDirectCallbacksAreExceptionSafeAndReentrant",
+         testUpdaterDirectCallbacksAreExceptionSafeAndReentrant},
+        {"UpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated",
+         testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated},
+        {"UpdaterCanBeDestroyedFromDirectCallback", testUpdaterCanBeDestroyedFromDirectCallback},
+        {"UpdaterNewGenerationInvalidatesReadyPlan", testUpdaterNewGenerationInvalidatesReadyPlan},
+        {"UpdaterQueuedDownloadKeepsRequestedGeneration", testUpdaterQueuedDownloadKeepsRequestedGeneration},
+        {"UpdaterRequiresPersistedPendingBeforeReady", testUpdaterRequiresPersistedPendingBeforeReady},
+        {"UpdaterApplyRequiresMatchingPersistedPending", testUpdaterApplyRequiresMatchingPersistedPending},
+        {"UpdaterHealthyMarkPreservesFuturePending", testUpdaterHealthyMarkPreservesFuturePending},
+        {"UpdaterPeriodicCheckPreservesReadyGeneration", testUpdaterPeriodicCheckPreservesReadyGeneration},
+        {"UpdaterQueueOverflowErrorReentryIsBounded", testUpdaterQueueOverflowErrorReentryIsBounded},
+        {"UpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction",
+         testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction},
+        {"UpdaterHealthyMarkRequiresMatchingTerminalReceipt",
+         testUpdaterHealthyMarkRequiresMatchingTerminalReceipt},
         {"UpdaterDelegatesRollbackToTerminalBoundExternalPlan",
          testUpdaterDelegatesRollbackToTerminalBoundExternalPlan},
         {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},

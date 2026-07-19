@@ -8,7 +8,11 @@ class DirectDispatcher final : public IEventDispatcher {
   public:
     void post(std::function<void()> fn) noexcept override {
         if (fn) {
-            fn();
+            try {
+                fn();
+            } catch (...) {
+                // User callbacks must never escape a noexcept dispatch boundary.
+            }
         }
     }
 };
