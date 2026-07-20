@@ -125,6 +125,7 @@ void testApplyLauncherBoundsProcessWaitTimeout();
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
 void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable();
 void testFuzzSmokeParsersAndPaths();
+void testSecurityBoundaryRegressions();
 
 int main(int argc, char* argv[]) {
     if (argc >= 2) {
@@ -290,6 +291,7 @@ int main(int argc, char* argv[]) {
         {"UpdaterFailsClosedWhenAcceptedStateIsUnreadable",
          testUpdaterFailsClosedWhenAcceptedStateIsUnreadable},
         {"FuzzSmokeParsersAndPaths", testFuzzSmokeParsersAndPaths},
+        {"SecurityBoundaryRegressions", testSecurityBoundaryRegressions},
     };
 
     int failed = 0;

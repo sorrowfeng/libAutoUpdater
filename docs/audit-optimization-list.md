@@ -309,7 +309,7 @@ likelihood of affecting production update flows.
 
 ## Test backlog
 
-- [ ] **TEST-001 — Add updater security-boundary regression tests**
+- [x] **TEST-001 — Add updater security-boundary regression tests**
   - Cover journal traversal, URL policy, redirect downgrade, resource limits,
     symlink/junction containment, duplicate operations, reserved paths, and
     unsigned downgrade.
