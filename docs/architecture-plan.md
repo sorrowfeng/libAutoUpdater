@@ -303,6 +303,20 @@ embedded `downloadResume` maps are accepted for read compatibility, then
 removed from both the primary state and last-known-good snapshot on the next
 successful resume mutation after the authoritative primary state validates.
 
+### 4.8 Diagnostics
+
+`ErrorCode` describes the stable failure kind while the orthogonal
+`ErrorPhase` identifies `Apply`, `Rollback`, `Recovery`, `StatePersistence`,
+or `Restart` failures. Lower layers keep their original code; operation
+boundaries add the most specific known phase.
+
+`Error::message` remains available as in-process troubleshooting detail but is
+not a log-safe field because injected adapters can supply it. Command-line and
+example logging uses `formatDiagnostic()` and emits only stable phase and code
+fields. Apply journals likewise persist a bounded safe diagnostic instead of
+arbitrary adapter messages. Request URLs, authorization data, manifest or
+signature bodies, and key material must never enter diagnostic logs.
+
 ## 5. Manifest Design
 
 ### 5.1 Index Manifest

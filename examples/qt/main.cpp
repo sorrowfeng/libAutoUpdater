@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
 
     auto version = autoupdater::Version::parse(toUtf8String(args.at(2)));
     if (!version) {
-        qWarning() << QString::fromStdString(version.error().message);
+        qWarning() << QString::fromStdString(autoupdater::formatDiagnostic(version.error()));
         return 2;
     }
 
@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
         QCoreApplication::quit();
     };
     callbacks.onError = [&](const autoupdater::Error& error) {
-        qWarning() << QString::fromStdString(error.message);
+        qWarning() << QString::fromStdString(autoupdater::formatDiagnostic(error));
         QCoreApplication::exit(1);
     };
     updater.setCallbacks(std::move(callbacks));

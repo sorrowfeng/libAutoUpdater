@@ -124,6 +124,20 @@ of trusting or rewriting its last-known-good snapshot in isolation.
 Resume metadata never authorizes content. A resumed or restarted artifact must
 still match the signed size and SHA-256 before it can enter an apply plan.
 
+## Diagnostic Data
+
+`Error::message` is an in-process troubleshooting field, not a log-safe
+contract. Applications should use `formatDiagnostic()` when recording errors;
+it emits only the stable operation phase and error code. Bundled command-line
+frontends and the external updater follow that rule, and the transaction
+journal does not persist arbitrary adapter messages.
+
+Custom adapters must not copy request URLs, authorization values, response
+bodies, signatures, public or private key material, environment secrets, or
+process arguments into error messages. Operational displays must omit URL
+userinfo, query strings, and fragments because signed URLs commonly carry
+credentials there.
+
 ## Apply and Rollback
 
 Replacement is performed by `autoupdater_apply`:

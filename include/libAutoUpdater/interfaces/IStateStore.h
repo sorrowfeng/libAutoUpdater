@@ -35,6 +35,8 @@ struct DownloadResumeState {
 };
 
 /// Persistent state abstraction for anti-replay, pending update, and resume data.
+/// Implementations must not copy persisted contents, credential-bearing URLs,
+/// or other secret material into Error::message.
 class IStateStore {
   public:
     virtual ~IStateStore() = default;

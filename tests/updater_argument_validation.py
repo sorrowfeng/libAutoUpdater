@@ -64,8 +64,22 @@ def main() -> int:
 
     # Exit 4 proves that parsing and the zero-PID wait completed and execution
     # advanced to opening the intentionally absent plan.
-    for case in ([], ["--pid", "0", "--wait", "0"], ["--wait", "86400"]):
-        require_exit(run(args.updater, args.work_dir, case), 4, case)
+    operation_cases = (
+        ([], "Apply"),
+        (["--pid", "0", "--wait", "0"], "Apply"),
+        (["--wait", "86400"], "Apply"),
+        (["--rollback"], "Rollback"),
+    )
+    for case, phase in operation_cases:
+        result = run(args.updater, args.work_dir, case)
+        require_exit(result, 4, case)
+        expected = f"phase={phase} code=ApplyFailed"
+        if result.stderr.strip() != expected:
+            raise RuntimeError(
+                f"argument case {case!r} emitted {result.stderr!r}, expected {expected!r}"
+            )
+        if str(args.work_dir) in result.stderr:
+            raise RuntimeError(f"argument case {case!r} leaked its working path: {result.stderr!r}")
     return 0
 
 

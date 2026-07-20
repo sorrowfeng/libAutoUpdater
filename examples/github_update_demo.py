@@ -154,7 +154,7 @@ def main() -> int:
     install_dir = args.work_dir.resolve() / "install"
 
     print("GitHub-hosted update demo")
-    print(f"  manifest: {manifest_url}")
+    print("  manifest: [configured]")
     print(f"  install:  {install_dir}")
     print(f"  cli:      {args.cli}")
     print(f"  updater:  {args.updater}")

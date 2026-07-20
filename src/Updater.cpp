@@ -4,6 +4,7 @@
 #include "ApplyPlanWriter.h"
 #include "ApplyTransactionReceipt.h"
 #include "DownloadExecutor.h"
+#include "ErrorUtil.h"
 #include "LocalSnapshotBuilder.h"
 #include "ManifestFetcher.h"
 #include "ProcessWait.h"
@@ -451,7 +452,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         auto pending = deps.stateStore->loadPendingUpdate();
         if (!pending) {
-            return Result<std::optional<PendingUpdate>>::fail(pending.error());
+            return Result<std::optional<PendingUpdate>>::fail(
+                detail::withErrorPhase(pending.error(), ErrorPhase::StatePersistence));
         }
         if (!pending.value() || pending.value()->version == config.currentVersion) {
             return pending;
@@ -504,11 +506,13 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (!compareAndSet) {
             return Result<std::optional<PendingUpdate>>::fail(
                 {ErrorCode::StateStoreError,
-                 "State store does not support atomic pending-update reconciliation"});
+                 "State store does not support atomic pending-update reconciliation",
+                 ErrorPhase::StatePersistence});
         }
         auto cleared = compareAndSet->clearPendingUpdateIfMatches(*pending.value());
         if (!cleared) {
-            return Result<std::optional<PendingUpdate>>::fail(cleared.error());
+            return Result<std::optional<PendingUpdate>>::fail(
+                detail::withErrorPhase(cleared.error(), ErrorPhase::StatePersistence));
         }
         return Result<std::optional<PendingUpdate>>::ok(std::nullopt);
     }
@@ -530,7 +534,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         if (!terminal.value()) {
             return Result<void>::fail(
-                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
+                 ErrorPhase::Apply});
         }
         auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
         if (!authorized) {
@@ -538,7 +543,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         if (!authorized.value()) {
             return Result<void>::fail(
-                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
+                 ErrorPhase::Apply});
         }
         auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
         if (!expired) {
@@ -547,7 +553,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (expired.value()) {
             return Result<void>::fail(
                 {ErrorCode::ApplyFailed,
-                 "Health confirmation deadline expired; pending state and rollback backup were retained"});
+                 "Health confirmation deadline expired; pending state and rollback backup were retained",
+                 ErrorPhase::Apply});
         }
         return Result<void>::ok();
     }
@@ -590,7 +597,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (deps.stateStore) {
             auto loaded = deps.stateStore->loadLastAcceptedVersion();
             if (!loaded) {
-                return Result<UpdateDecision>::fail(loaded.error());
+                return Result<UpdateDecision>::fail(
+                    detail::withErrorPhase(loaded.error(), ErrorPhase::StatePersistence));
             }
             lastAccepted = loaded.value();
         }
@@ -765,7 +773,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         if (!deps.stateStore) {
             return Result<void>::fail(
-                {ErrorCode::InvalidConfig, "A state store is required before an update can become ready"});
+                {ErrorCode::InvalidConfig, "A state store is required before an update can become ready",
+                 ErrorPhase::StatePersistence});
         }
         if (!setGenerationState(generation, State::Downloading)) {
             return Result<void>::fail({ErrorCode::Cancelled, "Updater is shutting down"});
@@ -802,7 +811,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         pending.applyPlanDigest = written.value().digest;
         auto saved = deps.stateStore->savePendingUpdate(pending);
         if (!saved) {
-            return saved;
+            return Result<void>::fail(
+                detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence));
         }
 
         ReadyGeneration ready;
@@ -824,7 +834,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             const auto current = state();
             if (current == State::Applying || (periodicRequest && current == State::ReadyToApply)) {
                 if (!periodicRequest) {
-                    notifyError({ErrorCode::ApplyLaunchFailed, "A new check cannot start while apply is in progress"});
+                    notifyError({ErrorCode::ApplyLaunchFailed, "A new check cannot start while apply is in progress",
+                                 ErrorPhase::Apply});
                 }
                 return;
             }
@@ -861,7 +872,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             const auto current = state();
             if (current == State::Applying || (periodicRequest && current == State::ReadyToApply)) {
                 if (!periodicRequest) {
-                    notifyError({ErrorCode::ApplyLaunchFailed, "A new check cannot start while apply is in progress"});
+                    notifyError({ErrorCode::ApplyLaunchFailed, "A new check cannot start while apply is in progress",
+                                 ErrorPhase::Apply});
                 }
                 return;
             }
@@ -1107,7 +1119,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         start([this, requestedGeneration] {
             if (!requestedGeneration) {
                 notifyError({ErrorCode::ApplyLaunchFailed,
-                             "Apply was requested without a current ready-to-apply generation"});
+                             "Apply was requested without a current ready-to-apply generation", ErrorPhase::Apply});
                 return;
             }
             auto deps = dependenciesCopy();
@@ -1122,7 +1134,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
                 }
             }
             if (!ready) {
-                notifyError({ErrorCode::ApplyLaunchFailed, "No current ready-to-apply generation is available"});
+                notifyError({ErrorCode::ApplyLaunchFailed, "No current ready-to-apply generation is available",
+                             ErrorPhase::Apply});
                 return;
             }
             const auto generation = ready->checked.id;
@@ -1132,18 +1145,21 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             if (!deps.stateStore) {
                 reportGenerationError(generation,
-                                      {ErrorCode::StateStoreError, "Pending update state store is unavailable"});
+                                      {ErrorCode::StateStoreError, "Pending update state store is unavailable",
+                                       ErrorPhase::StatePersistence});
                 return;
             }
             auto pending = deps.stateStore->loadPendingUpdate();
             if (!pending) {
-                reportGenerationError(generation, pending.error());
+                reportGenerationError(
+                    generation, detail::withErrorPhase(pending.error(), ErrorPhase::StatePersistence));
                 return;
             }
             if (!pending.value() || !samePendingUpdate(*pending.value(), ready->persistedPending)) {
                 reportGenerationError(
                     generation,
-                    {ErrorCode::StateStoreError, "Persisted pending update does not match the ready generation"});
+                    {ErrorCode::StateStoreError, "Persisted pending update does not match the ready generation",
+                     ErrorPhase::StatePersistence});
                 return;
             }
 
@@ -1166,7 +1182,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             if (generationChanged) {
                 notifyGenerationError(generation,
-                                      {ErrorCode::ApplyLaunchFailed, "Ready generation changed before apply launch"});
+                                      {ErrorCode::ApplyLaunchFailed, "Ready generation changed before apply launch",
+                                       ErrorPhase::Apply});
                 return;
             }
             postForGeneration(generation, [stateCallback = std::move(stateCallback)] {
@@ -1217,7 +1234,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (pending.value()) {
             if (pending.value()->version.toString() != config.currentVersion.toString()) {
                 return Result<void>::fail(
-                    {ErrorCode::StateStoreError, "Pending update version does not match the running version"});
+                    {ErrorCode::StateStoreError, "Pending update version does not match the running version",
+                     ErrorPhase::StatePersistence});
             }
             if (!deps.fileSystem) {
                 return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
@@ -1228,7 +1246,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             if (!terminal.value()) {
                 return Result<void>::fail(
-                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
+                     ErrorPhase::Apply});
             }
             auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
             if (!authorized) {
@@ -1236,7 +1255,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             if (!authorized.value()) {
                 return Result<void>::fail(
-                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
+                     ErrorPhase::Apply});
             }
             auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
             if (!expired) {
@@ -1245,11 +1265,17 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             if (expired.value()) {
                 return Result<void>::fail(
                     {ErrorCode::ApplyFailed,
-                     "Health confirmation deadline expired; pending state and rollback backup were retained"});
+                     "Health confirmation deadline expired; pending state and rollback backup were retained",
+                     ErrorPhase::Apply});
             }
             releaseId = pending.value()->releaseId;
         }
-        return deps.stateStore->commitHealthyVersion(config.currentVersion, releaseId, pending.value());
+        auto committed = deps.stateStore->commitHealthyVersion(config.currentVersion, releaseId, pending.value());
+        if (!committed) {
+            return Result<void>::fail(
+                detail::withErrorPhase(committed.error(), ErrorPhase::StatePersistence));
+        }
+        return committed;
     }
 
     Result<void> rollbackLastUpdate() noexcept {
@@ -1271,21 +1297,25 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             return Result<void>::ok();
         }
         if (!deps.fileSystem) {
-            return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
+            return Result<void>::fail(
+                {ErrorCode::InvalidConfig, "File system dependency is missing", ErrorPhase::Rollback});
         }
         if (!deps.processLauncher) {
-            return Result<void>::fail({ErrorCode::InvalidConfig, "Process launcher dependency is missing"});
+            return Result<void>::fail(
+                {ErrorCode::InvalidConfig, "Process launcher dependency is missing", ErrorPhase::Rollback});
         }
         auto pending = loadPendingAndReconcileRollback(deps);
         if (!pending) {
-            return Result<void>::fail(pending.error());
+            return Result<void>::fail(
+                detail::withFallbackErrorPhase(pending.error(), ErrorPhase::Rollback));
         }
         if (!pending.value()) {
             return Result<void>::ok();
         }
         auto written = writeRollbackRequestPlan(config, *pending.value(), *deps.fileSystem);
         if (!written) {
-            return Result<void>::fail(written.error());
+            return Result<void>::fail(
+                detail::withFallbackErrorPhase(written.error(), ErrorPhase::Rollback));
         }
         return launchApplyProcess(config, written.value().path, written.value().digest, ApplyLaunchIntent::Rollback,
                                   *deps.processLauncher);

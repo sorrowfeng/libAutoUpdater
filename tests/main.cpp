@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+void testStructuredDiagnosticsAreStableAndNonSensitive();
 void testVersionParsingAndOrdering();
 void testManifestParsing();
 void testManifestRejectsPathTraversal();
@@ -68,6 +69,7 @@ void testApplyExecutorRejectsExistingLock();
 void testApplyExecutorReplacesFilesInUnicodeDirectory();
 void testApplyExecutorExecutesOperationFreePublicRollback();
 void testApplyExecutorRecoversFailedPublicRollbackOfRollback();
+void testApplyExecutorReportsRestartFailurePhase();
 void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly();
@@ -134,6 +136,7 @@ int main(int argc, char* argv[]) {
     }
 
     const std::vector<TestCase> tests = {
+        {"StructuredDiagnosticsAreStableAndNonSensitive", testStructuredDiagnosticsAreStableAndNonSensitive},
         {"VersionParsingAndOrdering", testVersionParsingAndOrdering},
         {"ManifestParsing", testManifestParsing},
         {"ManifestRejectsPathTraversal", testManifestRejectsPathTraversal},
@@ -214,6 +217,7 @@ int main(int argc, char* argv[]) {
         {"ApplyExecutorExecutesOperationFreePublicRollback", testApplyExecutorExecutesOperationFreePublicRollback},
         {"ApplyExecutorRecoversFailedPublicRollbackOfRollback",
          testApplyExecutorRecoversFailedPublicRollbackOfRollback},
+        {"ApplyExecutorReportsRestartFailurePhase", testApplyExecutorReportsRestartFailurePhase},
         {"ApplyExecutorRecoversAfterForcedTermination", testApplyExecutorRecoversAfterForcedTermination},
         {"ApplyExecutorRejectsSourceTargetBackupLinks", testApplyExecutorRejectsSourceTargetBackupLinks},
         {"ApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly",

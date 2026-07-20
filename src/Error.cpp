@@ -50,4 +50,26 @@ const char* toString(ErrorCode code) noexcept {
     return "Unknown";
 }
 
+const char* toString(ErrorPhase phase) noexcept {
+    switch (phase) {
+    case ErrorPhase::General:
+        return "General";
+    case ErrorPhase::Apply:
+        return "Apply";
+    case ErrorPhase::Rollback:
+        return "Rollback";
+    case ErrorPhase::Recovery:
+        return "Recovery";
+    case ErrorPhase::StatePersistence:
+        return "StatePersistence";
+    case ErrorPhase::Restart:
+        return "Restart";
+    }
+    return "Unknown";
+}
+
+std::string formatDiagnostic(const Error& error) {
+    return "phase=" + std::string(toString(error.phase)) + " code=" + toString(error.code);
+}
+
 } // namespace autoupdater

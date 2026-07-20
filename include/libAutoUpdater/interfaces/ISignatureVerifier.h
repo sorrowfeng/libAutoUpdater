@@ -8,6 +8,8 @@
 namespace autoupdater {
 
 /// Detached manifest signature verifier abstraction.
+/// Implementations must not copy the payload, signature, or key material into
+/// Error::message.
 class ISignatureVerifier {
   public:
     virtual ~ISignatureVerifier() = default;

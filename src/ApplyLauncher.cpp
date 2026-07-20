@@ -1,5 +1,6 @@
 #include "ApplyLauncher.h"
 
+#include "ErrorUtil.h"
 #include "ProcessWait.h"
 #include "util/PathUtil.h"
 #include "util/Sha256.h"
@@ -27,14 +28,15 @@ std::uint64_t currentProcessId() {
 Result<void> launchApplyProcess(const Config& config, const std::filesystem::path& applyPlanPath,
                                 const std::string& applyPlanDigest, ApplyLaunchIntent intent,
                                 IProcessLauncher& processLauncher) {
+    const auto phase = intent == ApplyLaunchIntent::Rollback ? ErrorPhase::Rollback : ErrorPhase::Apply;
     if (config.updaterExecutable.empty()) {
-        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "updaterExecutable is required"});
+        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "updaterExecutable is required", phase});
     }
     if (!util::isLowerHexSha256(applyPlanDigest)) {
-        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "A valid apply-plan digest is required"});
+        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "A valid apply-plan digest is required", phase});
     }
     if (!detail::validProcessWaitTimeout(config.applyWaitTimeout)) {
-        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "applyWaitTimeout is outside the safe range"});
+        return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "applyWaitTimeout is outside the safe range", phase});
     }
 
     ProcessLaunchRequest request;
@@ -54,7 +56,11 @@ Result<void> launchApplyProcess(const Config& config, const std::filesystem::pat
     if (intent == ApplyLaunchIntent::Rollback) {
         request.arguments.push_back("--rollback");
     }
-    return processLauncher.launch(request);
+    auto launched = processLauncher.launch(request);
+    if (!launched) {
+        return Result<void>::fail(detail::withErrorPhase(launched.error(), phase));
+    }
+    return launched;
 }
 
 } // namespace autoupdater

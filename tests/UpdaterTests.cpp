@@ -1045,6 +1045,7 @@ void testUpdaterRequiresPersistedPendingBeforeReady() {
         std::atomic<int> readyCallbacks{0};
         std::atomic<int> readyStates{0};
         std::atomic<int> errorCallbacks{0};
+        std::atomic<autoupdater::ErrorPhase> errorPhase{autoupdater::ErrorPhase::General};
         autoupdater::Callbacks callbacks;
         callbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_relaxed); };
         callbacks.onStateChanged = [&](autoupdater::State state) {
@@ -1052,28 +1053,30 @@ void testUpdaterRequiresPersistedPendingBeforeReady() {
                 readyStates.fetch_add(1, std::memory_order_relaxed);
             }
         };
-        callbacks.onError = [&](const autoupdater::Error&) {
-            errorCallbacks.fetch_add(1, std::memory_order_relaxed);
+        callbacks.onError = [&](const autoupdater::Error& error) {
+            errorPhase.store(error.phase, std::memory_order_relaxed);
+            errorCallbacks.fetch_add(1, std::memory_order_release);
         };
         updater.setCallbacks(std::move(callbacks));
 
         updater.checkAndDownloadAsync();
         LAU_REQUIRE(waitUntil([&] {
             return updater.state() == autoupdater::State::Failed &&
-                   errorCallbacks.load(std::memory_order_relaxed) >= 1;
+                   errorCallbacks.load(std::memory_order_acquire) >= 1;
         }));
         LAU_REQUIRE(readyCallbacks.load(std::memory_order_relaxed) == 0);
         LAU_REQUIRE(readyStates.load(std::memory_order_relaxed) == 0);
+        LAU_REQUIRE(errorPhase.load(std::memory_order_relaxed) == autoupdater::ErrorPhase::StatePersistence);
         LAU_REQUIRE(launcher->launchCalls() == 0);
         if (!nullStore) {
             LAU_REQUIRE(stateStore->savePendingCalls() == 1);
             LAU_REQUIRE(!stateStore->hasPendingUpdate());
         }
 
-        const auto errorsBeforeApply = errorCallbacks.load(std::memory_order_relaxed);
+        const auto errorsBeforeApply = errorCallbacks.load(std::memory_order_acquire);
         updater.applyAndRestartAsync();
         LAU_REQUIRE(waitUntil([&] {
-            return errorCallbacks.load(std::memory_order_relaxed) > errorsBeforeApply;
+            return errorCallbacks.load(std::memory_order_acquire) > errorsBeforeApply;
         }));
         LAU_REQUIRE(launcher->launchCalls() == 0);
     }

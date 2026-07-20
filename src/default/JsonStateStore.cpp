@@ -46,13 +46,13 @@ std::mutex& processStateStoreMutex() {
 }
 
 Error stateError(std::string message) {
-    return {ErrorCode::StateStoreError, std::move(message)};
+    return {ErrorCode::StateStoreError, std::move(message), ErrorPhase::StatePersistence};
 }
 
 Error storageError(const Error& error, const std::string& context) {
     if (error.code == ErrorCode::ResourceLimitExceeded || error.code == ErrorCode::PathTraversalRejected ||
         error.code == ErrorCode::SecurityPolicyViolation) {
-        return {error.code, context + ": " + error.message};
+        return {error.code, context + ": " + error.message, ErrorPhase::StatePersistence};
     }
     return stateError(context + ": " + error.message);
 }
@@ -219,7 +219,8 @@ Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& 
             return Result<void>::fail(stateError("downloadResume must be an object"));
         }
         if (downloads->second.asObject().size() > limits.json.maxContainerEntries) {
-            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded",
+                                       ErrorPhase::StatePersistence});
         }
         for (const auto& entry : downloads->second.asObject()) {
             if (entry.first.empty() || containsControlCharacter(entry.first) || !entry.second.isObject()) {
@@ -306,7 +307,8 @@ Result<void> validateDownloadResumeValue(const DownloadResumeState& resume, cons
         return Result<void>::fail(stateError("Download resume validators contain control characters"));
     }
     if (resume.offset > limits.maxArtifactBytes) {
-        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit",
+                                   ErrorPhase::StatePersistence});
     }
     return Result<void>::ok();
 }
@@ -1273,7 +1275,8 @@ class JsonStateStore final : public IStateStore,
         }
         const auto contents = json.stringify(2);
         if (contents.size() > limits_.maxStateBytes) {
-            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "State file exceeds its byte limit"});
+            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "State file exceeds its byte limit",
+                                       ErrorPhase::StatePersistence});
         }
 
         if (state.primary.exists) {

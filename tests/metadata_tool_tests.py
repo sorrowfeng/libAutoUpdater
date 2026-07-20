@@ -86,6 +86,27 @@ class MetadataToolTests(unittest.TestCase):
         document = json.loads(valid_output.read_text(encoding="utf-8"))
         self.assertEqual(document["releaseDate"], "2026-07-19T20:34:56.123456789+08:00")
 
+    def test_make_manifest_redacts_operational_urls(self) -> None:
+        output = self.root / "manifest.json"
+        command = self.manifest_command(output, "2026-07-19T12:00:00Z")
+        base_url = command.index("--base-url") + 1
+        command[base_url] = (
+            "https://sentinel-user:sentinel-password@updates.example.test:8443/"
+            "releases/1.2.3/?token=sentinel-token#sentinel-fragment"
+        )
+
+        result = self.run_tool(MAKE_MANIFEST, *command)
+
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("https://updates.example.test:8443/releases/1.2.3/", result.stdout)
+        for secret in (
+            "sentinel-user",
+            "sentinel-password",
+            "sentinel-token",
+            "sentinel-fragment",
+        ):
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
     def test_make_manifest_excludes_default_and_custom_generated_outputs(self) -> None:
         release = self.root / "release"
         release.mkdir()

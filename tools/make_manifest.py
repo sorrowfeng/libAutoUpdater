@@ -13,6 +13,7 @@ import stat
 import tempfile
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from .metadata_contract import is_rfc3339_timestamp
@@ -30,6 +31,21 @@ def sha256_file(path: Path) -> str:
 
 def normalize(path: Path) -> str:
     return path.as_posix()
+
+
+def diagnostic_url(url: str) -> str:
+    """Return an operational URL display without credentials or request secrets."""
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        if not parsed.scheme or hostname is None:
+            return "[configured]"
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        port = parsed.port
+        authority = host if port is None else f"{host}:{port}"
+        return urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
+    except (UnicodeError, ValueError):
+        return "[configured]"
 
 
 def included(path: str, patterns: Iterable[str]) -> bool:
@@ -255,9 +271,9 @@ def main() -> int:
 
     print(f"Wrote {output}")
     print("Upload the release directory to:")
-    print(f"  {args.base_url}")
+    print(f"  {diagnostic_url(args.base_url)}")
     print("Client manifest URL should point to:")
-    print(f"  {args.base_url.rstrip('/')}/manifest.json")
+    print(f"  {diagnostic_url(args.base_url.rstrip('/') + '/manifest.json')}")
     if args.content_addressed:
         print("Object store root:")
         print(f"  {(args.object_root or (args.release_dir.resolve().parent / 'objects' / 'sha256')).resolve()}")

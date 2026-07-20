@@ -282,7 +282,7 @@ likelihood of affecting production update flows.
   - Process full SHA-256 blocks directly and ensure progress callbacks receive
     a useful total while transfer is active.
 
-- [ ] **AU-022 — Add structured, non-sensitive updater diagnostics**
+- [x] **AU-022 — Add structured, non-sensitive updater diagnostics**
   - Distinguish apply failure, rollback failure, recovery failure, state
     persistence failure, and restart failure.
   - Never log signatures, private material, or credential-bearing URLs.

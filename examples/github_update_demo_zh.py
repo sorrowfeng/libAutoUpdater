@@ -153,7 +153,7 @@ def main() -> int:
     install_dir = args.work_dir.resolve() / "安装目录"
 
     print("GitHub 云端更新中文路径演示")
-    print(f"  manifest: {manifest_url}")
+    print("  manifest: [已配置]")
     print(f"  本地安装目录: {install_dir}")
     print(f"  CLI:          {args.cli}")
     print(f"  updater:      {args.updater}")

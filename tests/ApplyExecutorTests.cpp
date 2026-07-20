@@ -46,6 +46,23 @@ applyDependencies(const std::shared_ptr<autoupdater::IHashProvider>& hashProvide
     return dependencies;
 }
 
+class FailingProcessLauncher final : public autoupdater::IProcessLauncher {
+  public:
+    autoupdater::Result<void> launch(const autoupdater::ProcessLaunchRequest&) noexcept override {
+        ++launchCalls_;
+        return autoupdater::Result<void>::fail(
+            {autoupdater::ErrorCode::ApplyLaunchFailed,
+             "Injected restart launch failure: https://example.test/?token=AU022_JOURNAL_SECRET"});
+    }
+
+    int launchCalls() const noexcept {
+        return launchCalls_;
+    }
+
+  private:
+    int launchCalls_ = 0;
+};
+
 struct PublicRollbackScenario {
     std::filesystem::path root;
     std::filesystem::path installDir;
@@ -316,6 +333,7 @@ void testApplyExecutorRollsBackCurrentFailedOperation() {
 
     auto result = autoupdater::updater::executeApplyPlan(plan);
     LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().phase == autoupdater::ErrorPhase::Apply);
     LAU_REQUIRE(readFile(install / "bin/a.txt") == "old-a");
     LAU_REQUIRE(readFile(install / "bin/b.txt") == "old-b");
 
@@ -465,6 +483,7 @@ void testApplyExecutorExecutesOperationFreePublicRollback() {
     writeFile(scenario.installDir / "bin/replaced.txt", "unexpected-third-state");
     const auto rejectedStaleTarget = autoupdater::updater::executeApplyPlan(scenario.rollbackRequest);
     LAU_REQUIRE(!rejectedStaleTarget);
+    LAU_REQUIRE(rejectedStaleTarget.error().phase == autoupdater::ErrorPhase::Rollback);
     LAU_REQUIRE(!std::filesystem::exists(scenario.installDir / ".autoupdater" / "journal" / "active.json"));
     LAU_REQUIRE(readTerminalTransaction(scenario.installDir).transactionId == scenario.forwardTerminal.transactionId);
     writeFile(scenario.installDir / "bin/replaced.txt", std::string(kNewReplaced));
@@ -624,14 +643,16 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     const auto active = autoupdater::updater::parseActiveTransaction(readFile(journalDir / "active.json"));
     LAU_REQUIRE(active);
     LAU_REQUIRE(active.value().transactionId != scenario.forwardTerminal.transactionId);
-    const auto failedSummary =
-        autoupdater::updater::parseApplyJournalSummary(readFile(journalDir / (active.value().transactionId + ".json")));
+    const auto failedSummaryPath = journalDir / (active.value().transactionId + ".json");
+    const auto failedSummary = autoupdater::updater::parseApplyJournalSummary(readFile(failedSummaryPath));
     LAU_REQUIRE(failedSummary);
     LAU_REQUIRE(failedSummary.value().fileState == autoupdater::updater::JournalFileState::RecoveryFailed);
     LAU_REQUIRE(!failedSummary.value().applyError.empty());
     LAU_REQUIRE(!failedSummary.value().rollbackError.empty());
-    const auto failedOperation = autoupdater::updater::parseApplyJournalOperation(
-        readFile(journalDir / (active.value().transactionId + ".ops") / "00000001.json"));
+    const auto failedOperationPath =
+        journalDir / (active.value().transactionId + ".ops") / "00000001.json";
+    const auto failedOperation =
+        autoupdater::updater::parseApplyJournalOperation(readFile(failedOperationPath));
     LAU_REQUIRE(failedOperation);
     LAU_REQUIRE(failedOperation.value().rollbackState == autoupdater::updater::JournalRollbackState::Failed);
 
@@ -648,6 +669,38 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     LAU_REQUIRE(readFile(scenario.installDir / "bin/replaced.txt") == kNewReplaced);
     LAU_REQUIRE(!std::filesystem::exists(scenario.installDir / "bin/added.txt"));
     LAU_REQUIRE(readFile(scenario.installDir / "bin/removed.txt") == kOldRemoved);
+
+    auto legacySummaryJson = autoupdater::util::Json::parse(readFile(failedSummaryPath), {});
+    LAU_REQUIRE(legacySummaryJson && legacySummaryJson.value().isObject());
+    auto legacySummaryObject = legacySummaryJson.value().asObject();
+    constexpr const char* kLegacySecret = "AU022_LEGACY_JOURNAL_SECRET";
+    for (const auto* field : {"applyError", "rollbackError"}) {
+        auto errorObject = legacySummaryObject.at(field).asObject();
+        errorObject["message"] = autoupdater::util::Json(
+            std::string("https://user:password@example.test/?token=") + kLegacySecret);
+        legacySummaryObject[field] = autoupdater::util::Json(std::move(errorObject));
+    }
+    writeFile(failedSummaryPath, autoupdater::util::Json(std::move(legacySummaryObject)).stringify(2));
+
+    auto legacyOperationJson = autoupdater::util::Json::parse(readFile(failedOperationPath), {});
+    LAU_REQUIRE(legacyOperationJson && legacyOperationJson.value().isObject());
+    auto legacyOperationObject = legacyOperationJson.value().asObject();
+    auto legacyOperationError = legacyOperationObject.at("error").asObject();
+    constexpr const char* kLegacyOperationSecret = "AU022_LEGACY_OPERATION_SECRET";
+    legacyOperationError["message"] = autoupdater::util::Json(
+        std::string("signature=") + kLegacyOperationSecret + "; -----BEGIN PRIVATE KEY-----");
+    legacyOperationObject["error"] = autoupdater::util::Json(std::move(legacyOperationError));
+    writeFile(failedOperationPath, autoupdater::util::Json(std::move(legacyOperationObject)).stringify(2));
+
+    const auto recoveredInterruptedTransaction = autoupdater::updater::executeApplyPlan(scenario.forwardPlan);
+    LAU_REQUIRE(!recoveredInterruptedTransaction);
+    LAU_REQUIRE(recoveredInterruptedTransaction.error().phase == autoupdater::ErrorPhase::Recovery);
+    LAU_REQUIRE(!std::filesystem::exists(journalDir / "active.json"));
+    LAU_REQUIRE(readFile(scenario.installDir / "bin/replaced.txt") == kNewReplaced);
+    LAU_REQUIRE(readFile(scenario.installDir / "bin/added.txt") == kNewAdded);
+    LAU_REQUIRE(!std::filesystem::exists(scenario.installDir / "bin/removed.txt"));
+    LAU_REQUIRE(readFile(failedSummaryPath).find(kLegacySecret) == std::string::npos);
+    LAU_REQUIRE(readFile(failedOperationPath).find(kLegacyOperationSecret) == std::string::npos);
 
     const auto recovered = autoupdater::updater::executeApplyPlan(scenario.rollbackRequest);
     LAU_REQUIRE(recovered);
@@ -673,6 +726,61 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     LAU_REQUIRE(terminalPlan.value().rollbackOf->planDigest == scenario.rollbackRequest.rollbackOf->planDigest);
 
     std::filesystem::remove_all(root, ec);
+}
+
+void testApplyExecutorReportsRestartFailurePhase() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-restart-diagnostic-test";
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+
+    const auto installDir = root / "install";
+    const auto stagingDir = root / "staging";
+    const auto backupDir = root / "backup";
+    writeFile(installDir / "bin/app.txt", "old");
+    writeFile(stagingDir / "bin/app.txt", "new");
+
+    auto hashProvider = autoupdater::createDefaultHashProvider();
+    const auto newHash = hashProvider->sha256Bytes("new");
+    LAU_REQUIRE(newHash);
+
+    autoupdater::ApplyPlan plan;
+    plan.schemaVersion = 2;
+    plan.appId = "com.example.restart-diagnostic";
+    plan.fromVersion = "1.0.0";
+    plan.toVersion = "2.0.0";
+    plan.releaseId = "release-2";
+    plan.manifestSha256 = std::string(64, 'd');
+    plan.installDir = installDir;
+    plan.stagingDir = stagingDir;
+    plan.backupDir = backupDir;
+    plan.operations.push_back(
+        {autoupdater::ApplyOperationType::Replace, "bin/app.txt", "bin/app.txt", newHash.value(), 3});
+    plan.restartCommand = {"restart-placeholder", "--restored"};
+
+    auto processLauncher = std::make_shared<FailingProcessLauncher>();
+    autoupdater::updater::ApplyExecutorDependencies dependencies;
+    dependencies.fileSystem = autoupdater::createDefaultFileSystem();
+    dependencies.hashProvider = hashProvider;
+    dependencies.processLauncher = processLauncher;
+    const auto result =
+        autoupdater::updater::executeApplyPlanWithDependencies(plan, std::move(dependencies));
+
+    LAU_REQUIRE(!result);
+    LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ApplyLaunchFailed);
+    LAU_REQUIRE(result.error().phase == autoupdater::ErrorPhase::Restart);
+    LAU_REQUIRE(processLauncher->launchCalls() == 1);
+    LAU_REQUIRE(readFile(installDir / "bin/app.txt") == "new");
+
+    const auto terminal = readTerminalTransaction(installDir);
+    const auto summary = autoupdater::updater::parseApplyJournalSummary(
+        readFile(installDir / ".autoupdater" / "journal" / (terminal.transactionId + ".json")));
+    LAU_REQUIRE(summary);
+    LAU_REQUIRE(summary.value().fileState == autoupdater::updater::JournalFileState::Complete);
+    LAU_REQUIRE(summary.value().restartState == autoupdater::updater::JournalRestartState::Failed);
+    LAU_REQUIRE(summary.value().restartError.message == "phase=Restart code=ApplyLaunchFailed");
+    LAU_REQUIRE(summary.value().restartError.message.find("AU022_JOURNAL_SECRET") == std::string::npos);
+
+    std::filesystem::remove_all(root, error);
 }
 
 void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly() {

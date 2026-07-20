@@ -49,6 +49,8 @@ struct DownloadResult {
 };
 
 /// Network abstraction for manifest fetches and file downloads.
+/// Implementations must not place request URLs, authorization values, response
+/// bodies, signatures, keys, or other credential material in Error::message.
 class INetworkClient {
   public:
     virtual ~INetworkClient() = default;

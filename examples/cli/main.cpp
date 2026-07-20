@@ -88,7 +88,7 @@ const char* stateName(autoupdater::State state) noexcept {
 void printBanner(const autoupdater::Config& config, bool applyWhenReady) {
     std::cout << "libAutoUpdater CLI example\n";
     std::cout << "  currentVersion: " << config.currentVersion.toString() << "\n";
-    std::cout << "  manifestUrl:    " << config.manifestUrl << "\n";
+    std::cout << "  manifestUrl:    [configured]\n";
     std::cout << "  installDir:     " << autoupdater::util::pathToUtf8(config.installDir) << "\n";
     std::cout << "  apply:          " << (applyWhenReady ? "yes" : "no") << "\n";
     if (applyWhenReady) {
@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--version" && i + 1 < args.size()) {
             auto parsed = autoupdater::Version::parse(args[++i]);
             if (!parsed) {
-                std::cerr << parsed.error().message << "\n";
+                std::cerr << autoupdater::formatDiagnostic(parsed.error()) << "\n";
                 return 2;
             }
             config.currentVersion = parsed.value();
@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
         cv.notify_one();
     };
     callbacks.onError = [&](const autoupdater::Error& error) {
-        std::cerr << autoupdater::toString(error.code) << ": " << error.message << "\n";
+        std::cerr << autoupdater::formatDiagnostic(error) << "\n";
         std::lock_guard<std::mutex> lock(mutex);
         exitCode = 1;
         done = true;

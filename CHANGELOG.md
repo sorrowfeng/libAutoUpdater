@@ -16,6 +16,9 @@
 - SHA-256 now processes complete input blocks without per-byte buffering, and
   download progress consistently reports signed complete sizes during active
   and resumed transfers.
+- Errors now carry an operation phase for apply, rollback, recovery, state
+  persistence, and restart failures. Bundled diagnostics and transaction
+  journal rewrites omit arbitrary messages and credential-bearing URLs.
 
 ## v0.1.5 - 2026-06-05
 

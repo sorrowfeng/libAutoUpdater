@@ -2,6 +2,7 @@ add_executable(libAutoUpdater_tests
     ${libAutoUpdater_SOURCE_DIR}/updater/ApplyJournal.cpp
     ${libAutoUpdater_SOURCE_DIR}/updater/ApplyExecutor.cpp
     main.cpp
+    ErrorTests.cpp
     VersionTests.cpp
     ManifestTests.cpp
     ManifestFetcherTests.cpp

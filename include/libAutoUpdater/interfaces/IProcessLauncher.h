@@ -19,6 +19,8 @@ struct ProcessLaunchRequest {
 };
 
 /// Process launcher abstraction for platform-specific process creation.
+/// Implementations must not copy executable arguments, environment secrets, or
+/// credential-bearing URLs into Error::message.
 class IProcessLauncher {
   public:
     virtual ~IProcessLauncher() = default;

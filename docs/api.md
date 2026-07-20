@@ -67,7 +67,21 @@ The public API does not leak exceptions to callers. Failures are represented thr
 
 - `Result<T>`
 - `ErrorCode`
+- `ErrorPhase`
 - `Error::message`
+
+`ErrorCode` identifies the stable failure kind. `ErrorPhase` independently
+identifies whether the failure occurred during apply, rollback, recovery,
+state persistence, or restart; errors outside those operations use `General`.
+Existing two-field aggregate initialization remains valid and defaults to the
+general phase.
+
+`Error::message` is human-readable implementation detail and may contain
+context supplied by a custom adapter. It must not be written directly to
+unattended logs. Use `formatDiagnostic(error)` for a stable, non-sensitive
+`phase=<phase> code=<code>` record. Custom network, process, and signature
+adapters must never put request URLs, authorization values, response bodies,
+signatures, or key material in an error message.
 
 ## Interfaces
 

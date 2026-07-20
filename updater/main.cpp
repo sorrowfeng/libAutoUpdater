@@ -169,9 +169,17 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    const auto operationPhase = args.rollback ? autoupdater::ErrorPhase::Rollback : autoupdater::ErrorPhase::Apply;
+    const auto printDiagnostic = [operationPhase](autoupdater::Error error) {
+        if (error.phase == autoupdater::ErrorPhase::General) {
+            error.phase = operationPhase;
+        }
+        std::cerr << autoupdater::formatDiagnostic(error) << "\n";
+    };
+
     auto wait = autoupdater::updater::waitForProcessExit(args.pid, args.waitTimeout);
     if (!wait) {
-        std::cerr << wait.error().message << "\n";
+        printDiagnostic(wait.error());
         return 3;
     }
 
@@ -179,31 +187,34 @@ int main(int argc, char** argv) {
     auto contents = autoupdater::util::readRegularFileWithLimit(args.planPath, limits.maxApplyPlanBytes,
                                                                 autoupdater::ErrorCode::ApplyFailed, "apply plan");
     if (!contents) {
-        std::cerr << contents.error().message << "\n";
+        printDiagnostic(contents.error());
         return 4;
     }
     if (autoupdater::util::sha256Bytes(contents.value()) != args.planDigest) {
-        std::cerr << "Apply plan does not match the digest authorized by its launcher\n";
+        printDiagnostic({autoupdater::ErrorCode::SecurityPolicyViolation,
+                         "Apply plan does not match the digest authorized by its launcher"});
         return 5;
     }
     auto plan = autoupdater::ApplyPlan::parse(contents.value(), limits);
     if (!plan) {
-        std::cerr << plan.error().message << "\n";
+        printDiagnostic(plan.error());
         return 6;
     }
     if (plan.value().installDir.lexically_normal() != args.installRoot.lexically_normal()) {
-        std::cerr << "Apply plan install root does not match its launcher binding\n";
+        printDiagnostic({autoupdater::ErrorCode::SecurityPolicyViolation,
+                         "Apply plan install root does not match its launcher binding"});
         return 7;
     }
     const bool rollbackPlan = plan.value().intent == autoupdater::ApplyPlanIntent::Rollback;
     if (rollbackPlan != args.rollback) {
-        std::cerr << "Apply plan intent does not match its launch mode\n";
+        printDiagnostic(
+            {autoupdater::ErrorCode::SecurityPolicyViolation, "Apply plan intent does not match its launch mode"});
         return 8;
     }
 
     auto applied = autoupdater::updater::executeApplyPlan(plan.value());
     if (!applied) {
-        std::cerr << applied.error().message << "\n";
+        printDiagnostic(applied.error());
         return 9;
     }
 
