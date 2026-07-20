@@ -327,7 +327,7 @@ likelihood of affecting production update flows.
   - Cover Curl, WinHTTP, CFNetwork, Qt networking, POSIX launch, Windows launch
     and wait behavior, slow servers, redirect chains, timeout, and cancellation.
 
-- [ ] **TEST-005 — Expand parser, hash, and crypto coverage**
+- [x] **TEST-005 — Expand parser, hash, and crypto coverage**
   - Add RFC 8259 corpora, depth and numeric boundaries, Unicode and NUL cases,
     SHA-256 block/file/error cases, Ed25519 and RSA tests, malformed Base64, and
     invalid key material.

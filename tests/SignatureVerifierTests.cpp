@@ -84,9 +84,19 @@ void testOpenSslSignatureVerifier() {
     auto ed25519Tampered = verifier->verify(payload + "-tampered", ed25519SignatureBase64, ed25519PublicKeyPem);
     LAU_REQUIRE(!ed25519Tampered);
     LAU_REQUIRE(ed25519Tampered.error().code == autoupdater::ErrorCode::ManifestSignatureInvalid);
+
+    for (const auto& malformedBase64 : {std::string("AAAAA"), std::string("AAAA!AAA"), std::string("AA=A")}) {
+        auto malformed = verifier->verify(payload, malformedBase64, rsa2048PublicKeyPem);
+        LAU_REQUIRE(!malformed);
+        LAU_REQUIRE(malformed.error().code == autoupdater::ErrorCode::ManifestSignatureInvalid);
+    }
+
+    for (const auto& invalidPublicKey : {std::string{}, std::string("not a PEM public key")}) {
+        auto invalidKey = verifier->verify(payload, rsa2048SignatureBase64, invalidPublicKey);
+        LAU_REQUIRE(!invalidKey);
+        LAU_REQUIRE(invalidKey.error().code == autoupdater::ErrorCode::ManifestSignatureInvalid);
+    }
 #else
-    // OpenSSL is optional; this test is compiled on all builds and becomes
-    // active when the default OpenSSL verifier is part of the target.
-    LAU_REQUIRE(true);
+    LAU_SKIP("OpenSSL signature verifier is not part of this build");
 #endif
 }

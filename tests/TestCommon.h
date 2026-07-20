@@ -11,6 +11,13 @@
         }                                                                                                              \
     } while (false)
 
+class TestSkipped final : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
+#define LAU_SKIP(reason) throw TestSkipped(reason)
+
 using TestFn = void (*)();
 
 struct TestCase {

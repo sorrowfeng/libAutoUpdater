@@ -305,6 +305,8 @@ int main(int argc, char* argv[]) {
         try {
             test.fn();
             std::cout << "[PASS] " << test.name << "\n";
+        } catch (const TestSkipped& ex) {
+            std::cout << "[SKIP] " << test.name << ": " << ex.what() << "\n";
         } catch (const std::exception& ex) {
             ++failed;
             std::cerr << "[FAIL] " << test.name << ": " << ex.what() << "\n";

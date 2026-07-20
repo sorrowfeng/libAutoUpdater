@@ -230,6 +230,7 @@ void testJsonRfc8259SyntaxAndUnicode() {
              R"json("\udc00")json",
              R"json("\ud800\u0041")json",
              R"json("\udc00\ud800")json",
+             std::string("\"bad\0value\"", 11),
              std::string("\f0", 2),
              std::string("\v0", 2),
              std::string("\"line\nfeed\"")}) {
