@@ -128,6 +128,9 @@ void testFuzzSmokeParsersAndPaths();
 void testSecurityBoundaryRegressions();
 void testApplyExecutorHandlesInjectedFilesystemFaultMatrix();
 void testApplyExecutorRecoversAfterInjectedRollbackFilesystemFailure();
+void testDefaultNetworkAdapterUsesLoopbackTransportContract();
+void testDefaultNetworkAdapterHonorsTimeoutAndCancellation();
+void testPlatformProcessAdapterLaunchesAndWaitsNatively();
 
 int main(int argc, char* argv[]) {
     if (argc >= 2) {
@@ -298,6 +301,12 @@ int main(int argc, char* argv[]) {
          testApplyExecutorHandlesInjectedFilesystemFaultMatrix},
         {"ApplyExecutorRecoversAfterInjectedRollbackFilesystemFailure",
          testApplyExecutorRecoversAfterInjectedRollbackFilesystemFailure},
+        {"DefaultNetworkAdapterUsesLoopbackTransportContract",
+         testDefaultNetworkAdapterUsesLoopbackTransportContract},
+        {"DefaultNetworkAdapterHonorsTimeoutAndCancellation",
+         testDefaultNetworkAdapterHonorsTimeoutAndCancellation},
+        {"PlatformProcessAdapterLaunchesAndWaitsNatively",
+         testPlatformProcessAdapterLaunchesAndWaitsNatively},
     };
 
     int failed = 0;

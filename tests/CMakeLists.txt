@@ -24,7 +24,8 @@ add_executable(libAutoUpdater_tests
     Rfc3339Tests.cpp
     FuzzSmokeTests.cpp
     SecurityBoundaryRegressionTests.cpp
-    TransactionFaultInjectionTests.cpp)
+    TransactionFaultInjectionTests.cpp
+    PlatformAdapterIntegrationTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)
 target_link_libraries(libAutoUpdater_tests PRIVATE libAutoUpdater)
@@ -42,6 +43,14 @@ set_target_properties(libAutoUpdater_process_launcher_helper PROPERTIES
     OUTPUT_NAME "libAutoUpdater process launcher helper")
 add_dependencies(libAutoUpdater_tests libAutoUpdater_process_launcher_helper)
 
+add_executable(libAutoUpdater_platform_adapter_process_helper
+    platform_adapter_process_helper.cpp)
+target_compile_features(libAutoUpdater_platform_adapter_process_helper PRIVATE cxx_std_17)
+libautoupdater_apply_project_warnings(libAutoUpdater_platform_adapter_process_helper)
+set_target_properties(libAutoUpdater_platform_adapter_process_helper PROPERTIES
+    OUTPUT_NAME "libAutoUpdater platform adapter helper")
+add_dependencies(libAutoUpdater_tests libAutoUpdater_platform_adapter_process_helper)
+
 add_executable(libAutoUpdater_apply_crash_helper
     apply_crash_helper.cpp
     ${libAutoUpdater_SOURCE_DIR}/updater/ApplyExecutor.cpp
@@ -56,7 +65,10 @@ add_dependencies(libAutoUpdater_tests libAutoUpdater_apply_crash_helper)
 if(WIN32)
     target_compile_definitions(libAutoUpdater_apply_crash_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_definitions(libAutoUpdater_process_launcher_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(libAutoUpdater_platform_adapter_process_helper PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(libAutoUpdater_process_launcher_helper PRIVATE shell32)
+    target_link_libraries(libAutoUpdater_platform_adapter_process_helper PRIVATE shell32)
+    target_link_libraries(libAutoUpdater_tests PRIVATE ws2_32)
 endif()
 
 if(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL)

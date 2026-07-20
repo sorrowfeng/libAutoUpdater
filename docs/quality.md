@@ -25,6 +25,9 @@ GitHub Actions covers:
 - Shared installed-package probes on Windows, macOS, and Linux, including the
   exported updater executable and its runtime library lookup.
 - Real GitHub Raw update demo on libcurl, WinHTTP, and CFNetwork.
+- Local loopback transport contracts for libcurl, WinHTTP, CFNetwork, and Qt,
+  including redirects, slow responses, timeout, cancellation, and downloads;
+  native POSIX and Windows process launch/wait behavior runs in the same matrix.
 - CodeQL C++ analysis.
 - A mandatory-OpenSSL contract that proves missing crypto fails configuration
   and exercises the real signature verifier when OpenSSL is present.

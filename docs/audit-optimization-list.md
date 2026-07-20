@@ -323,7 +323,7 @@ likelihood of affecting production update flows.
     mismatch, cancellation, destructor behavior, multiple instances, and
     cross-process state/lock contention.
 
-- [ ] **TEST-004 — Add real platform-adapter tests**
+- [x] **TEST-004 — Add real platform-adapter tests**
   - Cover Curl, WinHTTP, CFNetwork, Qt networking, POSIX launch, Windows launch
     and wait behavior, slow servers, redirect chains, timeout, and cancellation.
 

@@ -263,6 +263,73 @@ jobs:
       - name: Install Probe
         run: cmake --install build --config Release --prefix install-probe
 
+  platform-adapter-contract:
+    name: Platform adapter contract (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-curl
+            os: ubuntu-latest
+            install_deps: |
+              sudo apt-get update
+              sudo apt-get install -y libcurl4-openssl-dev
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON -DLIBAUTOUPDATER_WITH_QT=OFF
+            test_regex: ^libAutoUpdater_tests$
+
+          - name: windows-winhttp
+            os: windows-latest
+            install_deps: ""
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_WINHTTP=ON -DLIBAUTOUPDATER_WITH_QT=OFF
+            test_regex: ^libAutoUpdater_tests$
+
+          - name: macos-cfnetwork
+            os: macos-latest
+            install_deps: ""
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=OFF -DLIBAUTOUPDATER_WITH_CFNETWORK=ON -DLIBAUTOUPDATER_WITH_QT=OFF
+            test_regex: ^libAutoUpdater_tests$
+
+          - name: ubuntu-qt
+            os: ubuntu-latest
+            install_deps: |
+              sudo apt-get update
+              sudo apt-get install -y libcurl4-openssl-dev qt6-base-dev
+            cmake_args: -DLIBAUTOUPDATER_WITH_CURL=ON -DLIBAUTOUPDATER_REQUIRE_CURL=ON -DLIBAUTOUPDATER_WITH_QT=ON
+            test_regex: ^(libAutoUpdater_tests|libAutoUpdater_qt_network_contract)$
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        if: matrix.install_deps != ''
+        shell: bash
+        run: ${{ matrix.install_deps }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -DLIBAUTOUPDATER_BUILD_EXAMPLES=ON \
+            -DLIBAUTOUPDATER_BUILD_TESTS=ON \
+            -DLIBAUTOUPDATER_BUILD_UPDATER=ON \
+            -DLIBAUTOUPDATER_WITH_OPENSSL=OFF \
+            ${{ matrix.cmake_args }} \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Run real adapter contracts
+        run: >
+          ctest --test-dir build -C Debug
+          -R '${{ matrix.test_regex }}'
+          --output-on-failure
+
   required-openssl:
     name: Required OpenSSL crypto contract
     runs-on: ubuntu-latest
