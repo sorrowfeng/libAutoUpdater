@@ -253,7 +253,7 @@ likelihood of affecting production update flows.
       retention policy.
     - Repeated updates do not overwrite the only usable rollback backup.
 
-- [ ] **AU-018 — Fix release-tool manifest/signature consistency**
+- [x] **AU-018 — Fix release-tool manifest/signature consistency**
   - Classification: Verified release reliability defect.
   - Key code: `tools/make_manifest.py:66-79`,
     `tools/sign_manifest.py:44-58`.

@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -53,8 +55,58 @@ def copy_object(source: Path, sha256: str, object_root: Path) -> Path:
         return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    return target
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{sha256}.", suffix=".tmp", dir=target.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        # Bind both the copied bytes and the POSIX mode snapshot to one opened
+        # source object. A path replacement during the copy cannot mix content
+        # from one file with metadata from another.
+        with os.fdopen(descriptor, "wb") as output:
+            with source.open("rb") as input_file:
+                source_mode = stat.S_IMODE(os.fstat(input_file.fileno()).st_mode)
+                shutil.copyfileobj(input_file, output, length=1024 * 1024)
+                output.flush()
+        if sha256_file(temporary) != sha256:
+            raise SystemExit(f"Source changed while copying release object: {source}")
+        if os.name != "nt":
+            # Preserve useful read/execute and owner-write bits for static
+            # hosting, but do not publish group/other-writable or special-mode
+            # content-addressed objects.
+            temporary.chmod(source_mode & 0o755)
+        try:
+            # A hard-link publish is atomic and create-only. Concurrent jobs
+            # cannot replace an already verified immutable object or expose a
+            # partially copied target under its content-addressed name.
+            os.link(temporary, target)
+        except FileExistsError:
+            if sha256_file(target) == sha256:
+                return target
+            raise SystemExit(f"Object hash collision or corrupted object: {target}")
+        except OSError as link_error:
+            if target.exists():
+                if sha256_file(target) == sha256:
+                    return target
+                raise SystemExit(f"Object hash collision or corrupted object: {target}")
+            if os.name != "nt":
+                raise SystemExit(
+                    "Content-addressed publication requires atomic hard-link support "
+                    f"for the object store: {target.parent}"
+                ) from link_error
+            try:
+                # Windows rename is atomic and create-only, and supports FAT/
+                # exFAT volumes where hard links are unavailable.
+                os.rename(temporary, target)
+            except FileExistsError:
+                if sha256_file(target) == sha256:
+                    return target
+                raise SystemExit(f"Object hash collision or corrupted object: {target}")
+        if sha256_file(target) != sha256:
+            raise SystemExit(f"Copied release object failed verification: {target}")
+        return target
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def build_manifest(args: argparse.Namespace) -> dict:
@@ -76,12 +128,21 @@ def build_manifest(args: argparse.Namespace) -> dict:
         object_root = (object_root or (release_dir.parent / "objects" / "sha256")).resolve()
         object_root.mkdir(parents=True, exist_ok=True)
 
+    generated_outputs = {
+        output.resolve()
+        for output in (args.output, args.signature_output)
+        if output is not None
+    }
     files = []
     for root, _, names in os.walk(release_dir):
         for name in names:
             path = Path(root) / name
             rel = normalize(path.relative_to(release_dir))
-            if rel == "manifest.json" or rel == "manifest.sig":
+            if path.resolve() in generated_outputs or rel in {
+                "manifest.json",
+                "manifest.json.sig",
+                "manifest.sig",
+            }:
                 continue
             if not included(rel, args.include):
                 continue
@@ -91,6 +152,7 @@ def build_manifest(args: argparse.Namespace) -> dict:
             size = path.stat().st_size
             if args.content_addressed:
                 object_path = copy_object(path, digest, object_root)
+                size = object_path.stat().st_size
                 files.append(
                     {
                         "path": object_manifest_path(digest, args.object_prefix),
@@ -138,6 +200,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("release_dir", type=Path)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--signature-output",
+        type=Path,
+        default=None,
+        help="Detached signature output to exclude on each run; defaults to <output>.sig",
+    )
     parser.add_argument("--app-id", required=True)
     parser.add_argument("--channel", default="stable")
     parser.add_argument("--platform", required=True)
@@ -174,8 +242,14 @@ def main() -> int:
     parser.add_argument("--remove", action="append", default=[], help="Managed path to remove during apply")
     args = parser.parse_args()
 
+    release_dir = args.release_dir.resolve()
+    output = (args.output or (release_dir / "manifest.json")).resolve()
+    signature_output = (args.signature_output or output.with_suffix(output.suffix + ".sig")).resolve()
+    if output == signature_output:
+        raise SystemExit("--output and --signature-output must refer to different files")
+    args.output = output
+    args.signature_output = signature_output
     manifest = build_manifest(args)
-    output = args.output or (args.release_dir / "manifest.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
