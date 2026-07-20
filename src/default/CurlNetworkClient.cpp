@@ -73,7 +73,6 @@ struct FileContext {
     ProgressCallback progress;
     std::string currentFile;
     std::uint64_t downloaded = 0;
-    std::uint64_t total = 0;
     std::uint64_t maxTotalBytes = 0;
     int writableStatus = 200;
     NetworkResponseInfo response;
@@ -263,7 +262,7 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
         }
         context->downloaded = nextDownloaded;
         if (context->progress) {
-            context->progress({context->downloaded, context->total, context->currentFile});
+            context->progress({context->downloaded, context->maxTotalBytes, context->currentFile});
         }
     } catch (...) {
         context->callbackError = {ErrorCode::DownloadFailed, "Download callback failed"};
@@ -441,7 +440,6 @@ class CurlNetworkClient final : public INetworkClient {
                 return Result<DownloadResult>::fail(remaining.error());
             }
             context.downloaded = initialBytes;
-            context.total = maxTotalBytes;
             context.maxTotalBytes = maxTotalBytes;
             context.writableStatus = appending ? 206 : 200;
             context.cancel = &cancel;

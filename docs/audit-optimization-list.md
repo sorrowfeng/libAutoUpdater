@@ -276,7 +276,7 @@ likelihood of affecting production update flows.
   - Use a credential-free stable resource identifier, prune entries by age and
     release, and avoid rewriting the complete state for every small update.
 
-- [ ] **AU-021 — Improve hashing and progress reporting**
+- [x] **AU-021 — Improve hashing and progress reporting**
   - Key code: `src/util/Sha256.cpp:53-61`,
     `src/default/CurlNetworkClient.cpp:188-193`.
   - Process full SHA-256 blocks directly and ensure progress callbacks receive

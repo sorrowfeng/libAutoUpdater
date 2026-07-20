@@ -217,6 +217,11 @@ Responsibilities:
 - Support resumable downloads.
 - Report progress.
 
+Progress totals come from the signed manifest sizes, not transport
+`Content-Length`. Network adapters report the complete current artifact size
+even for resumed or chunked responses; `Updater` aggregates those signed sizes
+across the planned download set.
+
 Resume metadata includes:
 
 - A credential-free opaque resource identity

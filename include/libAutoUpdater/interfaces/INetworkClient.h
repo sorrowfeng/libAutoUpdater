@@ -71,7 +71,9 @@ class INetworkClient {
     /// already present for a resume request. Implementors must honor positive
     /// NetworkOptions timeout bounds and arrange transport reads so those bounds
     /// and cooperative cancellation can be observed between bounded waits. They
-    /// must stop before a write would make the target exceed it.
+    /// must stop before a write would make the target exceed it. Progress
+    /// callbacks report maxTotalBytes as totalBytes throughout the transfer and
+    /// include any accepted resume offset in downloadedBytes.
     virtual Result<DownloadResult> downloadToFile(const std::string& url, IRootedFile& target,
                                                   const NetworkOptions& options, std::uint64_t maxTotalBytes,
                                                   const std::optional<DownloadResumeInfo>& resume,

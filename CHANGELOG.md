@@ -13,6 +13,9 @@
 - Download resume persistence now uses credential-free resource identities and
   one bounded atomic sidecar batch per task, with release, age, count, and byte
   pruning.
+- SHA-256 now processes complete input blocks without per-byte buffering, and
+  download progress consistently reports signed complete sizes during active
+  and resumed transfers.
 
 ## v0.1.5 - 2026-06-05
 

@@ -9,6 +9,8 @@
 #include "libAutoUpdater/interfaces/INetworkClient.h"
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include "util/PathUtil.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -47,6 +49,44 @@ void writeFile(const std::filesystem::path& path, const std::string& contents) {
     LAU_REQUIRE(static_cast<bool>(output));
     output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     LAU_REQUIRE(static_cast<bool>(output));
+}
+
+std::string fileUrlForPath(const std::filesystem::path& path) {
+    auto portable = autoupdater::util::pathToUtf8(std::filesystem::absolute(path).lexically_normal());
+    std::replace(portable.begin(), portable.end(), '\\', '/');
+
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(portable.size());
+    for (const unsigned char ch : portable) {
+        const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                                (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+        if (unreserved || ch == '/' || ch == ':') {
+            encoded.push_back(static_cast<char>(ch));
+        } else {
+            encoded.push_back('%');
+            encoded.push_back(hex[ch >> 4U]);
+            encoded.push_back(hex[ch & 0x0fU]);
+        }
+    }
+
+    return "file://" + std::string(!encoded.empty() && encoded.front() == '/' ? "" : "/") + encoded;
+}
+
+void requireCompleteFileProgress(const std::vector<autoupdater::Progress>& events, std::uint64_t totalBytes,
+                                 std::uint64_t initialBytes, const std::string& currentFile) {
+    LAU_REQUIRE(!events.empty());
+    LAU_REQUIRE(events.front().downloadedBytes > initialBytes);
+
+    auto previous = initialBytes;
+    for (const auto& event : events) {
+        LAU_REQUIRE(event.totalBytes == totalBytes);
+        LAU_REQUIRE(event.downloadedBytes >= previous);
+        LAU_REQUIRE(event.downloadedBytes <= event.totalBytes);
+        LAU_REQUIRE(event.currentFile == currentFile);
+        previous = event.downloadedBytes;
+    }
+    LAU_REQUIRE(events.back().downloadedBytes == totalBytes);
 }
 
 std::string readFile(const std::filesystem::path& path) {
@@ -1411,6 +1451,85 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
+}
+
+void testDefaultNetworkAndDownloadExecutorReportCompleteFileProgress() {
+    const auto root = makeTestRoot("libAutoUpdater-download-progress");
+    const auto release = root / "release";
+    const auto source = release / "payload.bin";
+    std::string contents(160'000, '\0');
+    for (std::size_t index = 0; index < contents.size(); ++index) {
+        contents[index] = static_cast<char>('a' + (index % 23));
+    }
+    writeFile(source, contents);
+
+    autoupdater::Config config;
+    config.manifestUrl = fileUrlForPath(release / "manifest.json");
+    config.retry.maxRetries = 0;
+    config.security.allowLocalFileUrls = true;
+    auto decision = oneFileDecision(contents);
+    decision.downloads[0].url = fileUrlForPath(source);
+
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto hash = autoupdater::createDefaultHashProvider();
+    auto network = autoupdater::createDefaultNetworkClient();
+    autoupdater::CancellationToken cancel;
+
+    auto directRoot = fileSystem->openRoot(root / "direct", autoupdater::RootAccess::ReadWrite, true);
+    LAU_REQUIRE(directRoot);
+
+    auto directFresh = directRoot.value()->openRegularFile(
+        "fresh.bin", autoupdater::RootedFileOpenMode::CreateOrTruncate);
+    LAU_REQUIRE(directFresh && directFresh.value().exists());
+    std::vector<autoupdater::Progress> directFreshEvents;
+    const auto directFreshResult = network->downloadToFile(
+        decision.downloads[0].url, *directFresh.value().file, config.network, contents.size(), std::nullopt,
+        [&](const autoupdater::Progress& event) { directFreshEvents.push_back(event); }, cancel);
+    LAU_REQUIRE(directFreshResult);
+    LAU_REQUIRE(directFresh.value().file->flush());
+    LAU_REQUIRE(directFresh.value().file->close());
+    LAU_REQUIRE(readFile(root / "direct/fresh.bin") == contents);
+    requireCompleteFileProgress(directFreshEvents, contents.size(), 0, "");
+
+    constexpr std::size_t resumeOffset = 100'000;
+    writeFile(root / "direct/resumed.bin", contents.substr(0, resumeOffset));
+    auto directResumed =
+        directRoot.value()->openRegularFile("resumed.bin", autoupdater::RootedFileOpenMode::ReadWrite);
+    LAU_REQUIRE(directResumed && directResumed.value().exists());
+    LAU_REQUIRE(directResumed.value().file->seek(resumeOffset));
+    autoupdater::DownloadResumeInfo directResume;
+    directResume.offset = resumeOffset;
+    std::vector<autoupdater::Progress> directResumedEvents;
+    const auto directResumedResult = network->downloadToFile(
+        decision.downloads[0].url, *directResumed.value().file, config.network, contents.size(), directResume,
+        [&](const autoupdater::Progress& event) { directResumedEvents.push_back(event); }, cancel);
+    LAU_REQUIRE(directResumedResult);
+    LAU_REQUIRE(directResumed.value().file->flush());
+    LAU_REQUIRE(directResumed.value().file->close());
+    LAU_REQUIRE(readFile(root / "direct/resumed.bin") == contents);
+    requireCompleteFileProgress(directResumedEvents, contents.size(), resumeOffset, "");
+
+    config.tempDir = root / "fresh";
+    std::vector<autoupdater::Progress> freshEvents;
+    const auto fresh = autoupdater::executeDownloads(
+        config, decision, *network, *fileSystem, *hash, nullptr,
+        [&](const autoupdater::Progress& event) { freshEvents.push_back(event); }, cancel);
+    LAU_REQUIRE(fresh);
+    LAU_REQUIRE(readFile(config.tempDir / "managed/file.bin") == contents);
+    requireCompleteFileProgress(freshEvents, contents.size(), 0, "managed/file.bin");
+
+    config.tempDir = root / "resumed";
+    writeFile(config.tempDir / "managed/file.bin.download", contents.substr(0, resumeOffset));
+    std::vector<autoupdater::Progress> resumedEvents;
+    const auto resumed = autoupdater::executeDownloads(
+        config, decision, *network, *fileSystem, *hash, nullptr,
+        [&](const autoupdater::Progress& event) { resumedEvents.push_back(event); }, cancel);
+    LAU_REQUIRE(resumed);
+    LAU_REQUIRE(readFile(config.tempDir / "managed/file.bin") == contents);
+    requireCompleteFileProgress(resumedEvents, contents.size(), resumeOffset, "managed/file.bin");
+
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
 }
 
 void testDownloadResumeUsesOpaqueStableResourceKeys() {

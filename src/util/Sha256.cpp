@@ -54,13 +54,35 @@ std::uint32_t smallSigma1(std::uint32_t x) {
 class Sha256 {
   public:
     void update(const std::uint8_t* data, std::size_t length) {
-        totalBytes_ += length;
-        for (std::size_t i = 0; i < length; ++i) {
-            buffer_[bufferSize_++] = data[i];
-            if (bufferSize_ == 64) {
-                transform(buffer_.data());
-                bufferSize_ = 0;
+        if (length == 0) {
+            return;
+        }
+
+        totalBytes_ += static_cast<std::uint64_t>(length);
+        std::size_t offset = 0;
+
+        if (bufferSize_ != 0) {
+            const auto copied = std::min(length, buffer_.size() - bufferSize_);
+            std::copy_n(data, copied, buffer_.data() + bufferSize_);
+            bufferSize_ += copied;
+            offset += copied;
+
+            if (bufferSize_ < buffer_.size()) {
+                return;
             }
+            transform(buffer_.data());
+            bufferSize_ = 0;
+        }
+
+        while (length - offset >= buffer_.size()) {
+            transform(data + offset);
+            offset += buffer_.size();
+        }
+
+        const auto remaining = length - offset;
+        if (remaining != 0) {
+            std::copy_n(data + offset, remaining, buffer_.data());
+            bufferSize_ = remaining;
         }
     }
 
@@ -143,7 +165,7 @@ class Sha256 {
                                         0x510e527fUL, 0x9b05688cUL, 0x1f83d9abUL, 0x5be0cd19UL};
     std::array<std::uint8_t, 64> buffer_{};
     std::size_t bufferSize_ = 0;
-    std::size_t totalBytes_ = 0;
+    std::uint64_t totalBytes_ = 0;
 };
 
 std::string toHex(const std::array<std::uint8_t, 32>& digest) {

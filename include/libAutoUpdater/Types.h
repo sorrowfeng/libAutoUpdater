@@ -43,7 +43,9 @@ struct CheckResult {
     std::string notes;
 };
 
-/// Byte progress for downloads.
+/// Byte progress for downloads. totalBytes is the signed expected complete
+/// size for the callback scope, not an HTTP response Content-Length. A resumed
+/// transfer includes the already-present prefix in downloadedBytes.
 struct Progress {
     std::uint64_t downloadedBytes = 0;
     std::uint64_t totalBytes = 0;
