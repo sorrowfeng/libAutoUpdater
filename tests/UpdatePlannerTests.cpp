@@ -2,7 +2,9 @@
 
 #include "UpdatePlanner.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
@@ -338,4 +340,56 @@ void testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets() {
     LAU_REQUIRE(decision.value().operations[1].target == "ab");
     LAU_REQUIRE(decision.value().operations[2].target == "shared/first.bin");
     LAU_REQUIRE(decision.value().operations[3].target == "shared/second.bin");
+}
+
+void testUpdatePlannerIndexesLargeSnapshots() {
+    auto config = plannerConfig();
+    auto envelope = plannerEnvelope();
+    autoupdater::LocalSnapshot snapshot;
+    constexpr std::size_t kFileCount = 10000;
+    const std::string hash(64, 'a');
+    const std::string pathPrefix = "assets/" + std::string(96, 'a') + "/managed-file-";
+    envelope.manifest.files.reserve(kFileCount);
+    snapshot.files.reserve(kFileCount);
+
+    for (std::size_t index = 0; index < kFileCount; ++index) {
+        auto suffix = std::to_string(index);
+        suffix.insert(suffix.begin(), 5 - suffix.size(), '0');
+        const auto path = pathPrefix + suffix + ".bin";
+        envelope.manifest.files.push_back({path, "", hash, 64});
+        snapshot.files.push_back({path, true, hash, 64});
+    }
+    std::reverse(snapshot.files.begin(), snapshot.files.end());
+    snapshot.files[kFileCount / 2].sha256 = std::string(64, 'b');
+    const auto changedPath = snapshot.files[kFileCount / 2].path;
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto decision = autoupdater::planUpdate(config, envelope, snapshot, std::nullopt, plannerNow());
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    LAU_REQUIRE(decision);
+    LAU_REQUIRE(decision.value().checkResult.updateAvailable);
+    LAU_REQUIRE(decision.value().downloads.size() == 1);
+    LAU_REQUIRE(decision.value().operations.size() == 1);
+    LAU_REQUIRE(decision.value().operations.front().target == changedPath);
+    // This is deliberately generous for debug/sanitizer CI while still
+    // catching the former reversed-vector O(n^2) lookup at the supported
+    // 10,000-entry manifest limit.
+    LAU_REQUIRE(elapsed < std::chrono::seconds(5));
+
+    auto normalizedEnvelope = plannerEnvelope();
+    normalizedEnvelope.manifest.files.push_back({"objects/app.bin", "Bin/App.exe", hash, 64});
+    autoupdater::LocalSnapshot normalizedSnapshot;
+    normalizedSnapshot.files.push_back({"bin/app.EXE", true, hash, 64});
+    const auto normalized = autoupdater::planUpdate(config, normalizedEnvelope, normalizedSnapshot,
+                                                     std::nullopt, plannerNow());
+    LAU_REQUIRE(normalized);
+    LAU_REQUIRE(normalized.value().downloads.empty());
+    LAU_REQUIRE(normalized.value().operations.empty());
+
+    autoupdater::LocalSnapshot invalidSnapshot;
+    invalidSnapshot.files.push_back({"Bin\\App.exe", true, hash, 64});
+    const auto invalid = autoupdater::planUpdate(config, normalizedEnvelope, invalidSnapshot,
+                                                  std::nullopt, plannerNow());
+    LAU_REQUIRE(!invalid);
+    LAU_REQUIRE(invalid.error().code == autoupdater::ErrorCode::PathTraversalRejected);
 }

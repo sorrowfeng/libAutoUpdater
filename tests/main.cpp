@@ -55,6 +55,7 @@ void testUpdatePlannerRejectsUnauthorizedDowngradeBeforeReinstallDecision();
 void testUpdatePlannerPreservesNormalUpgradeAndSameVersionSemantics();
 void testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly();
 void testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets();
+void testUpdatePlannerIndexesLargeSnapshots();
 void testApplyPlanRoundTrip();
 void testApplyPlanRoundTripPreservesUnicodePaths();
 void testApplyPlanRollbackContract();
@@ -195,6 +196,7 @@ int main(int argc, char* argv[]) {
          testUpdatePlannerRejectsProgrammaticManagedTargetConflictsEarly},
         {"UpdatePlannerAllowsSharedSourceForDistinctManagedTargets",
          testUpdatePlannerAllowsSharedSourceForDistinctManagedTargets},
+        {"UpdatePlannerIndexesLargeSnapshots", testUpdatePlannerIndexesLargeSnapshots},
         {"ApplyPlanRoundTrip", testApplyPlanRoundTrip},
         {"ApplyPlanRoundTripPreservesUnicodePaths", testApplyPlanRoundTripPreservesUnicodePaths},
         {"ApplyPlanRollbackContract", testApplyPlanRollbackContract},

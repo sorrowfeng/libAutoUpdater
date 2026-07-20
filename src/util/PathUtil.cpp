@@ -54,22 +54,6 @@ bool isUpdaterStateSegment(const std::string& segment) {
     return true;
 }
 
-std::string portableCollisionKey(std::string path) {
-    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char character) {
-        // Managed paths reject control characters, so NUL is an unambiguous
-        // segment separator that sorts before every legal segment byte. This
-        // keeps each parent adjacent to its first descendant after sorting.
-        if (character == '/') {
-            return '\0';
-        }
-        if (character >= 'A' && character <= 'Z') {
-            return static_cast<char>(character - 'A' + 'a');
-        }
-        return static_cast<char>(character);
-    });
-    return path;
-}
-
 } // namespace
 
 std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept {
@@ -135,6 +119,22 @@ Result<void> validateManagedTargetPath(const std::string& path) noexcept {
     return Result<void>::ok();
 }
 
+std::string managedPathLookupKey(std::string path) {
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char character) {
+        // Managed paths reject control characters, so NUL is an unambiguous
+        // segment separator that sorts before every legal segment byte. This
+        // keeps each parent adjacent to its first descendant after sorting.
+        if (character == '/') {
+            return '\0';
+        }
+        if (character >= 'A' && character <= 'Z') {
+            return static_cast<char>(character - 'A' + 'a');
+        }
+        return static_cast<char>(character);
+    });
+    return path;
+}
+
 Result<void> validateManagedTargetPaths(const std::vector<std::string>& paths) noexcept {
     try {
         std::vector<std::string> keys;
@@ -144,7 +144,7 @@ Result<void> validateManagedTargetPaths(const std::vector<std::string>& paths) n
             if (!valid) {
                 return valid;
             }
-            keys.push_back(portableCollisionKey(path));
+            keys.push_back(managedPathLookupKey(path));
         }
 
         std::sort(keys.begin(), keys.end());

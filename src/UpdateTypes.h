@@ -22,15 +22,6 @@ struct LocalFileInfo {
 
 struct LocalSnapshot {
     std::vector<LocalFileInfo> files;
-
-    const LocalFileInfo* find(const std::string& path) const noexcept {
-        for (const auto& file : files) {
-            if (file.path == path) {
-                return &file;
-            }
-        }
-        return nullptr;
-    }
 };
 
 struct PlannedDownload {

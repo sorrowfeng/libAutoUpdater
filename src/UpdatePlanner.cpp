@@ -5,6 +5,7 @@
 #include "util/Rfc3339.h"
 #include "util/UrlUtil.h"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -145,6 +146,18 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
 
     decision.checkResult.updateAvailable = true;
 
+    std::map<std::string, const LocalFileInfo*> snapshotByPath;
+    for (const auto& local : snapshot.files) {
+        auto validLocalPath = util::validateManagedTargetPath(local.path);
+        if (!validLocalPath) {
+            return Result<UpdateDecision>::fail(validLocalPath.error());
+        }
+        // If a manually constructed snapshot contains normalized aliases, the
+        // first normalized record wins deterministically. Production snapshots
+        // inherit the manifest's stronger collision-free target contract.
+        snapshotByPath.try_emplace(util::managedPathLookupKey(local.path), &local);
+    }
+
     for (const auto& file : manifest.files) {
         const auto localPath = file.localPath.empty() ? file.path : file.localPath;
         auto validTarget = util::validateManagedTargetPath(localPath);
@@ -156,7 +169,8 @@ Result<UpdateDecision> planUpdate(const Config& config, const ManifestEnvelope& 
                 {ErrorCode::SecurityPolicyViolation, "Manifest file is outside managed whitelist"});
         }
 
-        const auto* local = snapshot.find(localPath);
+        const auto localIterator = snapshotByPath.find(util::managedPathLookupKey(localPath));
+        const auto* local = localIterator == snapshotByPath.end() ? nullptr : localIterator->second;
         const bool needsDownload = !local || !local->exists || local->sha256 != file.sha256;
         if (needsDownload) {
             ApplyOperation operation;

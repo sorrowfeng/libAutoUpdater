@@ -12,6 +12,9 @@ std::filesystem::path pathFromUtf8(const std::string& utf8Path) noexcept;
 std::string pathToUtf8(const std::filesystem::path& path) noexcept;
 Result<void> validateManagedPath(const std::string& path) noexcept;
 Result<void> validateManagedTargetPath(const std::string& path) noexcept;
+/// Returns the deterministic ASCII case-folded, segment-aware key used for
+/// portable managed-path lookups. Callers must validate the path first.
+std::string managedPathLookupKey(std::string path);
 /// Validates a complete operation target set using conservative portable
 /// filesystem semantics. Exact duplicates, ASCII case-folding collisions,
 /// and ancestor/descendant target conflicts are rejected.

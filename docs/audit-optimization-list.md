@@ -266,7 +266,7 @@ likelihood of affecting production update flows.
 
 ## P2: Performance, maintainability, and release hardening
 
-- [ ] **AU-019 — Remove O(n²) snapshot lookup behavior**
+- [x] **AU-019 — Remove O(n²) snapshot lookup behavior**
   - Key code: `src/UpdateTypes.h:26-33`, `src/UpdatePlanner.cpp:102`.
   - Replace linear path lookup with a normalized path-to-record map and add a
     large-manifest performance regression test.
