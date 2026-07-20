@@ -43,6 +43,20 @@ class IRootedFile {
     virtual Result<void> flush() noexcept = 0;
     virtual Result<RootedFileMetadata> metadata() noexcept = 0;
     virtual Result<void> setPermissions(std::filesystem::perms permissions) noexcept = 0;
+    /// Copy the source object's platform permission state onto this opened
+    /// destination. Implementations may preserve richer native state than the
+    /// portable permissions exposed by metadata(). A later atomic publication
+    /// of this destination must retain the explicitly copied permission state.
+    virtual Result<void> copyPermissionsFrom(IRootedFile& source) noexcept {
+        auto sourceMetadata = source.metadata();
+        if (!sourceMetadata) {
+            return Result<void>::fail(sourceMetadata.error());
+        }
+        return setPermissions(sourceMetadata.value().permissions);
+    }
+    /// Explicitly release the opened file and report a close failure. This is
+    /// idempotent; the destructor remains a no-throw fallback only.
+    virtual Result<void> close() noexcept = 0;
 };
 
 struct RootedOpenResult {
@@ -71,6 +85,18 @@ struct RootedEntryExpectation {
     }
 };
 
+enum class RootedPublication { NotPublished, Published, Unknown };
+
+struct RootedPublishStatus {
+    RootedPublication publication = RootedPublication::NotPublished;
+    bool namespaceDurable = false;
+    /// True only when a failed commit reached a state whose error can be
+    /// discharged by a successful cleanup/durability barrier followed by an
+    /// identity-bound target verification. Close, cleanup, and security
+    /// failures must leave this false so callers still report them.
+    bool failureCanBeReconciled = false;
+};
+
 class IRootedTemporaryFile {
   public:
     virtual ~IRootedTemporaryFile() = default;
@@ -80,6 +106,13 @@ class IRootedTemporaryFile {
     /// A failure may be reported after the namespace mutation became visible;
     /// transaction callers must reopen and reconcile the target before retrying.
     virtual Result<void> commit(const RootedEntryExpectation& expectation) noexcept = 0;
+    /// Reports whether commit has made the prepared object visible and whether
+    /// the affected target namespace received a successful durability barrier.
+    virtual RootedPublishStatus publishStatus() const noexcept = 0;
+    /// Explicitly finish or abandon this temporary object. This is idempotent,
+    /// never removes a published target, and reports identity-bound cleanup and
+    /// close failures. Destruction is only a best-effort fallback.
+    virtual Result<void> discard() noexcept = 0;
 };
 
 class IRootedLock {
@@ -103,6 +136,9 @@ class IRootedDirectory {
     virtual Result<std::unique_ptr<IRootedTemporaryFile>> createAtomicReplacement(
         const std::string& relativePath,
         RootedDirectoryCreationMode directoryMode = RootedDirectoryCreationMode::Private) noexcept = 0;
+    /// Atomically replace a target from an already-open source. A failure may
+    /// be reported after the target became visible; callers must reopen and
+    /// reconcile the target before retrying.
     virtual Result<void> replaceWithOpenedFile(IRootedFile& source, const std::string& relativePath,
                                                const RootedEntryExpectation& expectation) noexcept = 0;
     /// Remove the expected entry and persist the affected namespace. A failure

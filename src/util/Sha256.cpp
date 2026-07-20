@@ -170,25 +170,54 @@ bool isLowerHexSha256(std::string_view value) noexcept {
 }
 
 Result<std::string> sha256File(const std::filesystem::path& path) noexcept {
+    std::filebuf file;
     try {
-        std::ifstream input(path, std::ios::binary);
-        if (!input) {
+        if (!file.open(path, std::ios::in | std::ios::binary)) {
             return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to open file for SHA-256"});
         }
+        std::istream input(&file);
+        auto digest = sha256Stream(input);
+        const bool closed = file.close() != nullptr;
+        if (!digest) {
+            auto error = digest.error();
+            if (!closed) {
+                error.message += "; failed to close the file after the read error";
+            }
+            return Result<std::string>::fail(std::move(error));
+        }
+        if (!closed) {
+            return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to close file after SHA-256"});
+        }
+        return digest;
+    } catch (...) {
+        Error error{ErrorCode::FileSystemError, "Failed to hash file"};
+        if (file.is_open() && file.close() == nullptr) {
+            error.message += "; failed to close the file after the hash error";
+        }
+        return Result<std::string>::fail(std::move(error));
+    }
+}
 
+Result<std::string> sha256Stream(std::istream& input) noexcept {
+    try {
         Sha256 sha;
         std::array<char, 64 * 1024> buffer{};
-        while (input) {
+        for (;;) {
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
             const auto count = input.gcount();
             if (count > 0) {
                 sha.update(reinterpret_cast<const std::uint8_t*>(buffer.data()), static_cast<std::size_t>(count));
             }
+            if (input.bad() || (input.fail() && !input.eof())) {
+                return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to read file for SHA-256"});
+            }
+            if (input.eof()) {
+                break;
+            }
         }
-
         return Result<std::string>::ok(toHex(sha.final()));
     } catch (...) {
-        return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to hash file"});
+        return Result<std::string>::fail({ErrorCode::FileSystemError, "Failed to read file for SHA-256"});
     }
 }
 

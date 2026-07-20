@@ -61,13 +61,11 @@ bool pendingUpdatesEqual(const std::optional<PendingUpdate>& left, const std::op
     return !left || pendingUpdatesEqual(*left, *right);
 }
 
-Result<void> requireOnlyKeys(const util::Json::Object& object,
-                             std::initializer_list<const char*> allowedKeys,
+Result<void> requireOnlyKeys(const util::Json::Object& object, std::initializer_list<const char*> allowedKeys,
                              const std::string& context) {
     for (const auto& entry : object) {
-        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
-            return entry.first == key;
-        });
+        const auto allowed =
+            std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) { return entry.first == key; });
         if (!allowed) {
             return Result<void>::fail(stateError(context + " contains unknown field '" + entry.first + "'"));
         }
@@ -76,9 +74,8 @@ Result<void> requireOnlyKeys(const util::Json::Object& object,
 }
 
 bool containsControlCharacter(const std::string& value) {
-    return std::any_of(value.begin(), value.end(), [](unsigned char character) {
-        return character < 0x20 || character == 0x7f;
-    });
+    return std::any_of(value.begin(), value.end(),
+                       [](unsigned char character) { return character < 0x20 || character == 0x7f; });
 }
 
 Result<std::uint64_t> parseOffset(const util::Json& value) {
@@ -111,7 +108,8 @@ Result<PendingUpdate> parsePendingUpdate(const util::Json& value, bool allowMiss
     auto releaseId = requireString("releaseId");
     auto backupDirText = requireString("backupDir");
     auto applyPlanPathText = requireString("applyPlanPath");
-    Result<std::string> applyPlanDigest = Result<std::string>::fail(stateError("pendingUpdate.applyPlanDigest is missing"));
+    Result<std::string> applyPlanDigest =
+        Result<std::string>::fail(stateError("pendingUpdate.applyPlanDigest is missing"));
     const auto digestIt = object.find("applyPlanDigest");
     if (digestIt == object.end() && allowMissingLegacyDigest) {
         applyPlanDigest = Result<std::string>::ok({});
@@ -175,9 +173,9 @@ Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& 
         (!schema->second.isUnsignedInteger() || schema->second.asUInt64() != kStateSchemaVersion)) {
         return Result<void>::fail(stateError("State schemaVersion is unsupported"));
     }
-    auto keys = requireOnlyKeys(root, {"schemaVersion", "lastAcceptedVersion", "lastAcceptedReleaseId",
-                                       "pendingUpdate", "downloadResume"},
-                                "State root");
+    auto keys = requireOnlyKeys(
+        root, {"schemaVersion", "lastAcceptedVersion", "lastAcceptedReleaseId", "pendingUpdate", "downloadResume"},
+        "State root");
     if (!keys) {
         return keys;
     }
@@ -218,8 +216,8 @@ Result<void> validateRoot(const util::Json::Object& root, const ResourceLimits& 
                 return Result<void>::fail(stateError("Download resume entries must have a non-empty key and object"));
             }
             const auto& record = entry.second.asObject();
-            auto recordKeys = requireOnlyKeys(record, {"offset", "etag", "lastModified", "sha256"},
-                                              "Download resume record");
+            auto recordKeys =
+                requireOnlyKeys(record, {"offset", "etag", "lastModified", "sha256"}, "Download resume record");
             if (!recordKeys) {
                 return recordKeys;
             }
@@ -258,7 +256,8 @@ Result<util::Json::Object> parseRoot(const std::string& contents, const Resource
         if (json.error().code == ErrorCode::ResourceLimitExceeded) {
             return Result<util::Json::Object>::fail(json.error());
         }
-        return Result<util::Json::Object>::fail(stateError("State file contains invalid JSON: " + json.error().message));
+        return Result<util::Json::Object>::fail(
+            stateError("State file contains invalid JSON: " + json.error().message));
     }
     if (!json.value().isObject()) {
         return Result<util::Json::Object>::fail(stateError("State file root must be an object"));
@@ -286,14 +285,21 @@ Result<StoredFile> readStoredFile(IRootedDirectory& root, const std::string& nam
     if (!opened.value().exists()) {
         return Result<StoredFile>::ok({});
     }
+    const auto failOpened = [&](Error error) {
+        auto closed = opened.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close " + description + ": " + closed.error().message;
+        }
+        return Result<StoredFile>::fail(std::move(error));
+    };
 
     auto metadata = opened.value().file->metadata();
     if (!metadata) {
-        return Result<StoredFile>::fail(storageError(metadata.error(), "Failed to inspect " + description));
+        return failOpened(storageError(metadata.error(), "Failed to inspect " + description));
     }
     if (metadata.value().size > maxBytes ||
         metadata.value().size > static_cast<std::uint64_t>((std::numeric_limits<std::size_t>::max)())) {
-        return Result<StoredFile>::fail({ErrorCode::ResourceLimitExceeded, description + " exceeds its byte limit"});
+        return failOpened({ErrorCode::ResourceLimitExceeded, description + " exceeds its byte limit"});
     }
 
     StoredFile stored;
@@ -304,27 +310,29 @@ Result<StoredFile> readStoredFile(IRootedDirectory& root, const std::string& nam
     for (;;) {
         auto read = opened.value().file->read(buffer.data(), buffer.size());
         if (!read) {
-            return Result<StoredFile>::fail(storageError(read.error(), "Failed to read " + description));
+            return failOpened(storageError(read.error(), "Failed to read " + description));
         }
         if (read.value() == 0) {
             break;
         }
         if (read.value() > maxBytes - stored.contents.size()) {
-            return Result<StoredFile>::fail(
-                {ErrorCode::ResourceLimitExceeded, description + " exceeds its byte limit"});
+            return failOpened({ErrorCode::ResourceLimitExceeded, description + " exceeds its byte limit"});
         }
         stored.contents.append(buffer.data(), read.value());
     }
 
     auto finalMetadata = opened.value().file->metadata();
     if (!finalMetadata) {
-        return Result<StoredFile>::fail(storageError(finalMetadata.error(), "Failed to re-inspect " + description));
+        return failOpened(storageError(finalMetadata.error(), "Failed to re-inspect " + description));
     }
-    if (finalMetadata.value().identity != metadata.value().identity || finalMetadata.value().size != metadata.value().size ||
-        stored.contents.size() != metadata.value().size) {
-        return Result<StoredFile>::fail(stateError(description + " changed while it was being read"));
+    if (finalMetadata.value().identity != metadata.value().identity ||
+        finalMetadata.value().size != metadata.value().size || stored.contents.size() != metadata.value().size) {
+        return failOpened(stateError(description + " changed while it was being read"));
     }
-    opened.value().file.reset();
+    auto closed = opened.value().file->close();
+    if (!closed) {
+        return Result<StoredFile>::fail(storageError(closed.error(), "Failed to close " + description));
+    }
     return Result<StoredFile>::ok(std::move(stored));
 }
 
@@ -369,33 +377,70 @@ Result<void> verifyTemporaryFile(IRootedFile& file, const std::string& contents,
 
 Result<void> writeAtomic(IRootedDirectory& root, const std::string& name, const std::string& contents,
                          const RootedEntryExpectation& expectation, std::uint64_t maxBytes,
-                         const std::string& description, bool allowReconciliation = true) {
+                         const std::string& description) {
     auto temporary = root.createAtomicReplacement(name);
     if (!temporary) {
         return Result<void>::fail(storageError(temporary.error(), "Failed to create " + description));
     }
     auto written = temporary.value()->file().write(contents.data(), contents.size());
     if (!written) {
-        return Result<void>::fail(storageError(written.error(), "Failed to write " + description));
+        auto error = storageError(written.error(), "Failed to write " + description);
+        auto discarded = temporary.value()->discard();
+        if (!discarded) {
+            error.message += "; failed to discard incomplete " + description + ": " + discarded.error().message;
+        }
+        return Result<void>::fail(std::move(error));
     }
     auto verified = verifyTemporaryFile(temporary.value()->file(), contents, description);
     if (!verified) {
-        return verified;
+        auto error = verified.error();
+        auto discarded = temporary.value()->discard();
+        if (!discarded) {
+            error.message += "; failed to discard invalid " + description + ": " + discarded.error().message;
+        }
+        return Result<void>::fail(std::move(error));
+    }
+    auto preparedMetadata = temporary.value()->file().metadata();
+    if (!preparedMetadata) {
+        auto error = storageError(preparedMetadata.error(), "Failed to inspect prepared " + description);
+        auto discarded = temporary.value()->discard();
+        if (!discarded) {
+            error.message += "; failed to discard invalid " + description + ": " + discarded.error().message;
+        }
+        return Result<void>::fail(std::move(error));
     }
     auto committed = temporary.value()->commit(expectation);
     // commit() may report a post-rename durability failure. Close the bound
     // temporary handle before reopening the target so the visible outcome can
     // be reconciled instead of being mistaken for a definitely-unapplied write.
+    auto discarded = temporary.value()->discard();
+    const auto publication = temporary.value()->publishStatus();
     temporary.value().reset();
-    if (!committed) {
-        auto observed = readStoredFile(root, name, maxBytes, description);
-        if (observed && observed.value().exists && observed.value().contents == contents && allowReconciliation) {
-            // Re-publish the already visible bytes against their newly opened
-            // identity. A successful second commit supplies the durability
-            // barrier that the first attempt could not confirm.
-            return writeAtomic(root, name, contents, observed.value().expectation, maxBytes, description, false);
+    if (!discarded) {
+        auto error = !committed ? storageError(committed.error(), "Failed to commit " + description)
+                                : storageError(discarded.error(), "Failed to finish " + description + " cleanup");
+        if (!committed) {
+            error.message += "; cleanup also failed: " + discarded.error().message;
         }
-        return Result<void>::fail(storageError(committed.error(), "Failed to commit " + description));
+        return Result<void>::fail(std::move(error));
+    }
+    if (!committed) {
+        auto commitError = storageError(committed.error(), "Failed to commit " + description);
+        if (publication.publication == RootedPublication::NotPublished || !publication.namespaceDurable ||
+            !publication.failureCanBeReconciled) {
+            return Result<void>::fail(std::move(commitError));
+        }
+        auto observed = readStoredFile(root, name, maxBytes, description);
+        if (!observed) {
+            commitError.message += "; failed to reconcile publication: " + observed.error().message;
+            return Result<void>::fail(std::move(commitError));
+        }
+        if (observed.value().exists && observed.value().contents == contents &&
+            observed.value().expectation.kind == RootedEntryExpectationKind::Identity &&
+            observed.value().expectation.identity == preparedMetadata.value().identity) {
+            return Result<void>::ok();
+        }
+        return Result<void>::fail(std::move(commitError));
     }
 
     auto installed = readStoredFile(root, name, maxBytes, description);
@@ -415,7 +460,8 @@ class JsonStateStore final : public IStateStore {
         : limits_(std::move(limits)), fileSystem_(std::move(fileSystem)), hooks_(std::move(hooks)) {
         try {
             std::error_code error;
-            path_ = path.is_absolute() ? path.lexically_normal() : std::filesystem::absolute(path, error).lexically_normal();
+            path_ = path.is_absolute() ? path.lexically_normal()
+                                       : std::filesystem::absolute(path, error).lexically_normal();
             if (error || path_.empty() || path_.filename().empty() || path_.parent_path().empty()) {
                 configurationError_ = stateError("State file path is invalid");
                 return;
@@ -507,8 +553,7 @@ class JsonStateStore final : public IStateStore {
                     // barrier was positively acknowledged.
                     return saveLocked(state.value());
                 }
-                return Result<void>::fail(
-                    stateError("Persisted pending update changed before healthy-version commit"));
+                return Result<void>::fail(stateError("Persisted pending update changed before healthy-version commit"));
             }
             state.value().document["lastAcceptedVersion"] = util::Json(version.toString());
             state.value().document["lastAcceptedReleaseId"] = util::Json(releaseId);
@@ -563,8 +608,7 @@ class JsonStateStore final : public IStateStore {
 
     Result<void> saveDownloadResume(const DownloadResumeState& resume) noexcept override {
         try {
-            if (resume.key.empty() || containsControlCharacter(resume.key) ||
-                !util::isLowerHexSha256(resume.sha256)) {
+            if (resume.key.empty() || containsControlCharacter(resume.key) || !util::isLowerHexSha256(resume.sha256)) {
                 return Result<void>::fail(stateError("Download resume key or SHA-256 is invalid"));
             }
             if (containsControlCharacter(resume.etag) || containsControlCharacter(resume.lastModified)) {
@@ -583,8 +627,7 @@ class JsonStateStore final : public IStateStore {
             if (downloadsIt != state.value().document.end()) {
                 downloads = downloadsIt->second.asObject();
             }
-            if (downloads.find(resume.key) == downloads.end() &&
-                downloads.size() >= limits_.json.maxContainerEntries) {
+            if (downloads.find(resume.key) == downloads.end() && downloads.size() >= limits_.json.maxContainerEntries) {
                 return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
             }
             util::Json::Object record;
@@ -626,7 +669,8 @@ class JsonStateStore final : public IStateStore {
             resume.sha256 = record->second.get("sha256")->asString();
             return Result<std::optional<DownloadResumeState>>::ok(std::move(resume));
         } catch (...) {
-            return Result<std::optional<DownloadResumeState>>::fail(stateError("Unexpected download-resume load failure"));
+            return Result<std::optional<DownloadResumeState>>::fail(
+                stateError("Unexpected download-resume load failure"));
         }
     }
 
@@ -667,8 +711,8 @@ class JsonStateStore final : public IStateStore {
 
         LockedState state;
         state.processLock = std::unique_lock<std::mutex>(processStateStoreMutex());
-        auto root = fileSystem_->openRoot(parentPath_, RootAccess::ReadWrite, true,
-                                          RootedDirectoryCreationMode::Private);
+        auto root =
+            fileSystem_->openRoot(parentPath_, RootAccess::ReadWrite, true, RootedDirectoryCreationMode::Private);
         if (!root) {
             return Result<LockedState>::fail(storageError(root.error(), "Failed to open state directory"));
         }
@@ -744,14 +788,12 @@ class JsonStateStore final : public IStateStore {
         }
 
         if (state.primary.exists) {
-            auto backup = readStoredFile(*state.root, backupName_, limits_.maxStateBytes,
-                                         "last-known-good state file");
+            auto backup = readStoredFile(*state.root, backupName_, limits_.maxStateBytes, "last-known-good state file");
             if (!backup) {
                 return Result<void>::fail(backup.error());
             }
-            auto savedBackup = writeAtomic(*state.root, backupName_, state.primary.contents,
-                                           backup.value().expectation, limits_.maxStateBytes,
-                                           "last-known-good state file");
+            auto savedBackup = writeAtomic(*state.root, backupName_, state.primary.contents, backup.value().expectation,
+                                           limits_.maxStateBytes, "last-known-good state file");
             if (!savedBackup) {
                 return savedBackup;
             }

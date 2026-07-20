@@ -11,6 +11,7 @@ add_executable(libAutoUpdater_tests
     UpdatePlannerTests.cpp
     ApplyPlanTests.cpp
     HashTests.cpp
+    FileSystemTests.cpp
     SignatureVerifierTests.cpp
     ApplyExecutorTests.cpp
     ApplyCrashRecoveryTests.cpp

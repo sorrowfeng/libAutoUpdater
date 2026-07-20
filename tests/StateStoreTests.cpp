@@ -212,6 +212,10 @@ class FaultingRootedFile final : public autoupdater::IRootedFile {
         return inner_.setPermissions(permissions);
     }
 
+    autoupdater::Result<void> close() noexcept override {
+        return inner_.close();
+    }
+
   private:
     autoupdater::IRootedFile& inner_;
     std::shared_ptr<FaultState> fault_;
@@ -220,8 +224,8 @@ class FaultingRootedFile final : public autoupdater::IRootedFile {
 
 class FaultingTemporaryFile final : public autoupdater::IRootedTemporaryFile {
   public:
-    FaultingTemporaryFile(std::unique_ptr<autoupdater::IRootedTemporaryFile> inner,
-                          std::shared_ptr<FaultState> fault, std::string target)
+    FaultingTemporaryFile(std::unique_ptr<autoupdater::IRootedTemporaryFile> inner, std::shared_ptr<FaultState> fault,
+                          std::string target)
         : inner_(std::move(inner)), file_(inner_->file(), fault, target), fault_(std::move(fault)),
           target_(std::move(target)) {}
 
@@ -235,10 +239,23 @@ class FaultingTemporaryFile final : public autoupdater::IRootedTemporaryFile {
         }
         auto committed = inner_->commit(expectation);
         if (committed && fault_->consume(PersistenceFault::CommitAfterPublish, target_)) {
+            injectedAcknowledgementFailure_ = true;
             return autoupdater::Result<void>::fail(
                 injectedIoError("Injected post-publish state commit acknowledgement failure"));
         }
         return committed;
+    }
+
+    autoupdater::RootedPublishStatus publishStatus() const noexcept override {
+        auto status = inner_->publishStatus();
+        if (injectedAcknowledgementFailure_) {
+            status.failureCanBeReconciled = true;
+        }
+        return status;
+    }
+
+    autoupdater::Result<void> discard() noexcept override {
+        return inner_->discard();
     }
 
   private:
@@ -246,12 +263,12 @@ class FaultingTemporaryFile final : public autoupdater::IRootedTemporaryFile {
     FaultingRootedFile file_;
     std::shared_ptr<FaultState> fault_;
     std::string target_;
+    bool injectedAcknowledgementFailure_ = false;
 };
 
 class FaultingRootedDirectory final : public autoupdater::IRootedDirectory {
   public:
-    FaultingRootedDirectory(std::unique_ptr<autoupdater::IRootedDirectory> inner,
-                            std::shared_ptr<FaultState> fault)
+    FaultingRootedDirectory(std::unique_ptr<autoupdater::IRootedDirectory> inner, std::shared_ptr<FaultState> fault)
         : inner_(std::move(inner)), fault_(std::move(fault)) {}
 
     autoupdater::Result<autoupdater::RootedOpenResult>
@@ -271,8 +288,8 @@ class FaultingRootedDirectory final : public autoupdater::IRootedDirectory {
         if (!temporary) {
             return temporary;
         }
-        std::unique_ptr<autoupdater::IRootedTemporaryFile> wrapped = std::make_unique<FaultingTemporaryFile>(
-            std::move(temporary.value()), fault_, relativePath);
+        std::unique_ptr<autoupdater::IRootedTemporaryFile> wrapped =
+            std::make_unique<FaultingTemporaryFile>(std::move(temporary.value()), fault_, relativePath);
         return autoupdater::Result<std::unique_ptr<autoupdater::IRootedTemporaryFile>>::ok(std::move(wrapped));
     }
 
@@ -316,11 +333,11 @@ class FaultingFileSystem final : public autoupdater::IFileSystem {
         return inner_->createDirectories(path);
     }
     autoupdater::Result<void> copyFile(const std::filesystem::path& from, const std::filesystem::path& to,
-                                      bool overwrite) noexcept override {
+                                       bool overwrite) noexcept override {
         return inner_->copyFile(from, to, overwrite);
     }
     autoupdater::Result<void> renameOrReplace(const std::filesystem::path& from,
-                                             const std::filesystem::path& to) noexcept override {
+                                              const std::filesystem::path& to) noexcept override {
         return inner_->renameOrReplace(from, to);
     }
     autoupdater::Result<void> remove(const std::filesystem::path& path) noexcept override {
@@ -330,11 +347,10 @@ class FaultingFileSystem final : public autoupdater::IFileSystem {
         return inner_->removeAll(path);
     }
     autoupdater::Result<std::string> readText(const std::filesystem::path& path,
-                                             std::uint64_t maxBytes) noexcept override {
+                                              std::uint64_t maxBytes) noexcept override {
         return inner_->readText(path, maxBytes);
     }
-    autoupdater::Result<void> writeText(const std::filesystem::path& path,
-                                       const std::string& text) noexcept override {
+    autoupdater::Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept override {
         return inner_->writeText(path, text);
     }
 
@@ -406,8 +422,8 @@ std::wstring widenUtf8(const std::string& value) {
         throw std::runtime_error("MultiByteToWideChar failed for state-store helper");
     }
     std::wstring result(static_cast<std::size_t>(count), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-                            result.data(), count) != count) {
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
+                            count) != count) {
         throw std::runtime_error("MultiByteToWideChar failed for state-store helper");
     }
     return result;
@@ -627,21 +643,20 @@ void testStateStoreDistinguishesMissingAndCorruptState() {
     const auto strictPendingPath = temporary.path() / "strict-pending" / "state.json";
     const auto strictBackupDir = (temporary.path() / "strict-backup").generic_u8string();
     const auto strictApplyPlan = (temporary.path() / "strict-apply-plan.json").generic_u8string();
-    const std::string strictPendingWithoutDigest =
-        "{\"schemaVersion\":1,\"pendingUpdate\":{"
-        "\"version\":\"2.0.0\",\"releaseId\":\"strict-release\","
-        "\"backupDir\":\"" +
-        strictBackupDir + "\",\"applyPlanPath\":\"" + strictApplyPlan + "\"}}";
+    const std::string strictPendingWithoutDigest = "{\"schemaVersion\":1,\"pendingUpdate\":{"
+                                                   "\"version\":\"2.0.0\",\"releaseId\":\"strict-release\","
+                                                   "\"backupDir\":\"" +
+                                                   strictBackupDir + "\",\"applyPlanPath\":\"" + strictApplyPlan +
+                                                   "\"}}";
     writeFile(strictPendingPath, strictPendingWithoutDigest);
     auto rejectedStrictPending = autoupdater::createJsonStateStore(strictPendingPath)->loadPendingUpdate();
     LAU_REQUIRE(!rejectedStrictPending);
     LAU_REQUIRE(rejectedStrictPending.error().code == autoupdater::ErrorCode::StateStoreError);
-    const std::string strictPendingWithEmptyDigest =
-        "{\"schemaVersion\":1,\"pendingUpdate\":{"
-        "\"version\":\"2.0.0\",\"releaseId\":\"strict-release\","
-        "\"backupDir\":\"" +
-        strictBackupDir + "\",\"applyPlanPath\":\"" + strictApplyPlan +
-        "\",\"applyPlanDigest\":\"\"}}";
+    const std::string strictPendingWithEmptyDigest = "{\"schemaVersion\":1,\"pendingUpdate\":{"
+                                                     "\"version\":\"2.0.0\",\"releaseId\":\"strict-release\","
+                                                     "\"backupDir\":\"" +
+                                                     strictBackupDir + "\",\"applyPlanPath\":\"" + strictApplyPlan +
+                                                     "\",\"applyPlanDigest\":\"\"}}";
     writeFile(strictPendingPath, strictPendingWithEmptyDigest);
     rejectedStrictPending = autoupdater::createJsonStateStore(strictPendingPath)->loadPendingUpdate();
     LAU_REQUIRE(!rejectedStrictPending);
@@ -651,15 +666,14 @@ void testStateStoreDistinguishesMissingAndCorruptState() {
     const auto legacyBackupDir = (temporary.path() / "legacy-backup").generic_u8string();
     const auto legacyApplyPlan = (temporary.path() / "legacy-apply-plan.json").generic_u8string();
     const std::string legacySha256(64, 'd');
-    const std::string legacy =
-        "{\"lastAcceptedVersion\":\"1.2.3\",\"lastAcceptedReleaseId\":\"legacy-release\","
-        "\"pendingUpdate\":{\"version\":\"2.0.0\",\"releaseId\":\"legacy-pending\","
-        "\"backupDir\":\"" +
-        legacyBackupDir + "\",\"applyPlanPath\":\"" + legacyApplyPlan +
-        "\"},\"downloadResume\":{\"legacy-artifact\":{\"offset\":17,"
-        "\"etag\":\"legacy-etag\",\"lastModified\":\"Mon, 01 Jun 2026 10:00:00 GMT\","
-        "\"sha256\":\"" +
-        legacySha256 + "\"}}}";
+    const std::string legacy = "{\"lastAcceptedVersion\":\"1.2.3\",\"lastAcceptedReleaseId\":\"legacy-release\","
+                               "\"pendingUpdate\":{\"version\":\"2.0.0\",\"releaseId\":\"legacy-pending\","
+                               "\"backupDir\":\"" +
+                               legacyBackupDir + "\",\"applyPlanPath\":\"" + legacyApplyPlan +
+                               "\"},\"downloadResume\":{\"legacy-artifact\":{\"offset\":17,"
+                               "\"etag\":\"legacy-etag\",\"lastModified\":\"Mon, 01 Jun 2026 10:00:00 GMT\","
+                               "\"sha256\":\"" +
+                               legacySha256 + "\"}}}";
     writeFile(legacyPath, legacy);
     auto legacyStore = autoupdater::createJsonStateStore(legacyPath);
     auto legacyVersion = legacyStore->loadLastAcceptedVersion();
@@ -837,21 +851,37 @@ void testStateStoreWriteFailuresPreservePrimary() {
         fault->fault = testCase.fault;
         fault->target = testCase.targetBackup ? "state.json.lkg" : "state.json";
         auto fileSystem = std::make_shared<FaultingFileSystem>(autoupdater::createDefaultFileSystem(), fault);
-        auto failingStore = autoupdater::detail::createJsonStateStoreForTesting(
-            statePath, autoupdater::ResourceLimits{}, fileSystem);
+        auto failingStore =
+            autoupdater::detail::createJsonStateStoreForTesting(statePath, autoupdater::ResourceLimits{}, fileSystem);
         auto failed = failingStore->saveLastAcceptedVersion(version("2.0.0"), "release-2");
         LAU_REQUIRE(!failed);
         LAU_REQUIRE(failed.error().code == autoupdater::ErrorCode::StateStoreError);
         LAU_REQUIRE(fault->consumed.load(std::memory_order_acquire));
         LAU_REQUIRE(readFile(statePath) == oldPrimary);
-        LAU_REQUIRE(readFile(statePath.string() + ".lkg") ==
-                    (testCase.targetBackup ? oldBackup : oldPrimary));
+        LAU_REQUIRE(readFile(statePath.string() + ".lkg") == (testCase.targetBackup ? oldBackup : oldPrimary));
 
         auto reopened = autoupdater::createJsonStateStore(statePath)->loadLastAcceptedVersion();
         LAU_REQUIRE(reopened);
         LAU_REQUIRE(reopened.value().has_value());
         LAU_REQUIRE(reopened.value()->toString() == "1.0.0");
     }
+
+    const auto prePublishRoot = temporary.path() / "pre-publish-same-content";
+    const auto prePublishPath = prePublishRoot / "state.json";
+    auto prePublishSeed = autoupdater::createJsonStateStore(prePublishPath);
+    LAU_REQUIRE(prePublishSeed->saveLastAcceptedVersion(version("2.0.0"), "release-2"));
+    const auto unchangedPrimary = readFile(prePublishPath);
+    auto prePublishFault = std::make_shared<FaultState>();
+    prePublishFault->fault = PersistenceFault::Commit;
+    prePublishFault->target = "state.json";
+    auto prePublishFileSystem =
+        std::make_shared<FaultingFileSystem>(autoupdater::createDefaultFileSystem(), prePublishFault);
+    auto prePublishStore = autoupdater::detail::createJsonStateStoreForTesting(
+        prePublishPath, autoupdater::ResourceLimits{}, prePublishFileSystem);
+    auto prePublishFailure = prePublishStore->saveLastAcceptedVersion(version("2.0.0"), "release-2");
+    LAU_REQUIRE(!prePublishFailure);
+    LAU_REQUIRE(prePublishFault->consumed.load(std::memory_order_acquire));
+    LAU_REQUIRE(readFile(prePublishPath) == unchangedPrimary);
 
     const auto reconcileRoot = temporary.path() / "post-publish-reconciliation";
     const auto reconcilePath = reconcileRoot / "state.json";
@@ -925,8 +955,7 @@ void testStateStoreCrossProcessLockingAndCrashRecovery() {
     LAU_REQUIRE(primarySeed->saveLastAcceptedVersion(version("0.9.0"), "release-0"));
     LAU_REQUIRE(primarySeed->saveLastAcceptedVersion(version("1.0.0"), "release-1"));
     const auto prePrimaryCrash = readFile(primaryCrashState);
-    auto primaryCrash =
-        startChild(executable, {"--state-store-helper-crash-primary", pathArgument(primaryCrashState)});
+    auto primaryCrash = startChild(executable, {"--state-store-helper-crash-primary", pathArgument(primaryCrashState)});
     LAU_REQUIRE(waitChild(primaryCrash) == kStateStoreCrashExitCode);
     LAU_REQUIRE(readFile(primaryCrashState.string() + ".lkg") == prePrimaryCrash);
     auto primaryRecoveredStore = autoupdater::createJsonStateStore(primaryCrashState);
@@ -988,8 +1017,8 @@ int runStateStoreHelper(int argc, char* argv[]) {
                 }
             };
             auto store = autoupdater::detail::createJsonStateStoreForTesting(
-                std::filesystem::u8path(argv[2]), autoupdater::ResourceLimits{},
-                autoupdater::createDefaultFileSystem(), std::move(hooks));
+                std::filesystem::u8path(argv[2]), autoupdater::ResourceLimits{}, autoupdater::createDefaultFileSystem(),
+                std::move(hooks));
             return store->saveLastAcceptedVersion(version("2.0.0"), "release-2") ? 5 : 6;
         }
     } catch (...) {

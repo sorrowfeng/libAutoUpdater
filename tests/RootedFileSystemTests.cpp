@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -316,6 +317,7 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
                    std::uint64_t, const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
                    autoupdater::CancellationToken&) noexcept override {
         called = true;
+        ++calls;
         auto written = target.write(contents_.data(), contents_.size());
         if (!written) {
             return autoupdater::Result<autoupdater::DownloadResult>::fail(written.error());
@@ -328,6 +330,7 @@ class StaticDownloadClient final : public autoupdater::INetworkClient {
     }
 
     bool called = false;
+    int calls = 0;
 
   private:
     std::string contents_;
@@ -396,9 +399,8 @@ class RecordingStateStore final : public autoupdater::IStateStore {
         return autoupdater::Result<std::string>::ok({});
     }
 
-    autoupdater::Result<void>
-    commitHealthyVersion(const autoupdater::Version&, const std::string&,
-                         const std::optional<autoupdater::PendingUpdate>&) noexcept override {
+    autoupdater::Result<void> commitHealthyVersion(const autoupdater::Version&, const std::string&,
+                                                   const std::optional<autoupdater::PendingUpdate>&) noexcept override {
         return autoupdater::Result<void>::ok();
     }
 
@@ -415,12 +417,20 @@ class RecordingStateStore final : public autoupdater::IStateStore {
     }
 
     autoupdater::Result<void> saveDownloadResume(const autoupdater::DownloadResumeState& state) noexcept override {
+        if (failSave) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "Injected resume save failure"});
+        }
         saved.push_back(state);
         return autoupdater::Result<void>::ok();
     }
 
     autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>
     loadDownloadResume(const std::string& key) noexcept override {
+        if (failLoad) {
+            return autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "Injected resume load failure"});
+        }
         if (loaded && loaded->key == key) {
             return autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>::ok(loaded);
         }
@@ -428,6 +438,10 @@ class RecordingStateStore final : public autoupdater::IStateStore {
     }
 
     autoupdater::Result<void> clearDownloadResume(const std::string& key) noexcept override {
+        if (failClear) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "Injected resume clear failure"});
+        }
         cleared.push_back(key);
         return autoupdater::Result<void>::ok();
     }
@@ -435,6 +449,9 @@ class RecordingStateStore final : public autoupdater::IStateStore {
     std::optional<autoupdater::DownloadResumeState> loaded;
     std::vector<autoupdater::DownloadResumeState> saved;
     std::vector<std::string> cleared;
+    bool failSave = false;
+    bool failLoad = false;
+    bool failClear = false;
 };
 
 class RedirectingValidatorDownloadClient final : public autoupdater::INetworkClient {
@@ -515,6 +532,191 @@ class FailingPartialDownloadClient final : public autoupdater::INetworkClient {
 
   private:
     std::string partial_;
+};
+
+class FailingStreamHashProvider final : public autoupdater::IHashProvider {
+  public:
+    FailingStreamHashProvider() : delegate_(autoupdater::createDefaultHashProvider()) {}
+
+    autoupdater::Result<std::string> sha256File(const std::filesystem::path& path) noexcept override {
+        return delegate_->sha256File(path);
+    }
+
+    autoupdater::Result<std::string> sha256Bytes(std::string_view data) noexcept override {
+        return delegate_->sha256Bytes(data);
+    }
+
+    autoupdater::Result<std::string> sha256Stream(autoupdater::IRootedFile&) noexcept override {
+        ++streamCalls;
+        return autoupdater::Result<std::string>::fail(
+            {autoupdater::ErrorCode::FileSystemError, "Injected rooted hash read failure"});
+    }
+
+    int streamCalls = 0;
+
+  private:
+    std::shared_ptr<autoupdater::IHashProvider> delegate_;
+};
+
+autoupdater::Result<void> copyForPostPublishFault(autoupdater::IRootedFile& source,
+                                                  autoupdater::IRootedFile& destination) {
+    auto rewound = source.seek(0);
+    if (!rewound) {
+        return rewound;
+    }
+    std::array<unsigned char, 64 * 1024> buffer{};
+    for (;;) {
+        auto read = source.read(buffer.data(), buffer.size());
+        if (!read) {
+            return autoupdater::Result<void>::fail(read.error());
+        }
+        if (read.value() == 0) {
+            return autoupdater::Result<void>::ok();
+        }
+        auto written = destination.write(buffer.data(), read.value());
+        if (!written) {
+            return written;
+        }
+    }
+}
+
+struct PostPublishFaultState {
+    int replaceCalls = 0;
+    bool failReconciliation = false;
+};
+
+class PostPublishFaultDirectory final : public autoupdater::IRootedDirectory {
+  public:
+    PostPublishFaultDirectory(std::unique_ptr<autoupdater::IRootedDirectory> inner,
+                              std::shared_ptr<PostPublishFaultState> state)
+        : inner_(std::move(inner)), state_(std::move(state)) {}
+
+    autoupdater::Result<autoupdater::RootedOpenResult>
+    openRegularFile(const std::string& relativePath, autoupdater::RootedFileOpenMode mode,
+                    autoupdater::RootedDirectoryCreationMode directoryMode) noexcept override {
+        return inner_->openRegularFile(relativePath, mode, directoryMode);
+    }
+
+    autoupdater::Result<std::unique_ptr<autoupdater::IRootedTemporaryFile>>
+    createAtomicReplacement(const std::string& relativePath,
+                            autoupdater::RootedDirectoryCreationMode directoryMode) noexcept override {
+        return inner_->createAtomicReplacement(relativePath, directoryMode);
+    }
+
+    autoupdater::Result<void>
+    replaceWithOpenedFile(autoupdater::IRootedFile& source, const std::string& relativePath,
+                          const autoupdater::RootedEntryExpectation& expectation) noexcept override {
+        ++state_->replaceCalls;
+        if (state_->replaceCalls == 1) {
+            auto sourceMetadata = source.metadata();
+            if (!sourceMetadata) {
+                return autoupdater::Result<void>::fail(sourceMetadata.error());
+            }
+            auto temporary =
+                inner_->createAtomicReplacement(relativePath, autoupdater::RootedDirectoryCreationMode::Private);
+            if (!temporary) {
+                return autoupdater::Result<void>::fail(temporary.error());
+            }
+            auto copied = copyForPostPublishFault(source, temporary.value()->file());
+            if (!copied) {
+                (void)temporary.value()->discard();
+                return copied;
+            }
+            if (sourceMetadata.value().permissions != std::filesystem::perms::unknown) {
+                auto permissions = temporary.value()->file().setPermissions(sourceMetadata.value().permissions);
+                if (!permissions) {
+                    (void)temporary.value()->discard();
+                    return permissions;
+                }
+            }
+            auto committed = temporary.value()->commit(expectation);
+            auto discarded = temporary.value()->discard();
+            if (!committed) {
+                return committed;
+            }
+            if (!discarded) {
+                return discarded;
+            }
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::FileSystemError, "Injected post-publish replacement failure"});
+        }
+        if (state_->failReconciliation) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::FileSystemError, "Injected reconciliation replacement failure"});
+        }
+        return inner_->replaceWithOpenedFile(source, relativePath, expectation);
+    }
+
+    autoupdater::Result<void>
+    removeRegularFile(const std::string& relativePath,
+                      const autoupdater::RootedEntryExpectation& expectation) noexcept override {
+        return inner_->removeRegularFile(relativePath, expectation);
+    }
+
+    autoupdater::Result<std::unique_ptr<autoupdater::IRootedLock>>
+    acquireExclusiveLock(const std::string& relativePath) noexcept override {
+        return inner_->acquireExclusiveLock(relativePath);
+    }
+
+  private:
+    std::unique_ptr<autoupdater::IRootedDirectory> inner_;
+    std::shared_ptr<PostPublishFaultState> state_;
+};
+
+class PostPublishFaultFileSystem final : public autoupdater::IFileSystem {
+  public:
+    PostPublishFaultFileSystem(std::shared_ptr<autoupdater::IFileSystem> inner,
+                               std::shared_ptr<PostPublishFaultState> state)
+        : inner_(std::move(inner)), state_(std::move(state)) {}
+
+    bool exists(const std::filesystem::path& path) noexcept override {
+        return inner_->exists(path);
+    }
+    bool isRegularFile(const std::filesystem::path& path) noexcept override {
+        return inner_->isRegularFile(path);
+    }
+    autoupdater::Result<std::uint64_t> fileSize(const std::filesystem::path& path) noexcept override {
+        return inner_->fileSize(path);
+    }
+    autoupdater::Result<void> createDirectories(const std::filesystem::path& path) noexcept override {
+        return inner_->createDirectories(path);
+    }
+    autoupdater::Result<void> copyFile(const std::filesystem::path& from, const std::filesystem::path& to,
+                                       bool overwrite) noexcept override {
+        return inner_->copyFile(from, to, overwrite);
+    }
+    autoupdater::Result<void> renameOrReplace(const std::filesystem::path& from,
+                                              const std::filesystem::path& to) noexcept override {
+        return inner_->renameOrReplace(from, to);
+    }
+    autoupdater::Result<void> remove(const std::filesystem::path& path) noexcept override {
+        return inner_->remove(path);
+    }
+    autoupdater::Result<void> removeAll(const std::filesystem::path& path) noexcept override {
+        return inner_->removeAll(path);
+    }
+    autoupdater::Result<std::string> readText(const std::filesystem::path& path,
+                                              std::uint64_t maxBytes) noexcept override {
+        return inner_->readText(path, maxBytes);
+    }
+    autoupdater::Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept override {
+        return inner_->writeText(path, text);
+    }
+    autoupdater::Result<std::unique_ptr<autoupdater::IRootedDirectory>>
+    openRoot(const std::filesystem::path& path, autoupdater::RootAccess access, bool create,
+             autoupdater::RootedDirectoryCreationMode directoryMode) noexcept override {
+        auto opened = inner_->openRoot(path, access, create, directoryMode);
+        if (!opened) {
+            return opened;
+        }
+        std::unique_ptr<autoupdater::IRootedDirectory> wrapped =
+            std::make_unique<PostPublishFaultDirectory>(std::move(opened.value()), state_);
+        return autoupdater::Result<std::unique_ptr<autoupdater::IRootedDirectory>>::ok(std::move(wrapped));
+    }
+
+  private:
+    std::shared_ptr<autoupdater::IFileSystem> inner_;
+    std::shared_ptr<PostPublishFaultState> state_;
 };
 
 autoupdater::UpdateDecision oneFileDecision(const std::string& contents) {
@@ -652,6 +854,33 @@ void testRootedFileSystemPinsHandlesAndRejectsSwaps() {
         auto committed = temporary.value()->commit(autoupdater::RootedEntryExpectation::matching(metadata.value()));
         LAU_REQUIRE(!committed);
         LAU_REQUIRE(readFile(root / "target.bin") == "intruder");
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-rooted-explicit-discard");
+        auto openedRoot = fileSystem->openRoot(root, autoupdater::RootAccess::ReadWrite, false);
+        LAU_REQUIRE(openedRoot);
+
+        auto abandoned = openedRoot.value()->createAtomicReplacement("abandoned.bin");
+        LAU_REQUIRE(abandoned);
+        LAU_REQUIRE(abandoned.value()->file().write("discarded", 9));
+        LAU_REQUIRE(abandoned.value()->publishStatus().publication == autoupdater::RootedPublication::NotPublished);
+        LAU_REQUIRE(abandoned.value()->discard());
+        LAU_REQUIRE(abandoned.value()->discard());
+        LAU_REQUIRE(!std::filesystem::exists(root / "abandoned.bin"));
+
+        auto published = openedRoot.value()->createAtomicReplacement("published.bin");
+        LAU_REQUIRE(published);
+        LAU_REQUIRE(published.value()->file().write("published", 9));
+        LAU_REQUIRE(published.value()->commit(autoupdater::RootedEntryExpectation::missing()));
+        const auto status = published.value()->publishStatus();
+        LAU_REQUIRE(status.publication == autoupdater::RootedPublication::Published);
+        LAU_REQUIRE(status.namespaceDurable);
+        LAU_REQUIRE(published.value()->discard());
+        LAU_REQUIRE(published.value()->discard());
+        LAU_REQUIRE(readFile(root / "published.bin") == "published");
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
@@ -1082,10 +1311,7 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         LAU_REQUIRE(network.resumes.size() == 2);
         LAU_REQUIRE(!network.resumes[0]);
         LAU_REQUIRE(!network.resumes[1]);
-        LAU_REQUIRE(stateStore.saved.size() == 1);
-        LAU_REQUIRE(stateStore.saved[0].key == initialUrl);
-        LAU_REQUIRE(stateStore.saved[0].etag.empty());
-        LAU_REQUIRE(stateStore.saved[0].lastModified.empty());
+        LAU_REQUIRE(stateStore.saved.empty());
         LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({initialUrl}));
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
@@ -1123,6 +1349,213 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         LAU_REQUIRE(stateStore.saved[0].lastModified.empty());
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
+    }
+}
+
+void testDownloadExecutorPropagatesResumePersistenceFailures() {
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto hash = autoupdater::createDefaultHashProvider();
+    const std::string url = "https://updates.example.test/artifact";
+
+    const auto configFor = [](const std::filesystem::path& staging) {
+        autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
+        config.tempDir = staging;
+        config.retry.maxRetries = 0;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
+        return config;
+    };
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-load-failure");
+        const auto staging = root / "staging";
+        writeFile(staging / "managed/file.bin.download", "partial");
+        auto config = configFor(staging);
+        auto decision = oneFileDecision("partial-complete");
+        RecordingStateStore stateStore;
+        stateStore.failLoad = true;
+        StaticDownloadClient network("unused");
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::StateStoreError);
+        LAU_REQUIRE(!network.called);
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-save-failure");
+        const auto staging = root / "staging";
+        auto config = configFor(staging);
+        auto decision = oneFileDecision("complete-payload");
+        RecordingStateStore stateStore;
+        stateStore.failSave = true;
+        FailingPartialDownloadClient network("partial");
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::NetworkError);
+        LAU_REQUIRE(result.error().message.find("failed to save download resume state") != std::string::npos);
+        LAU_REQUIRE(result.error().message.find("StateStoreError") != std::string::npos);
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-clear-failure");
+        const auto staging = root / "staging";
+        const std::string contents = "complete-payload";
+        auto config = configFor(staging);
+        auto decision = oneFileDecision(contents);
+        RecordingStateStore stateStore;
+        stateStore.failClear = true;
+        StaticDownloadClient network(contents);
+        autoupdater::CancellationToken cancel;
+
+        const auto failedClear =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!failedClear);
+        LAU_REQUIRE(failedClear.error().code == autoupdater::ErrorCode::StateStoreError);
+        LAU_REQUIRE(readFile(staging / "managed/file.bin") == contents);
+        LAU_REQUIRE(stateStore.saved.empty());
+
+        stateStore.failClear = false;
+        StaticDownloadClient mustNotRun("unused");
+        const auto reconciled =
+            autoupdater::executeDownloads(config, decision, mustNotRun, *fileSystem, *hash, &stateStore, {}, cancel);
+        LAU_REQUIRE(reconciled);
+        LAU_REQUIRE(!mustNotRun.called);
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+}
+
+void testDownloadExecutorReportsHashAndPublicationFailures() {
+    const std::string url = "https://updates.example.test/artifact";
+    const auto configFor = [](const std::filesystem::path& staging, int retries = 0) {
+        autoupdater::Config config;
+        config.manifestUrl = "https://updates.example.test/manifest.json";
+        config.tempDir = staging;
+        config.retry.maxRetries = retries;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
+        return config;
+    };
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-hash-read-failure");
+        const auto staging = root / "staging";
+        auto config = configFor(staging, 2);
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        auto fileSystem = autoupdater::createDefaultFileSystem();
+        FailingStreamHashProvider hash;
+        StaticDownloadClient network(contents);
+        RecordingStateStore stateStore;
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::FileSystemError);
+        LAU_REQUIRE(result.error().message.find("Injected rooted hash read failure") != std::string::npos);
+        LAU_REQUIRE(hash.streamCalls == 1);
+        LAU_REQUIRE(network.calls == 1);
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin"));
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-size-mismatch-retry");
+        const auto staging = root / "staging";
+        auto config = configFor(staging, 1);
+        auto decision = oneFileDecision("expected-longer-payload");
+        auto fileSystem = autoupdater::createDefaultFileSystem();
+        auto hash = autoupdater::createDefaultHashProvider();
+        StaticDownloadClient network("short");
+        RecordingStateStore stateStore;
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::HashMismatch);
+        LAU_REQUIRE(network.calls == 2);
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin"));
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url, url}));
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-post-publish-reconcile");
+        const auto staging = root / "staging";
+        auto config = configFor(staging, 2);
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        auto hash = autoupdater::createDefaultHashProvider();
+        auto fault = std::make_shared<PostPublishFaultState>();
+        PostPublishFaultFileSystem fileSystem(autoupdater::createDefaultFileSystem(), fault);
+        StaticDownloadClient network(contents);
+        RecordingStateStore stateStore;
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(result);
+        LAU_REQUIRE(network.calls == 1);
+        LAU_REQUIRE(fault->replaceCalls == 2);
+        LAU_REQUIRE(readFile(staging / "managed/file.bin") == contents);
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-post-publish-reconcile-failure");
+        const auto staging = root / "staging";
+        auto config = configFor(staging, 2);
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        auto hash = autoupdater::createDefaultHashProvider();
+        auto fault = std::make_shared<PostPublishFaultState>();
+        fault->failReconciliation = true;
+        PostPublishFaultFileSystem fileSystem(autoupdater::createDefaultFileSystem(), fault);
+        StaticDownloadClient network(contents);
+        RecordingStateStore stateStore;
+        autoupdater::CancellationToken cancel;
+
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::FileSystemError);
+        LAU_REQUIRE(result.error().message.find("Injected post-publish replacement failure") != std::string::npos);
+        LAU_REQUIRE(result.error().message.find("failed to durably reconcile") != std::string::npos);
+        LAU_REQUIRE(result.error().message.find("Injected reconciliation replacement failure") != std::string::npos);
+        LAU_REQUIRE(network.calls == 1);
+        LAU_REQUIRE(fault->replaceCalls == 2);
+        LAU_REQUIRE(readFile(staging / "managed/file.bin") == contents);
+        LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
     }
 }
 

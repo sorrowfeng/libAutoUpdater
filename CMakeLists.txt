@@ -146,6 +146,7 @@ target_compile_definitions(libAutoUpdater
 
 if(WIN32)
     target_compile_definitions(libAutoUpdater PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(libAutoUpdater PRIVATE advapi32)
 endif()
 
 if(LIBAUTOUPDATER_WITH_CURL)

@@ -138,8 +138,8 @@ Result<ApplyTransactionReceipt> parseApplyTransactionReceipt(const std::string& 
 Result<std::optional<ApplyTransactionReceipt>>
 loadTerminalApplyTransaction(IFileSystem& fileSystem, const std::filesystem::path& installDir) noexcept {
     try {
-        auto root = fileSystem.openRoot(installDir, RootAccess::ReadOnly, false,
-                                        RootedDirectoryCreationMode::InstalledContent);
+        auto root =
+            fileSystem.openRoot(installDir, RootAccess::ReadOnly, false, RootedDirectoryCreationMode::InstalledContent);
         if (!root) {
             return Result<std::optional<ApplyTransactionReceipt>>::fail(root.error());
         }
@@ -151,8 +151,16 @@ loadTerminalApplyTransaction(IFileSystem& fileSystem, const std::filesystem::pat
             return Result<std::optional<ApplyTransactionReceipt>>::ok(std::nullopt);
         }
         auto contents = readReceipt(*opened.value().file);
+        auto closed = opened.value().file->close();
         if (!contents) {
-            return Result<std::optional<ApplyTransactionReceipt>>::fail(contents.error());
+            auto error = contents.error();
+            if (!closed) {
+                error.message += "; failed to close terminal apply receipt: " + closed.error().message;
+            }
+            return Result<std::optional<ApplyTransactionReceipt>>::fail(std::move(error));
+        }
+        if (!closed) {
+            return Result<std::optional<ApplyTransactionReceipt>>::fail(closed.error());
         }
         auto parsed = parseApplyTransactionReceipt(contents.value());
         if (!parsed) {

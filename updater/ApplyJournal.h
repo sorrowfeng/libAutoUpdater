@@ -127,7 +127,8 @@ class ApplyJournalStore {
     static std::string operationPath(const std::string& transactionId, std::size_t index);
 
   private:
-    Result<std::optional<std::string>> readOptional(const std::string& path, std::uint64_t maxBytes) noexcept;
+    Result<std::optional<std::string>> readOptional(const std::string& path, std::uint64_t maxBytes,
+                                                    const std::string* expectedIdentity = nullptr) noexcept;
     Result<void> writeAtomic(const std::string& path, const std::string& contents, std::uint64_t maxBytes) noexcept;
 
     IRootedDirectory& installRoot_;

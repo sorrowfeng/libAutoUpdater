@@ -29,14 +29,28 @@ Result<LocalSnapshot> buildLocalSnapshot(const Config& config, const Manifest& m
         if (opened.value().exists()) {
             auto hash = hashProvider.sha256Stream(*opened.value().file);
             if (!hash) {
-                return Result<LocalSnapshot>::fail(hash.error());
+                auto error = hash.error();
+                auto closed = opened.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close local snapshot file: " + closed.error().message;
+                }
+                return Result<LocalSnapshot>::fail(std::move(error));
             }
             auto metadata = opened.value().file->metadata();
             if (!metadata) {
-                return Result<LocalSnapshot>::fail(metadata.error());
+                auto error = metadata.error();
+                auto closed = opened.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close local snapshot file: " + closed.error().message;
+                }
+                return Result<LocalSnapshot>::fail(std::move(error));
             }
             info.sha256 = hash.value();
             info.size = metadata.value().size;
+            auto closed = opened.value().file->close();
+            if (!closed) {
+                return Result<LocalSnapshot>::fail(closed.error());
+            }
         }
         snapshot.files.push_back(std::move(info));
     }

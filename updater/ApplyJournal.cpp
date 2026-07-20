@@ -65,16 +65,13 @@ Result<util::Json> parseObject(const std::string& text, const std::string& descr
     return parsed;
 }
 
-Result<void> requireOnlyKeys(const util::Json::Object& object,
-                             std::initializer_list<const char*> allowedKeys,
+Result<void> requireOnlyKeys(const util::Json::Object& object, std::initializer_list<const char*> allowedKeys,
                              const std::string& description) {
     for (const auto& entry : object) {
-        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
-            return entry.first == key;
-        });
+        const auto allowed =
+            std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) { return entry.first == key; });
         if (!allowed) {
-            return Result<void>::fail(
-                journalError(description + " contains unknown field '" + entry.first + "'"));
+            return Result<void>::fail(journalError(description + " contains unknown field '" + entry.first + "'"));
         }
     }
     return Result<void>::ok();
@@ -105,8 +102,7 @@ Result<std::uint64_t> parseDecimal(const util::Json& object, const std::string& 
         return Result<std::uint64_t>::fail(journalError("Apply journal integer field is empty: " + key));
     }
     if (text.value().size() > 1 && text.value().front() == '0') {
-        return Result<std::uint64_t>::fail(
-            journalError("Apply journal integer field is not canonical: " + key));
+        return Result<std::uint64_t>::fail(journalError("Apply journal integer field is not canonical: " + key));
     }
     std::uint64_t result = 0;
     for (const unsigned char character : text.value()) {
@@ -465,9 +461,8 @@ Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) no
         if (!object)
             return Result<ApplyJournalSummary>::fail(object.error());
         auto keys = requireOnlyKeys(object.value().asObject(),
-                                    {"schemaVersion", "transactionId", "planDigest", "fileState",
-                                     "operationCount", "applyError", "rollbackError", "restartState",
-                                     "restartError"},
+                                    {"schemaVersion", "transactionId", "planDigest", "fileState", "operationCount",
+                                     "applyError", "rollbackError", "restartState", "restartError"},
                                     "Apply journal summary");
         if (!keys)
             return Result<ApplyJournalSummary>::fail(keys.error());
@@ -558,8 +553,8 @@ Result<ApplyJournalOperation> parseApplyJournalOperation(const std::string& text
         auto keys = requireOnlyKeys(object.value().asObject(),
                                     {"schemaVersion", "transactionId", "index", "operationId", "intent",
                                      "originalExists", "originalIdentity", "originalSize", "originalSha256",
-                                     "originalPermissionsKnown", "originalPermissions", "backupState",
-                                     "applyState", "installedIdentity", "rollbackState", "error"},
+                                     "originalPermissionsKnown", "originalPermissions", "backupState", "applyState",
+                                     "installedIdentity", "rollbackState", "error"},
                                     "Apply journal operation");
         if (!keys)
             return Result<ApplyJournalOperation>::fail(keys.error());
@@ -674,39 +669,57 @@ std::string ApplyJournalStore::operationPath(const std::string& transactionId, s
     return stream.str();
 }
 
-Result<std::optional<std::string>> ApplyJournalStore::readOptional(const std::string& path,
-                                                                   std::uint64_t maxBytes) noexcept {
+Result<std::optional<std::string>> ApplyJournalStore::readOptional(const std::string& path, std::uint64_t maxBytes,
+                                                                   const std::string* expectedIdentity) noexcept {
     try {
         auto opened = installRoot_.openRegularFile(path, RootedFileOpenMode::ReadOnly);
         if (!opened)
             return Result<std::optional<std::string>>::fail(opened.error());
         if (!opened.value().exists())
             return Result<std::optional<std::string>>::ok(std::nullopt);
+        const auto failOpened = [&](Error error) {
+            auto closed = opened.value().file->close();
+            if (!closed)
+                error.message += "; failed to close apply journal file: " + closed.error().message;
+            return Result<std::optional<std::string>>::fail(std::move(error));
+        };
         auto metadata = opened.value().file->metadata();
         if (!metadata)
-            return Result<std::optional<std::string>>::fail(metadata.error());
+            return failOpened(metadata.error());
+        if (expectedIdentity && metadata.value().identity != *expectedIdentity)
+            return failOpened(
+                {ErrorCode::SecurityPolicyViolation, "Apply journal publication identity changed: " + path});
         if (metadata.value().size > maxBytes || metadata.value().size > std::numeric_limits<std::size_t>::max()) {
-            return Result<std::optional<std::string>>::fail(
-                {ErrorCode::ResourceLimitExceeded, "Apply journal file exceeds its byte limit: " + path});
+            return failOpened({ErrorCode::ResourceLimitExceeded, "Apply journal file exceeds its byte limit: " + path});
         }
         auto seek = opened.value().file->seek(0);
         if (!seek)
-            return Result<std::optional<std::string>>::fail(seek.error());
+            return failOpened(seek.error());
         std::string contents;
         contents.reserve(static_cast<std::size_t>(metadata.value().size));
         std::array<char, kReadChunkBytes> buffer{};
         while (true) {
             auto read = opened.value().file->read(buffer.data(), buffer.size());
             if (!read)
-                return Result<std::optional<std::string>>::fail(read.error());
+                return failOpened(read.error());
             if (read.value() == 0)
                 break;
             if (contents.size() > maxBytes || read.value() > maxBytes - contents.size()) {
-                return Result<std::optional<std::string>>::fail(
+                return failOpened(
                     {ErrorCode::ResourceLimitExceeded, "Apply journal file grew beyond its byte limit: " + path});
             }
             contents.append(buffer.data(), read.value());
         }
+        auto finalMetadata = opened.value().file->metadata();
+        if (!finalMetadata)
+            return failOpened(finalMetadata.error());
+        if (finalMetadata.value().identity != metadata.value().identity ||
+            finalMetadata.value().size != metadata.value().size || contents.size() != metadata.value().size)
+            return failOpened(
+                {ErrorCode::SecurityPolicyViolation, "Apply journal file changed while being read: " + path});
+        auto closed = opened.value().file->close();
+        if (!closed)
+            return Result<std::optional<std::string>>::fail(closed.error());
         return Result<std::optional<std::string>>::ok(std::move(contents));
     } catch (...) {
         return Result<std::optional<std::string>>::fail(journalError("Failed to read apply journal file: " + path));
@@ -726,22 +739,66 @@ Result<void> ApplyJournalStore::writeAtomic(const std::string& path, const std::
         auto expectation = RootedEntryExpectation::missing();
         if (current.value().exists()) {
             auto metadata = current.value().file->metadata();
-            if (!metadata)
-                return Result<void>::fail(metadata.error());
+            if (!metadata) {
+                auto error = metadata.error();
+                auto closed = current.value().file->close();
+                if (!closed)
+                    error.message += "; failed to close apply journal target: " + closed.error().message;
+                return Result<void>::fail(std::move(error));
+            }
             expectation = RootedEntryExpectation::matching(metadata.value());
-            current.value().file.reset();
+            auto closed = current.value().file->close();
+            if (!closed)
+                return closed;
         }
         auto temporary = installRoot_.createAtomicReplacement(path);
         if (!temporary)
             return Result<void>::fail(temporary.error());
         auto write = temporary.value()->file().write(contents.data(), contents.size());
-        if (!write)
-            return write;
+        if (!write) {
+            auto error = write.error();
+            auto discarded = temporary.value()->discard();
+            if (!discarded)
+                error.message += "; failed to discard incomplete apply journal: " + discarded.error().message;
+            return Result<void>::fail(std::move(error));
+        }
+        auto preparedMetadata = temporary.value()->file().metadata();
+        if (!preparedMetadata) {
+            auto error = preparedMetadata.error();
+            auto discarded = temporary.value()->discard();
+            if (!discarded)
+                error.message += "; failed to discard invalid apply journal: " + discarded.error().message;
+            return Result<void>::fail(std::move(error));
+        }
         auto commit = temporary.value()->commit(expectation);
-        if (!commit)
-            return commit;
+        auto discarded = temporary.value()->discard();
+        const auto publication = temporary.value()->publishStatus();
+        if (!commit) {
+            auto error = commit.error();
+            if (!discarded) {
+                error.message += "; failed to finish apply journal cleanup: " + discarded.error().message;
+                return Result<void>::fail(std::move(error));
+            }
+            if (publication.publication == RootedPublication::NotPublished || !publication.namespaceDurable ||
+                !publication.failureCanBeReconciled) {
+                return Result<void>::fail(std::move(error));
+            }
+            temporary.value().reset();
+            auto reconciled = readOptional(path, maxBytes, &preparedMetadata.value().identity);
+            if (!reconciled) {
+                error.message += "; failed to reconcile apply journal publication: " + reconciled.error().message;
+                return Result<void>::fail(std::move(error));
+            }
+            if (!reconciled.value() || *reconciled.value() != contents) {
+                error.message += "; published apply journal contents do not match the prepared record";
+                return Result<void>::fail(std::move(error));
+            }
+            return Result<void>::ok();
+        }
+        if (!discarded)
+            return discarded;
         temporary.value().reset();
-        auto verified = readOptional(path, maxBytes);
+        auto verified = readOptional(path, maxBytes, &preparedMetadata.value().identity);
         if (!verified)
             return Result<void>::fail(verified.error());
         if (!verified.value() || *verified.value() != contents) {
@@ -824,17 +881,39 @@ Result<void> ApplyJournalStore::clearActive(const std::string& expectedTransacti
         if (!opened.value().exists())
             return Result<void>::ok();
         auto metadata = opened.value().file->metadata();
-        if (!metadata)
-            return Result<void>::fail(metadata.error());
-        opened.value().file.reset();
+        if (!metadata) {
+            auto error = metadata.error();
+            auto closed = opened.value().file->close();
+            if (!closed)
+                error.message += "; failed to close active apply journal: " + closed.error().message;
+            return Result<void>::fail(std::move(error));
+        }
+        auto closed = opened.value().file->close();
+        if (!closed)
+            return closed;
         auto removed = installRoot_.removeRegularFile(activePath(), RootedEntryExpectation::matching(metadata.value()));
-        if (!removed)
-            return removed;
         auto verified = loadActive();
-        if (!verified)
+        if (!verified) {
+            if (!removed) {
+                auto error = removed.error();
+                error.message += "; failed to reconcile active journal removal: " + verified.error().message;
+                return Result<void>::fail(std::move(error));
+            }
             return Result<void>::fail(verified.error());
+        }
         if (verified.value()) {
+            if (!removed)
+                return removed;
             return Result<void>::fail(journalError("Active apply transaction remained after journal cleanup"));
+        }
+        if (!removed) {
+            auto durable = installRoot_.removeRegularFile(activePath(), RootedEntryExpectation::missing());
+            if (!durable) {
+                auto error = removed.error();
+                error.message += "; failed to persist reconciled active journal removal: " + durable.error().message;
+                return Result<void>::fail(std::move(error));
+            }
+            return removed;
         }
         return Result<void>::ok();
     } catch (...) {

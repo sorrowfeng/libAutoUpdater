@@ -45,6 +45,7 @@ void testStateAndJournalSchemasFailClosed();
 void testRfc3339ProfileAndNormalization();
 void testMetadataTimestampsUseStrictProfile();
 void testManifestAndSignatureResourceLimits();
+void testApplyPlanWriterReconcilesPublishedCommitAcknowledgement();
 void testUpdatePlannerCreatesOperations();
 void testUpdatePlannerPercentEncodesArtifactPaths();
 void testUpdatePlannerEnforcesRfc3339ExpiryBoundary();
@@ -70,15 +71,23 @@ void testApplyExecutorRecoversAfterForcedTermination();
 void testApplyExecutorRejectsSourceTargetBackupLinks();
 void testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly();
 void testApplyExecutorValidatesProcessWaitInputs();
+void testApplyExecutorReconcilesPublishedCommitAcknowledgements();
 void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
 void testDownloadExecutorContainsSwapsAndHardLinks();
 void testDownloadExecutorKeepsValidatorsBoundToTheirResource();
+void testDownloadExecutorPropagatesResumePersistenceFailures();
+void testDownloadExecutorReportsHashAndPublicationFailures();
 void testApplyExecutorUsesSafePosixPermissions();
 void testProcessLauncherReportsSetupAndExecFailures();
 void testProcessLauncherPreservesArgumentsAndWorkingDirectory();
 void testProcessLauncherRejectsLossyArguments();
 void testSha256Provider();
+void testSha256DistinguishesReadFailureFromEof();
+void testStdFileSystemAtomicReplacementPreservesTargetOnFailure();
+void testStdFileSystemAtomicTextWritesPreserveContentAndPermissions();
+void testStdFileSystemCopyPublishesOnlyCompleteFiles();
+void testRootedPermissionCopyPreservesNativeState();
 void testOpenSslSignatureVerifier();
 void testStateStoreDownloadResume();
 void testStateStoreDistinguishesMissingAndCorruptState();
@@ -165,6 +174,8 @@ int main(int argc, char* argv[]) {
         {"Rfc3339ProfileAndNormalization", testRfc3339ProfileAndNormalization},
         {"MetadataTimestampsUseStrictProfile", testMetadataTimestampsUseStrictProfile},
         {"ManifestAndSignatureResourceLimits", testManifestAndSignatureResourceLimits},
+        {"ApplyPlanWriterReconcilesPublishedCommitAcknowledgement",
+         testApplyPlanWriterReconcilesPublishedCommitAcknowledgement},
         {"UpdatePlannerCreatesOperations", testUpdatePlannerCreatesOperations},
         {"UpdatePlannerPercentEncodesArtifactPaths", testUpdatePlannerPercentEncodesArtifactPaths},
         {"UpdatePlannerEnforcesRfc3339ExpiryBoundary", testUpdatePlannerEnforcesRfc3339ExpiryBoundary},
@@ -198,17 +209,29 @@ int main(int argc, char* argv[]) {
         {"ApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly",
          testApplyExecutorRejectsProgrammaticManagedTargetConflictsEarly},
         {"ApplyExecutorValidatesProcessWaitInputs", testApplyExecutorValidatesProcessWaitInputs},
+        {"ApplyExecutorReconcilesPublishedCommitAcknowledgements",
+         testApplyExecutorReconcilesPublishedCommitAcknowledgements},
         {"RootedFileSystemPinsHandlesAndRejectsSwaps", testRootedFileSystemPinsHandlesAndRejectsSwaps},
         {"LocalSnapshotUsesOneOpenedFileHandle", testLocalSnapshotUsesOneOpenedFileHandle},
         {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},
         {"DownloadExecutorKeepsValidatorsBoundToTheirResource",
          testDownloadExecutorKeepsValidatorsBoundToTheirResource},
+        {"DownloadExecutorPropagatesResumePersistenceFailures",
+         testDownloadExecutorPropagatesResumePersistenceFailures},
+        {"DownloadExecutorReportsHashAndPublicationFailures", testDownloadExecutorReportsHashAndPublicationFailures},
         {"ApplyExecutorUsesSafePosixPermissions", testApplyExecutorUsesSafePosixPermissions},
         {"ProcessLauncherReportsSetupAndExecFailures", testProcessLauncherReportsSetupAndExecFailures},
         {"ProcessLauncherPreservesArgumentsAndWorkingDirectory",
          testProcessLauncherPreservesArgumentsAndWorkingDirectory},
         {"ProcessLauncherRejectsLossyArguments", testProcessLauncherRejectsLossyArguments},
         {"Sha256Provider", testSha256Provider},
+        {"Sha256DistinguishesReadFailureFromEof", testSha256DistinguishesReadFailureFromEof},
+        {"StdFileSystemAtomicReplacementPreservesTargetOnFailure",
+         testStdFileSystemAtomicReplacementPreservesTargetOnFailure},
+        {"StdFileSystemAtomicTextWritesPreserveContentAndPermissions",
+         testStdFileSystemAtomicTextWritesPreserveContentAndPermissions},
+        {"StdFileSystemCopyPublishesOnlyCompleteFiles", testStdFileSystemCopyPublishesOnlyCompleteFiles},
+        {"RootedPermissionCopyPreservesNativeState", testRootedPermissionCopyPreservesNativeState},
         {"OpenSslSignatureVerifier", testOpenSslSignatureVerifier},
         {"StateStoreDownloadResume", testStateStoreDownloadResume},
         {"StateStoreDistinguishesMissingAndCorruptState", testStateStoreDistinguishesMissingAndCorruptState},

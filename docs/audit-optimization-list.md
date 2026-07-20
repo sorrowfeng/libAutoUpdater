@@ -222,7 +222,7 @@ likelihood of affecting production update flows.
     - Prefer exact index matches over wildcards and reject ambiguous routes.
     - Construct URLs using URI-aware path, query, and fragment handling.
 
-- [ ] **AU-015 — Report file-read and file-write failures accurately**
+- [x] **AU-015 — Report file-read and file-write failures accurately**
   - Classification: Verified medium-impact integrity and diagnostics defect.
   - Key code: `src/util/Sha256.cpp:163-183`,
     `src/default/StdFileSystem.cpp:75-84,140-145`, and network file writers.

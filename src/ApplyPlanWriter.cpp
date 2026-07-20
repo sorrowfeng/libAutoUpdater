@@ -4,6 +4,9 @@
 #include "util/PathUtil.h"
 #include "util/Sha256.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <sstream>
 
 namespace autoupdater {
@@ -56,8 +59,7 @@ Result<void> validateRollbackRequestDirectory(const Config& config, const Pendin
         if (!requestDir) {
             return Result<void>::fail(requestDir.error());
         }
-        const auto privateStaging =
-            (installDir.value() / ".autoupdater" / "staging").lexically_normal();
+        const auto privateStaging = (installDir.value() / ".autoupdater" / "staging").lexically_normal();
         auto sourceBackup = resolvedPath(pending.backupDir, "the forward rollback backup directory");
         if (!sourceBackup) {
             return Result<void>::fail(sourceBackup.error());
@@ -78,14 +80,62 @@ Result<void> validateRollbackRequestDirectory(const Config& config, const Pendin
         if (isSameOrDescendant(requestDir.value(), sourceBackup.value()) ||
             isSameOrDescendant(requestDir.value(), undoBackup.value())) {
             return Result<void>::fail(
-                {ErrorCode::InvalidConfig,
-                 "Rollback request directory cannot overlap rollback backup evidence"});
+                {ErrorCode::InvalidConfig, "Rollback request directory cannot overlap rollback backup evidence"});
         }
         return Result<void>::ok();
     } catch (...) {
-        return Result<void>::fail(
-            {ErrorCode::InvalidConfig, "Failed to validate the rollback request directory"});
+        return Result<void>::fail({ErrorCode::InvalidConfig, "Failed to validate the rollback request directory"});
     }
+}
+
+Result<void> verifyPublishedPlan(IRootedDirectory& root, const std::string& fileName,
+                                 const RootedFileMetadata& preparedMetadata, const std::string& contents) {
+    auto opened = root.openRegularFile(fileName, RootedFileOpenMode::ReadOnly);
+    if (!opened) {
+        return Result<void>::fail(opened.error());
+    }
+    if (!opened.value().exists()) {
+        return Result<void>::fail({ErrorCode::FileSystemError, "Published apply plan is missing"});
+    }
+    const auto failOpened = [&](Error error) {
+        auto closed = opened.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close published apply plan: " + closed.error().message;
+        }
+        return Result<void>::fail(std::move(error));
+    };
+    auto metadata = opened.value().file->metadata();
+    if (!metadata) {
+        return failOpened(metadata.error());
+    }
+    if (metadata.value().identity != preparedMetadata.identity || metadata.value().size != contents.size()) {
+        return failOpened({ErrorCode::SecurityPolicyViolation, "Published apply plan identity or size changed"});
+    }
+    auto rewound = opened.value().file->seek(0);
+    if (!rewound) {
+        return failOpened(rewound.error());
+    }
+    std::array<char, 64 * 1024> buffer{};
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        auto read = opened.value().file->read(buffer.data(), std::min(buffer.size(), contents.size() - offset));
+        if (!read) {
+            return failOpened(read.error());
+        }
+        if (read.value() == 0 || std::memcmp(buffer.data(), contents.data() + offset, read.value()) != 0) {
+            return failOpened({ErrorCode::SecurityPolicyViolation, "Published apply plan contents changed"});
+        }
+        offset += read.value();
+    }
+    auto finalMetadata = opened.value().file->metadata();
+    if (!finalMetadata) {
+        return failOpened(finalMetadata.error());
+    }
+    if (finalMetadata.value().identity != metadata.value().identity ||
+        finalMetadata.value().size != metadata.value().size) {
+        return failOpened({ErrorCode::SecurityPolicyViolation, "Published apply plan changed while being read"});
+    }
+    return opened.value().file->close();
 }
 
 Result<WrittenApplyPlan> writePlanFile(ApplyPlan plan, const std::filesystem::path& directory,
@@ -116,22 +166,69 @@ Result<WrittenApplyPlan> writePlanFile(ApplyPlan plan, const std::filesystem::pa
     if (existing.value().exists()) {
         auto metadata = existing.value().file->metadata();
         if (!metadata) {
-            return Result<WrittenApplyPlan>::fail(metadata.error());
+            auto error = metadata.error();
+            auto closed = existing.value().file->close();
+            if (!closed) {
+                error.message += "; failed to close apply-plan target: " + closed.error().message;
+            }
+            return Result<WrittenApplyPlan>::fail(std::move(error));
         }
         expectation = RootedEntryExpectation::matching(metadata.value());
+        auto closed = existing.value().file->close();
+        if (!closed) {
+            return Result<WrittenApplyPlan>::fail(closed.error());
+        }
     }
-    existing.value().file.reset();
     auto temporary = root.value()->createAtomicReplacement(fileName);
     if (!temporary) {
         return Result<WrittenApplyPlan>::fail(temporary.error());
     }
     auto write = temporary.value()->file().write(json.data(), json.size());
     if (!write) {
-        return Result<WrittenApplyPlan>::fail(write.error());
+        auto error = write.error();
+        auto discarded = temporary.value()->discard();
+        if (!discarded) {
+            error.message += "; failed to discard incomplete apply plan: " + discarded.error().message;
+        }
+        return Result<WrittenApplyPlan>::fail(std::move(error));
+    }
+    auto preparedMetadata = temporary.value()->file().metadata();
+    if (!preparedMetadata) {
+        auto error = preparedMetadata.error();
+        auto discarded = temporary.value()->discard();
+        if (!discarded) {
+            error.message += "; failed to discard invalid apply plan: " + discarded.error().message;
+        }
+        return Result<WrittenApplyPlan>::fail(std::move(error));
     }
     auto committed = temporary.value()->commit(expectation);
+    auto discarded = temporary.value()->discard();
+    const auto publication = temporary.value()->publishStatus();
     if (!committed) {
-        return Result<WrittenApplyPlan>::fail(committed.error());
+        auto error = committed.error();
+        if (!discarded) {
+            error.message += "; failed to finish apply-plan cleanup: " + discarded.error().message;
+            return Result<WrittenApplyPlan>::fail(std::move(error));
+        }
+        if (publication.publication == RootedPublication::NotPublished || !publication.namespaceDurable ||
+            !publication.failureCanBeReconciled) {
+            return Result<WrittenApplyPlan>::fail(std::move(error));
+        }
+        temporary.value().reset();
+        auto reconciled = verifyPublishedPlan(*root.value(), fileName, preparedMetadata.value(), json);
+        if (!reconciled) {
+            error.message += "; failed to reconcile apply-plan publication: " + reconciled.error().message;
+            return Result<WrittenApplyPlan>::fail(std::move(error));
+        }
+    } else {
+        if (!discarded) {
+            return Result<WrittenApplyPlan>::fail(discarded.error());
+        }
+        temporary.value().reset();
+        auto verified = verifyPublishedPlan(*root.value(), fileName, preparedMetadata.value(), json);
+        if (!verified) {
+            return Result<WrittenApplyPlan>::fail(verified.error());
+        }
     }
 
     WrittenApplyPlan written;
@@ -193,8 +290,7 @@ Result<WrittenApplyPlan> writeRollbackRequestPlan(const Config& config, const Pe
         return Result<WrittenApplyPlan>::fail(
             {ErrorCode::ApplyFailed, "The latest completed transaction does not match the pending update"});
     }
-    auto validRequestDirectory =
-        validateRollbackRequestDirectory(config, pending, terminal.value()->transactionId);
+    auto validRequestDirectory = validateRollbackRequestDirectory(config, pending, terminal.value()->transactionId);
     if (!validRequestDirectory) {
         return Result<WrittenApplyPlan>::fail(validRequestDirectory.error());
     }

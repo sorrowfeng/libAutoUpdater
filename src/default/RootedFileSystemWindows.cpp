@@ -5,6 +5,7 @@
 #include "util/PathUtil.h"
 #include "util/Sha256.h"
 
+#include <aclapi.h>
 #include <windows.h>
 #include <winternl.h>
 
@@ -102,10 +103,22 @@ class Handle {
         return std::exchange(value_, INVALID_HANDLE_VALUE);
     }
 
-    void reset(HANDLE value = INVALID_HANDLE_VALUE) noexcept {
-        if (*this) {
-            CloseHandle(value_);
+    Result<void> close() noexcept {
+        if (!*this) {
+            return Result<void>::ok();
         }
+        const HANDLE handle = std::exchange(value_, INVALID_HANDLE_VALUE);
+        if (!CloseHandle(handle)) {
+            const DWORD code = GetLastError();
+            return Result<void>::fail(
+                {ErrorCode::FileSystemError,
+                 "Failed to close rooted handle: " + std::system_category().message(static_cast<int>(code))});
+        }
+        return Result<void>::ok();
+    }
+
+    void reset(HANDLE value = INVALID_HANDLE_VALUE) noexcept {
+        (void)close();
         value_ = value;
     }
 
@@ -121,6 +134,11 @@ Result<void> windowsFailure(const std::string& action, DWORD code = GetLastError
 template <class T> Result<T> windowsFailureValue(const std::string& action, DWORD code = GetLastError()) {
     return Result<T>::fail(
         {ErrorCode::FileSystemError, action + ": " + std::system_category().message(static_cast<int>(code))});
+}
+
+Error appendWindowsSecondary(Error primary, const std::string& context, const Error& secondary) {
+    primary.message += "; " + context + ": " + secondary.message;
+    return primary;
 }
 
 DWORD statusToError(NTSTATUS status) {
@@ -460,6 +478,7 @@ std::wstring removalQuarantineName() {
 }
 
 class WindowsRootedDirectory;
+Result<void> copyDiscretionaryAcl(HANDLE source, HANDLE destination);
 
 class WindowsRootedFile final : public IRootedFile {
   public:
@@ -571,6 +590,23 @@ class WindowsRootedFile final : public IRootedFile {
         return Result<void>::ok();
     }
 
+    Result<void> copyPermissionsFrom(IRootedFile& source) noexcept override {
+        auto* windowsSource = dynamic_cast<WindowsRootedFile*>(&source);
+        if (!windowsSource) {
+            return Result<void>::fail(
+                {ErrorCode::SecurityPolicyViolation, "Permission source belongs to a different filesystem"});
+        }
+        auto copied = copyDiscretionaryAcl(windowsSource->handle(), file_.get());
+        if (copied) {
+            copiedPermissions_ = true;
+        }
+        return copied;
+    }
+
+    Result<void> close() noexcept override {
+        return deleteOnDestroy_ ? discardTemporary() : closeHandles();
+    }
+
     WindowsRootedDirectory* owner() const noexcept {
         return owner_;
     }
@@ -583,18 +619,121 @@ class WindowsRootedFile final : public IRootedFile {
     const std::wstring& name() const noexcept {
         return name_;
     }
-    void markCommitted() noexcept {
+    void markPublished(bool durable) noexcept {
         deleteOnDestroy_ = false;
+        publishStatus_ = {RootedPublication::Published, durable, false};
+    }
+    void markUnknown(bool failureCanBeReconciled = false) noexcept {
+        deleteOnDestroy_ = false;
+        publishStatus_ = {RootedPublication::Unknown, false, failureCanBeReconciled};
+    }
+    void markFailureReconcilable() noexcept {
+        if (publishStatus_.publication != RootedPublication::NotPublished) {
+            publishStatus_.failureCanBeReconciled = true;
+        }
+    }
+    RootedPublishStatus publishStatus() const noexcept {
+        return publishStatus_;
+    }
+    bool hasCopiedPermissions() const noexcept {
+        return copiedPermissions_;
+    }
+    Result<void> discardTemporary() noexcept {
+        Error primary;
+        bool failed = false;
+        const auto recordFailure = [&](const std::string& context, const Error& error) {
+            if (!failed) {
+                primary = error;
+                failed = true;
+            } else {
+                primary.message += "; " + context + ": " + error.message;
+            }
+        };
+
+        bool requestedDeletion = false;
+        if (deleteOnDestroy_ && file_) {
+            FILE_DISPOSITION_INFO disposition{};
+            disposition.DeleteFile = TRUE;
+            if (!SetFileInformationByHandle(file_.get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
+                return windowsFailure("Failed to discard rooted temporary file");
+            }
+            deleteOnDestroy_ = false;
+            requestedDeletion = true;
+        }
+        auto fileClosed = file_.close();
+        if (!fileClosed) {
+            recordFailure("failed to close rooted temporary file", fileClosed.error());
+        }
+        const bool needsNamespaceFlush =
+            requestedDeletion ||
+            (publishStatus_.publication != RootedPublication::NotPublished && !publishStatus_.namespaceDurable);
+        if (needsNamespaceFlush && parent_) {
+            if (!FlushFileBuffers(parent_.get())) {
+                const DWORD code = GetLastError();
+                recordFailure("failed to persist rooted temporary cleanup",
+                              windowsFailure("Failed to persist rooted temporary cleanup", code).error());
+            } else {
+                publishStatus_.namespaceDurable = true;
+            }
+        }
+        auto parentClosed = parent_.close();
+        if (!parentClosed) {
+            recordFailure("failed to close rooted temporary parent", parentClosed.error());
+        }
+        return failed ? Result<void>::fail(std::move(primary)) : Result<void>::ok();
     }
 
   private:
+    Result<void> closeHandles() noexcept {
+        auto fileClosed = file_.close();
+        auto parentClosed = parent_.close();
+        if (!fileClosed) {
+            auto error = fileClosed.error();
+            if (!parentClosed) {
+                error.message += "; failed to close rooted file parent: " + parentClosed.error().message;
+            }
+            return Result<void>::fail(std::move(error));
+        }
+        return parentClosed;
+    }
+
     WindowsRootedDirectory* owner_ = nullptr;
     Handle file_;
     Handle parent_;
     std::wstring name_;
     bool deleteOnDestroy_ = false;
     bool protectWrites_ = false;
+    bool copiedPermissions_ = false;
+    RootedPublishStatus publishStatus_;
 };
+
+Result<void> copyDiscretionaryAcl(HANDLE source, HANDLE destination) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    PACL dacl = nullptr;
+    const DWORD queried = GetSecurityInfo(source, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                                          nullptr, &descriptor);
+    if (queried != ERROR_SUCCESS) {
+        return windowsFailure("Failed to read managed target DACL", queried);
+    }
+
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    if (!GetSecurityDescriptorControl(descriptor, &control, &revision)) {
+        const DWORD code = GetLastError();
+        LocalFree(descriptor);
+        return windowsFailure("Failed to inspect managed target DACL control", code);
+    }
+    (void)revision;
+    SECURITY_INFORMATION information = DACL_SECURITY_INFORMATION;
+    information |= (control & SE_DACL_PROTECTED) != 0 ? PROTECTED_DACL_SECURITY_INFORMATION
+                                                      : UNPROTECTED_DACL_SECURITY_INFORMATION;
+    const DWORD applied = SetSecurityInfo(destination, SE_FILE_OBJECT, information, nullptr, nullptr, dacl, nullptr);
+    LocalFree(descriptor);
+    if (applied != ERROR_SUCCESS) {
+        return windowsFailure("Failed to preserve managed target DACL", applied);
+    }
+    return Result<void>::ok();
+}
 
 Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, const std::wstring& targetName,
                               const RootedEntryExpectation& expectation) {
@@ -620,16 +759,19 @@ Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, co
             }
             return windowsFailure("Failed to install a previously missing managed target", statusToError(status));
         }
-        source.markCommitted();
+        source.markPublished(false);
         if (!FlushFileBuffers(targetParent)) {
+            source.markFailureReconcilable();
             return windowsFailure("Failed to persist installed managed target");
         }
+        source.markPublished(true);
         return Result<void>::ok();
     }
 
     Handle existing;
-    const auto opened = createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE, FILE_OPEN,
-                                       FILE_NON_DIRECTORY_FILE, existing, 0);
+    const auto opened =
+        createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE, FILE_OPEN,
+                       FILE_NON_DIRECTORY_FILE, existing, 0);
     if (opened < 0) {
         if (isMissingStatus(opened)) {
             return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed target changed before commit"});
@@ -648,14 +790,18 @@ Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, co
         return Result<void>::fail(
             {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before commit"});
     }
-    existing.reset();
+    auto exclusiveClosed = existing.close();
+    if (!exclusiveClosed) {
+        return exclusiveClosed;
+    }
 
     // FileRenameInformationEx needs the destination to share delete access.
     // First taking an exclusive handle above rejects existing competing
     // writers/deleters; reopen immediately before the single atomic rename and
     // revalidate identity so a stale expectation is never knowingly applied.
-    const auto guarded = createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
-                                        FILE_OPEN, FILE_NON_DIRECTORY_FILE, existing, FILE_SHARE_DELETE);
+    const auto guarded =
+        createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE, FILE_OPEN,
+                       FILE_NON_DIRECTORY_FILE, existing, FILE_SHARE_DELETE);
     if (guarded < 0) {
         return windowsFailure("Failed to guard managed target for atomic replacement", statusToError(guarded));
     }
@@ -672,43 +818,124 @@ Result<void> renameOpenedFile(WindowsRootedFile& source, HANDLE targetParent, co
             {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before atomic replacement"});
     }
 
+    if (!source.hasCopiedPermissions()) {
+        auto aclCopied = copyDiscretionaryAcl(existing.get(), source.handle());
+        if (!aclCopied) {
+            return aclCopied;
+        }
+        auto aclFlushed = source.flush();
+        if (!aclFlushed) {
+            return aclFlushed;
+        }
+    }
+
     const auto installed = replaceHandleRelative(source.handle(), targetParent, targetName);
     if (installed < 0) {
         return windowsFailure("Failed to atomically replace managed target", statusToError(installed));
     }
 
-    source.markCommitted();
+    source.markPublished(false);
     FILE_STANDARD_INFO displacedInformation{};
     if (!GetFileInformationByHandleEx(existing.get(), FileStandardInfo, &displacedInformation,
                                       sizeof(displacedInformation))) {
-        return windowsFailure("Failed to verify displaced managed target");
+        const DWORD code = GetLastError();
+        auto error = windowsFailure("Failed to verify displaced managed target", code).error();
+        auto closed = existing.close();
+        if (!closed) {
+            error =
+                appendWindowsSecondary(std::move(error), "failed to close displaced managed target", closed.error());
+        }
+        return Result<void>::fail(std::move(error));
     }
     if (!displacedInformation.DeletePending) {
-        return Result<void>::fail(
-            {ErrorCode::SecurityPolicyViolation, "Managed target changed during atomic replacement"});
+        Error error{ErrorCode::SecurityPolicyViolation, "Managed target changed during atomic replacement"};
+        auto closed = existing.close();
+        if (!closed) {
+            error =
+                appendWindowsSecondary(std::move(error), "failed to close displaced managed target", closed.error());
+        }
+        return Result<void>::fail(std::move(error));
     }
 
     Handle namedInstalled;
     const auto namedStatus = createRelative(targetParent, targetName, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN,
                                             FILE_NON_DIRECTORY_FILE, namedInstalled);
     if (namedStatus < 0) {
-        return windowsFailure("Failed to verify atomically installed target", statusToError(namedStatus));
+        auto error = windowsFailure("Failed to verify atomically installed target", statusToError(namedStatus)).error();
+        auto displacedClosed = existing.close();
+        if (!displacedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close displaced managed target",
+                                           displacedClosed.error());
+        }
+        source.markUnknown(static_cast<bool>(displacedClosed));
+        return Result<void>::fail(std::move(error));
     }
     auto sourceIdentity = fileIdentity(source.handle());
     if (!sourceIdentity) {
-        return Result<void>::fail(sourceIdentity.error());
+        auto error = sourceIdentity.error();
+        auto namedClosed = namedInstalled.close();
+        if (!namedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close installed managed target",
+                                           namedClosed.error());
+        }
+        auto displacedClosed = existing.close();
+        if (!displacedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close displaced managed target",
+                                           displacedClosed.error());
+        }
+        if (namedClosed && displacedClosed) {
+            source.markFailureReconcilable();
+        }
+        return Result<void>::fail(std::move(error));
     }
     auto namedIdentity = fileIdentity(namedInstalled.get());
     if (!namedIdentity) {
-        return Result<void>::fail(namedIdentity.error());
+        auto error = namedIdentity.error();
+        auto namedClosed = namedInstalled.close();
+        if (!namedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close installed managed target",
+                                           namedClosed.error());
+        }
+        auto displacedClosed = existing.close();
+        if (!displacedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close displaced managed target",
+                                           displacedClosed.error());
+        }
+        if (namedClosed && displacedClosed) {
+            source.markFailureReconcilable();
+        }
+        return Result<void>::fail(std::move(error));
     }
     if (sourceIdentity.value() != namedIdentity.value()) {
-        return Result<void>::fail(
-            {ErrorCode::SecurityPolicyViolation, "Installed target changed during atomic replacement"});
+        source.markUnknown();
+        Error error{ErrorCode::SecurityPolicyViolation, "Installed target changed during atomic replacement"};
+        auto namedClosed = namedInstalled.close();
+        if (!namedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close installed managed target",
+                                           namedClosed.error());
+        }
+        auto displacedClosed = existing.close();
+        if (!displacedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close displaced managed target",
+                                           displacedClosed.error());
+        }
+        return Result<void>::fail(std::move(error));
+    }
+    auto namedClosed = namedInstalled.close();
+    auto displacedClosed = existing.close();
+    if (!namedClosed || !displacedClosed) {
+        Error error = !namedClosed ? namedClosed.error() : displacedClosed.error();
+        if (!namedClosed && !displacedClosed) {
+            error = appendWindowsSecondary(std::move(error), "failed to close displaced managed target",
+                                           displacedClosed.error());
+        }
+        return Result<void>::fail(std::move(error));
     }
     if (!FlushFileBuffers(targetParent)) {
+        source.markFailureReconcilable();
         return windowsFailure("Failed to persist atomically replaced managed target");
     }
+    source.markPublished(true);
     return Result<void>::ok();
 }
 
@@ -716,12 +943,21 @@ class WindowsTemporaryFile final : public IRootedTemporaryFile {
   public:
     WindowsTemporaryFile(WindowsRootedDirectory& root, std::unique_ptr<WindowsRootedFile> file, std::string target)
         : root_(root), file_(std::move(file)), target_(std::move(target)) {}
+    ~WindowsTemporaryFile() override {
+        (void)discard();
+    }
 
     IRootedFile& file() noexcept override {
         return *file_;
     }
 
     Result<void> commit(const RootedEntryExpectation& expectation) noexcept override;
+    RootedPublishStatus publishStatus() const noexcept override {
+        return file_->publishStatus();
+    }
+    Result<void> discard() noexcept override {
+        return file_->discardTemporary();
+    }
 
   private:
     WindowsRootedDirectory& root_;
@@ -766,9 +1002,9 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 return Result<RootedOpenResult>::ok({});
             }
 
-            ACCESS_MASK desired = FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+            ACCESS_MASK desired = FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
             if (writing) {
-                desired |= FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | DELETE;
+                desired |= FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | WRITE_DAC | DELETE;
             }
             Handle file;
             const auto status = createRelative(parent.value().get(), components.value().back(), desired,
@@ -837,7 +1073,7 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 const auto status =
                     createRelative(parent.value().get(), temporaryName,
                                    FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_READ_ATTRIBUTES |
-                                       FILE_WRITE_ATTRIBUTES | DELETE | SYNCHRONIZE,
+                                       FILE_WRITE_ATTRIBUTES | READ_CONTROL | WRITE_DAC | DELETE | SYNCHRONIZE,
                                    FILE_CREATE, FILE_NON_DIRECTORY_FILE, file, 0);
                 if (status == kStatusObjectNameCollision) {
                     continue;
@@ -912,27 +1148,56 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 }
                 return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed remove target disappeared"});
             }
+            const auto finishParent = [&](Result<void> operation) {
+                auto parentClosed = parent.value().close();
+                if (!operation) {
+                    auto error = operation.error();
+                    if (!parentClosed) {
+                        error.message +=
+                            "; failed to close managed remove target parent: " + parentClosed.error().message;
+                    }
+                    return Result<void>::fail(std::move(error));
+                }
+                return parentClosed;
+            };
             Handle file;
             const auto status = createRelative(parent.value().get(), components.value().back(),
                                                FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE, FILE_OPEN,
                                                FILE_NON_DIRECTORY_FILE, file, 0);
             if (status < 0) {
                 if (isMissingStatus(status) && expectation.kind == RootedEntryExpectationKind::Missing) {
-                    return Result<void>::ok();
+                    if (!FlushFileBuffers(parent.value().get())) {
+                        return finishParent(windowsFailure("Failed to persist absent managed removal target"));
+                    }
+                    return finishParent(Result<void>::ok());
                 }
-                return windowsFailure("Failed to open managed file for removal", statusToError(status));
+                return finishParent(windowsFailure("Failed to open managed file for removal", statusToError(status)));
             }
+            const auto finishFileAndParent = [&](Result<void> operation) {
+                auto fileClosed = file.close();
+                if (!operation) {
+                    auto error = operation.error();
+                    if (!fileClosed) {
+                        error.message += "; failed to close managed remove target: " + fileClosed.error().message;
+                    }
+                    return finishParent(Result<void>::fail(std::move(error)));
+                }
+                if (!fileClosed) {
+                    return finishParent(Result<void>::fail(fileClosed.error()));
+                }
+                return finishParent(Result<void>::ok());
+            };
             auto checked = ensureRegularHandle(file.get(), "Managed remove target");
             if (!checked) {
-                return checked;
+                return finishFileAndParent(checked);
             }
             auto identity = fileIdentity(file.get());
             if (!identity) {
-                return Result<void>::fail(identity.error());
+                return finishFileAndParent(Result<void>::fail(identity.error()));
             }
             if (expectation.kind != RootedEntryExpectationKind::Identity || identity.value() != expectation.identity) {
-                return Result<void>::fail(
-                    {ErrorCode::SecurityPolicyViolation, "Managed remove target identity changed"});
+                return finishFileAndParent(
+                    Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed remove target identity changed"}));
             }
             bool quarantined = false;
             for (int attempt = 0; attempt < 32; ++attempt) {
@@ -943,15 +1208,16 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                     break;
                 }
                 if (renamed != kStatusObjectNameCollision) {
-                    return windowsFailure("Failed to quarantine managed removal target", statusToError(renamed));
+                    return finishFileAndParent(
+                        windowsFailure("Failed to quarantine managed removal target", statusToError(renamed)));
                 }
             }
             if (!quarantined) {
-                return Result<void>::fail(
-                    {ErrorCode::FileSystemError, "Failed to allocate a managed removal quarantine name"});
+                return finishFileAndParent(Result<void>::fail(
+                    {ErrorCode::FileSystemError, "Failed to allocate a managed removal quarantine name"}));
             }
             if (!FlushFileBuffers(parent.value().get())) {
-                return windowsFailure("Failed to persist managed removal namespace change");
+                return finishFileAndParent(windowsFailure("Failed to persist managed removal namespace change"));
             }
             FILE_DISPOSITION_INFO disposition{};
             disposition.DeleteFile = TRUE;
@@ -959,9 +1225,16 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 // The requested target name is already durably absent. Report
                 // cleanup failure so the journal can reconcile; the uniquely
                 // named private quarantine may safely remain for later GC.
-                return windowsFailure("Failed to clean managed removal quarantine");
+                return finishFileAndParent(windowsFailure("Failed to clean managed removal quarantine"));
             }
-            return Result<void>::ok();
+            auto fileClosed = file.close();
+            if (!fileClosed) {
+                return finishParent(Result<void>::fail(fileClosed.error()));
+            }
+            if (!FlushFileBuffers(parent.value().get())) {
+                return finishParent(windowsFailure("Failed to persist managed removal quarantine cleanup"));
+            }
+            return finishParent(Result<void>::ok());
         } catch (...) {
             return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected rooted removal failure"});
         }
@@ -988,8 +1261,8 @@ class WindowsRootedDirectory final : public IRootedDirectory {
                 // access alone allowed multiple processes to believe they held
                 // this lock concurrently.
                 createRelative(parent.value().get(), components.value().back(),
-                               FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                               FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE, lock, 0);
+                               FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN_IF,
+                               FILE_NON_DIRECTORY_FILE, lock, 0);
             if (status == kStatusSharingViolation || status == kStatusFileIsADirectory) {
                 return Result<std::unique_ptr<IRootedLock>>::fail(
                     {ErrorCode::ApplyFailed, "Another update appears to be running"});

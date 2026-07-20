@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 
 namespace autoupdater::detail {
 
@@ -32,6 +33,7 @@ Result<TextResponse> readLocalText(const std::string& url, std::uint64_t maxResp
         return Result<TextResponse>::fail(path.error());
     }
 
+    std::filebuf file;
     try {
         std::error_code error;
         const auto declaredSize = std::filesystem::file_size(path.value(), error);
@@ -43,39 +45,58 @@ Result<TextResponse> readLocalText(const std::string& url, std::uint64_t maxResp
                 {ErrorCode::ResourceLimitExceeded, "Local response exceeds its byte limit"});
         }
 
-        std::ifstream input(path.value(), std::ios::binary);
-        if (!input) {
+        if (!file.open(path.value(), std::ios::in | std::ios::binary)) {
             return Result<TextResponse>::fail({ErrorCode::ManifestDownloadFailed, "Failed to open local source"});
         }
+        std::istream input(&file);
 
         TextResponse response;
         response.response.statusCode = 200;
         response.response.effectiveUrl = url;
         std::array<char, 64 * 1024> buffer{};
         std::uint64_t consumed = 0;
+        std::optional<Error> failure;
         for (;;) {
             if (cancel.isCancelled()) {
-                return Result<TextResponse>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+                failure = Error{ErrorCode::Cancelled, "Operation cancelled"};
+                break;
             }
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
             const auto count = input.gcount();
-            if (count <= 0) {
+            if (count > 0) {
+                const auto bytes = static_cast<std::uint64_t>(count);
+                if (bytes > maxResponseBytes - consumed) {
+                    failure = Error{ErrorCode::ResourceLimitExceeded, "Local response exceeds its byte limit"};
+                    break;
+                }
+                response.body.append(buffer.data(), static_cast<std::size_t>(count));
+                consumed += bytes;
+            }
+            if (input.bad() || (input.fail() && !input.eof())) {
+                failure = Error{ErrorCode::NetworkError, "Failed to read local source"};
                 break;
             }
-            const auto bytes = static_cast<std::uint64_t>(count);
-            if (bytes > maxResponseBytes - consumed) {
-                return Result<TextResponse>::fail(
-                    {ErrorCode::ResourceLimitExceeded, "Local response exceeds its byte limit"});
+            if (input.eof()) {
+                break;
             }
-            response.body.append(buffer.data(), static_cast<std::size_t>(count));
-            consumed += bytes;
         }
-        if (input.bad()) {
-            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        const bool closed = file.close() != nullptr;
+        if (failure) {
+            if (!closed) {
+                failure->message += "; failed to close local source";
+            }
+            return Result<TextResponse>::fail(std::move(*failure));
+        }
+        if (!closed) {
+            return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to close local source"});
         }
         return Result<TextResponse>::ok(std::move(response));
     } catch (...) {
-        return Result<TextResponse>::fail({ErrorCode::NetworkError, "Failed to read local source"});
+        Error error{ErrorCode::NetworkError, "Failed to read local source"};
+        if (file.is_open() && file.close() == nullptr) {
+            error.message += "; failed to close local source";
+        }
+        return Result<TextResponse>::fail(std::move(error));
     }
 }
 
@@ -87,6 +108,7 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& targ
         return Result<DownloadResult>::fail(source.error());
     }
 
+    std::filebuf file;
     try {
         const auto initialBytes = resume ? resume->offset : 0;
         auto remaining = remainingTransferBudget(initialBytes, maxTotalBytes);
@@ -108,41 +130,64 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& targ
                 {ErrorCode::ResourceLimitExceeded, "Local artifact exceeds its signed byte limit"});
         }
 
-        std::ifstream input(source.value(), std::ios::binary);
+        if (!file.open(source.value(), std::ios::in | std::ios::binary)) {
+            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
+        }
+        std::istream input(&file);
         if (initialBytes > 0) {
             input.seekg(static_cast<std::streamoff>(initialBytes), std::ios::beg);
         }
         if (!input) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to open local source"});
+            Error seekError{ErrorCode::DownloadFailed, "Failed to seek local source"};
+            if (file.close() == nullptr) {
+                seekError.message += "; failed to close local source";
+            }
+            return Result<DownloadResult>::fail(std::move(seekError));
         }
 
         std::array<char, 64 * 1024> buffer{};
         std::uint64_t written = initialBytes;
+        std::optional<Error> failure;
         for (;;) {
             if (cancel.isCancelled()) {
-                return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+                failure = Error{ErrorCode::Cancelled, "Operation cancelled"};
+                break;
             }
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
             const auto count = input.gcount();
-            if (count <= 0) {
+            if (count > 0) {
+                const auto bytes = static_cast<std::uint64_t>(count);
+                if (bytes > maxTotalBytes - written) {
+                    failure = Error{ErrorCode::ResourceLimitExceeded, "Local artifact exceeds its signed byte limit"};
+                    break;
+                }
+                auto result = target.write(buffer.data(), static_cast<std::size_t>(count));
+                if (!result) {
+                    failure = result.error();
+                    break;
+                }
+                written += bytes;
+                if (progress) {
+                    progress({written, maxTotalBytes, {}});
+                }
+            }
+            if (input.bad() || (input.fail() && !input.eof())) {
+                failure = Error{ErrorCode::DownloadFailed, "Failed to read local source"};
                 break;
             }
-            const auto bytes = static_cast<std::uint64_t>(count);
-            if (bytes > maxTotalBytes - written) {
-                return Result<DownloadResult>::fail(
-                    {ErrorCode::ResourceLimitExceeded, "Local artifact exceeds its signed byte limit"});
-            }
-            auto result = target.write(buffer.data(), static_cast<std::size_t>(count));
-            if (!result) {
-                return Result<DownloadResult>::fail(result.error());
-            }
-            written += bytes;
-            if (progress) {
-                progress({written, maxTotalBytes, {}});
+            if (input.eof()) {
+                break;
             }
         }
-        if (input.bad()) {
-            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to read local source"});
+        const bool closed = file.close() != nullptr;
+        if (failure) {
+            if (!closed) {
+                failure->message += "; failed to close local source";
+            }
+            return Result<DownloadResult>::fail(std::move(*failure));
+        }
+        if (!closed) {
+            return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to close local source"});
         }
 
         DownloadResult result;
@@ -151,7 +196,11 @@ Result<DownloadResult> copyLocalToFile(const std::string& url, IRootedFile& targ
         result.bytesWritten = written;
         return Result<DownloadResult>::ok(std::move(result));
     } catch (...) {
-        return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, "Failed to copy local source"});
+        Error error{ErrorCode::DownloadFailed, "Failed to copy local source"};
+        if (file.is_open() && file.close() == nullptr) {
+            error.message += "; failed to close local source";
+        }
+        return Result<DownloadResult>::fail(std::move(error));
     }
 }
 

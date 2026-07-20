@@ -77,6 +77,11 @@ class BoundedRootedFile final : public IRootedFile {
         return delegate_.setPermissions(permissions);
     }
 
+    Result<void> close() noexcept override {
+        // This bounded view borrows the destination from DownloadExecutor.
+        return Result<void>::ok();
+    }
+
     bool limitExceeded() const noexcept {
         return limitExceeded_;
     }

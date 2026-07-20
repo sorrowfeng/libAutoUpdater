@@ -91,6 +91,10 @@ class MemoryRootedFile final : public autoupdater::IRootedFile {
         return autoupdater::Result<void>::ok();
     }
 
+    autoupdater::Result<void> close() noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
     const std::string& contents() const noexcept {
         return contents_;
     }

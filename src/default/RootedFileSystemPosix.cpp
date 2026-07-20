@@ -80,10 +80,20 @@ class FileDescriptor {
     explicit operator bool() const noexcept {
         return value_ >= 0;
     }
-    void reset(int value = -1) noexcept {
-        if (value_ >= 0) {
-            ::close(value_);
+    Result<void> close() noexcept {
+        if (value_ < 0) {
+            return Result<void>::ok();
         }
+        const int descriptor = std::exchange(value_, -1);
+        if (::close(descriptor) != 0) {
+            const int code = errno;
+            return Result<void>::fail({ErrorCode::FileSystemError,
+                                       "Failed to close rooted descriptor: " + std::generic_category().message(code)});
+        }
+        return Result<void>::ok();
+    }
+    void reset(int value = -1) noexcept {
+        (void)close();
         value_ = value;
     }
 
@@ -436,7 +446,10 @@ Result<void> removeEntryWithIdentity(int parent, const std::string& name, const 
 }
 
 Result<void> renameNoReplace(int sourceParent, const std::string& sourceName, int targetParent,
-                             const std::string& targetName, const std::string& context) {
+                             const std::string& targetName, const std::string& context, bool* renamed = nullptr) {
+    if (renamed) {
+        *renamed = false;
+    }
 #if defined(__linux__)
 #if defined(SYS_renameat2)
     const long result = ::syscall(SYS_renameat2, sourceParent, sourceName.c_str(), targetParent, targetName.c_str(),
@@ -449,10 +462,16 @@ Result<void> renameNoReplace(int sourceParent, const std::string& sourceName, in
     errno = ENOTSUP;
 #endif
     if (result == 0) {
+        if (renamed) {
+            *renamed = true;
+        }
         return syncNamespaceMutation(targetParent, sourceParent, context);
     }
 #elif defined(__APPLE__)
     if (::renameatx_np(sourceParent, sourceName.c_str(), targetParent, targetName.c_str(), RENAME_EXCL) == 0) {
+        if (renamed) {
+            *renamed = true;
+        }
         return syncNamespaceMutation(targetParent, sourceParent, context);
     }
 #else
@@ -476,7 +495,10 @@ Result<void> renameNoReplace(int sourceParent, const std::string& sourceName, in
 }
 
 Result<void> exchangeEntries(int leftParent, const std::string& leftName, int rightParent, const std::string& rightName,
-                             const std::string& context) {
+                             const std::string& context, bool* exchanged = nullptr) {
+    if (exchanged) {
+        *exchanged = false;
+    }
 #if defined(__linux__)
 #if defined(SYS_renameat2)
     const long result = ::syscall(SYS_renameat2, leftParent, leftName.c_str(), rightParent, rightName.c_str(),
@@ -489,10 +511,16 @@ Result<void> exchangeEntries(int leftParent, const std::string& leftName, int ri
     errno = ENOTSUP;
 #endif
     if (result == 0) {
+        if (exchanged) {
+            *exchanged = true;
+        }
         return syncNamespaceMutation(rightParent, leftParent, context);
     }
 #elif defined(__APPLE__)
     if (::renameatx_np(leftParent, leftName.c_str(), rightParent, rightName.c_str(), RENAME_SWAP) == 0) {
+        if (exchanged) {
+            *exchanged = true;
+        }
         return syncNamespaceMutation(rightParent, leftParent, context);
     }
 #else
@@ -575,8 +603,11 @@ class PrivateNamespace {
         }
         if (::fstatat(parent_.get(), name_.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
             if (errno == ENOENT) {
-                cleaned_ = true;
-                return syncDirectory(parent_.get(), "private temporary namespace parent");
+                auto synced = syncDirectory(parent_.get(), "private temporary namespace parent");
+                if (synced) {
+                    cleaned_ = true;
+                }
+                return synced;
             }
             return posixFailure("Failed to inspect private temporary namespace name");
         }
@@ -587,8 +618,24 @@ class PrivateNamespace {
         if (::unlinkat(parent_.get(), name_.c_str(), AT_REMOVEDIR) != 0) {
             return posixFailure("Failed to remove private temporary namespace");
         }
-        cleaned_ = true;
-        return syncDirectory(parent_.get(), "private temporary namespace parent");
+        auto synced = syncDirectory(parent_.get(), "private temporary namespace parent");
+        if (synced) {
+            cleaned_ = true;
+        }
+        return synced;
+    }
+
+    Result<void> close() noexcept {
+        auto directoryClosed = directory_.close();
+        auto parentClosed = parent_.close();
+        if (!directoryClosed) {
+            auto error = directoryClosed.error();
+            if (!parentClosed) {
+                error.message += "; failed to close temporary namespace parent: " + parentClosed.error().message;
+            }
+            return Result<void>::fail(std::move(error));
+        }
+        return parentClosed;
     }
 
   private:
@@ -761,6 +808,19 @@ class PosixRootedFile final : public IRootedFile {
         return Result<void>::ok();
     }
 
+    Result<void> close() noexcept override {
+        auto fileClosed = file_.close();
+        auto parentClosed = parent_.close();
+        if (!fileClosed) {
+            auto error = fileClosed.error();
+            if (!parentClosed) {
+                error.message += "; failed to close rooted file parent: " + parentClosed.error().message;
+            }
+            return Result<void>::fail(std::move(error));
+        }
+        return parentClosed;
+    }
+
     PosixRootedDirectory* owner() const noexcept {
         return owner_;
     }
@@ -775,6 +835,9 @@ class PosixRootedFile final : public IRootedFile {
     }
     void markCommitted() noexcept {
         deleteOnDestroy_ = false;
+    }
+    void markTemporary() noexcept {
+        deleteOnDestroy_ = true;
     }
 
   private:
@@ -793,17 +856,59 @@ class PosixTemporaryFile final : public IRootedTemporaryFile {
         : root_(root), file_(std::move(file)), target_(std::move(target)),
           temporaryNamespace_(std::move(temporaryNamespace)), payloadIdentity_(std::move(payloadIdentity)) {}
     ~PosixTemporaryFile() override {
-        if (payloadPresent_) {
-            (void)removeEntryWithIdentity(temporaryNamespace_.descriptor(), privatePayloadName, payloadIdentity_,
-                                          "private temporary payload");
-        }
-        (void)temporaryNamespace_.cleanupDirectory();
+        (void)discard();
     }
 
     IRootedFile& file() noexcept override {
         return *file_;
     }
     Result<void> commit(const RootedEntryExpectation& expectation) noexcept override;
+    RootedPublishStatus publishStatus() const noexcept override {
+        return publishStatus_;
+    }
+    Result<void> discard() noexcept override {
+        Error primary;
+        bool failed = false;
+        const auto recordFailure = [&](const std::string& context, const Error& error) {
+            if (!failed) {
+                primary = error;
+                failed = true;
+            } else {
+                primary.message += "; " + context + ": " + error.message;
+            }
+        };
+
+        if (payloadPresent_) {
+            bool removed = false;
+            auto payloadRemoved = removeEntryWithIdentity(temporaryNamespace_.descriptor(), privatePayloadName,
+                                                          payloadIdentity_, "private temporary payload", &removed);
+            if (removed || payloadRemoved) {
+                payloadPresent_ = false;
+                file_->markCommitted();
+            }
+            if (!payloadRemoved) {
+                recordFailure("failed to discard private temporary payload", payloadRemoved.error());
+            }
+        }
+
+        auto namespaceCleaned = temporaryNamespace_.cleanupDirectory();
+        if (!namespaceCleaned) {
+            recordFailure("failed to discard private temporary namespace", namespaceCleaned.error());
+        } else if (publishStatus_.publication != RootedPublication::Unknown) {
+            publishStatus_.namespaceDurable = true;
+        }
+        auto fileClosed = file_->close();
+        if (!fileClosed) {
+            recordFailure("failed to close private temporary payload", fileClosed.error());
+        }
+        if (namespaceCleaned) {
+            auto namespaceClosed = temporaryNamespace_.close();
+            if (!namespaceClosed) {
+                recordFailure("failed to close private temporary namespace", namespaceClosed.error());
+            }
+        }
+        return failed ? Result<void>::fail(std::move(primary)) : Result<void>::ok();
+    }
 
     PosixRootedFile& rootedFile() noexcept {
         return *file_;
@@ -824,6 +929,26 @@ class PosixTemporaryFile final : public IRootedTemporaryFile {
     void clearPayload() noexcept {
         payloadPresent_ = false;
     }
+    void restorePayload() noexcept {
+        payloadPresent_ = true;
+    }
+    void markPublished(bool durable) noexcept {
+        publishStatus_ = {RootedPublication::Published, durable, !durable};
+        file_->markCommitted();
+    }
+    void markRestored(bool durable) noexcept {
+        publishStatus_ = {RootedPublication::NotPublished, durable, false};
+        file_->markTemporary();
+    }
+    void markUnknown() noexcept {
+        publishStatus_ = {RootedPublication::Unknown, false, false};
+        file_->markCommitted();
+    }
+    void markFailureReconcilable() noexcept {
+        if (publishStatus_.publication != RootedPublication::NotPublished) {
+            publishStatus_.failureCanBeReconciled = true;
+        }
+    }
     Result<void> cleanupNamespace() noexcept {
         return temporaryNamespace_.cleanupDirectory();
     }
@@ -835,6 +960,7 @@ class PosixTemporaryFile final : public IRootedTemporaryFile {
     PrivateNamespace temporaryNamespace_;
     std::string payloadIdentity_;
     bool payloadPresent_ = true;
+    RootedPublishStatus publishStatus_;
 };
 
 Result<void> copyOpenedFile(IRootedFile& source, IRootedFile& target) {
@@ -1054,20 +1180,32 @@ class PosixRootedDirectory final : public IRootedDirectory {
             if (!temporary) {
                 return Result<void>::fail(temporary.error());
             }
+            const auto failTemporary = [&](Error error, const std::string& context) {
+                auto discarded = temporary.value()->discard();
+                if (!discarded) {
+                    error.message += "; " + context + ": " + discarded.error().message;
+                }
+                return Result<void>::fail(std::move(error));
+            };
             auto copied = copyOpenedFile(source, temporary.value()->file());
             if (!copied) {
-                return copied;
+                return failTemporary(copied.error(), "failed to discard incomplete rooted replacement");
             }
             constexpr auto permissionMask = std::filesystem::perms::owner_all | std::filesystem::perms::group_all |
                                             std::filesystem::perms::others_all;
             auto permissions =
                 temporary.value()->file().setPermissions(sourceMetadata.value().permissions & permissionMask);
             if (!permissions) {
-                return permissions;
+                return failTemporary(permissions.error(),
+                                     "failed to discard rooted replacement after permission error");
             }
             auto committed = temporary.value()->commit(expectation);
             if (!committed) {
-                return committed;
+                return failTemporary(committed.error(), "failed to finish rooted replacement cleanup");
+            }
+            auto discarded = temporary.value()->discard();
+            if (!discarded) {
+                return discarded;
             }
             return quarantineAndRemoveOpenedFile(*file, RootedEntryExpectation::matching(sourceMetadata.value()));
         } catch (...) {
@@ -1105,16 +1243,31 @@ class PosixRootedDirectory final : public IRootedDirectory {
                 return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed remove target disappeared"});
             }
             auto* file = dynamic_cast<PosixRootedFile*>(opened.value().file.get());
+            const auto finishOpened = [&](Result<void> operation) {
+                auto closed = opened.value().file->close();
+                if (!operation) {
+                    auto error = operation.error();
+                    if (!closed) {
+                        error.message += "; failed to close managed remove target: " + closed.error().message;
+                    }
+                    return Result<void>::fail(std::move(error));
+                }
+                return closed;
+            };
+            if (!file) {
+                return finishOpened(Result<void>::fail(
+                    {ErrorCode::InternalError, "Rooted remove target has an unexpected implementation"}));
+            }
             auto metadata = file->metadata();
             if (!metadata) {
-                return Result<void>::fail(metadata.error());
+                return finishOpened(Result<void>::fail(metadata.error()));
             }
             if (expectation.kind != RootedEntryExpectationKind::Identity ||
                 metadata.value().identity != expectation.identity) {
-                return Result<void>::fail(
-                    {ErrorCode::SecurityPolicyViolation, "Managed remove target identity changed"});
+                return finishOpened(
+                    Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Managed remove target identity changed"}));
             }
-            return quarantineAndRemoveOpenedFile(*file, expectation);
+            return finishOpened(quarantineAndRemoveOpenedFile(*file, expectation));
         } catch (...) {
             return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected rooted removal failure"});
         }
@@ -1250,18 +1403,30 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
 
         const auto& targetName = components.value().back();
         if (expectation.kind == RootedEntryExpectationKind::Missing) {
+            bool installedMutation = false;
             auto renamed = renameNoReplace(temporary.namespaceDescriptor(), privatePayloadName,
                                            temporary.namespaceParentDescriptor(), targetName,
-                                           "Failed to install a previously missing managed target");
+                                           "Failed to install a previously missing managed target", &installedMutation);
+            if (installedMutation) {
+                temporary.clearPayload();
+                temporary.markPublished(static_cast<bool>(renamed));
+            }
             if (!renamed) {
                 return renamed;
             }
             auto installed = verifyEntryIdentity(temporary.namespaceParentDescriptor(), targetName,
                                                  temporary.rootedFile().descriptor(), "Installed managed target");
             if (!installed) {
-                auto restored =
-                    renameNoReplace(temporary.namespaceParentDescriptor(), targetName, temporary.namespaceDescriptor(),
-                                    privatePayloadName, "Failed to restore rejected private temporary payload");
+                bool restoredMutation = false;
+                auto restored = renameNoReplace(
+                    temporary.namespaceParentDescriptor(), targetName, temporary.namespaceDescriptor(),
+                    privatePayloadName, "Failed to restore rejected private temporary payload", &restoredMutation);
+                if (restoredMutation) {
+                    temporary.restorePayload();
+                    temporary.markRestored(static_cast<bool>(restored));
+                } else {
+                    temporary.markUnknown();
+                }
                 if (!restored) {
                     return Result<void>::fail(
                         {ErrorCode::ApplyFailed,
@@ -1269,8 +1434,6 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
                 }
                 return installed;
             }
-            temporary.rootedFile().markCommitted();
-            temporary.clearPayload();
             auto cleaned = temporary.cleanupNamespace();
             if (!cleaned) {
                 return cleaned;
@@ -1279,9 +1442,14 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
         }
 
         std::string displacedIdentity = expectation.identity;
+        bool exchangeMutation = false;
         auto exchanged =
             exchangeEntries(temporary.namespaceDescriptor(), privatePayloadName, temporary.namespaceParentDescriptor(),
-                            targetName, "Failed to atomically exchange managed target");
+                            targetName, "Failed to atomically exchange managed target", &exchangeMutation);
+        if (exchangeMutation) {
+            temporary.swapPayloadIdentity(displacedIdentity);
+            temporary.markPublished(static_cast<bool>(exchanged));
+        }
         if (!exchanged) {
             return exchanged;
         }
@@ -1290,9 +1458,16 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
         auto displaced = verifyEntryIdentity(temporary.namespaceDescriptor(), privatePayloadName, expectation.identity,
                                              "Displaced managed target");
         if (!installed || !displaced) {
+            bool restoredMutation = false;
             auto restored = exchangeEntries(temporary.namespaceDescriptor(), privatePayloadName,
                                             temporary.namespaceParentDescriptor(), targetName,
-                                            "Failed to reverse rejected managed target exchange");
+                                            "Failed to reverse rejected managed target exchange", &restoredMutation);
+            if (restoredMutation) {
+                temporary.swapPayloadIdentity(displacedIdentity);
+                temporary.markRestored(static_cast<bool>(restored));
+            } else {
+                temporary.markUnknown();
+            }
             if (!restored) {
                 const auto original = !installed ? installed.error() : displaced.error();
                 return Result<void>::fail({ErrorCode::ApplyFailed, original.message + "; target restoration failed: " +
@@ -1301,28 +1476,34 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
             return !installed ? installed : displaced;
         }
 
-        temporary.swapPayloadIdentity(displacedIdentity);
         bool oldTargetRemoved = false;
         auto removedOldTarget =
             removeEntryWithIdentity(temporary.namespaceDescriptor(), privatePayloadName, expectation.identity,
                                     "displaced managed target", &oldTargetRemoved);
         if (!removedOldTarget) {
             if (oldTargetRemoved) {
+                temporary.clearPayload();
+                temporary.markFailureReconcilable();
                 return removedOldTarget;
             }
-            auto restored = exchangeEntries(temporary.namespaceDescriptor(), privatePayloadName,
-                                            temporary.namespaceParentDescriptor(), targetName,
-                                            "Failed to restore target after displaced-file cleanup failure");
+            bool restoredMutation = false;
+            auto restored = exchangeEntries(
+                temporary.namespaceDescriptor(), privatePayloadName, temporary.namespaceParentDescriptor(), targetName,
+                "Failed to restore target after displaced-file cleanup failure", &restoredMutation);
+            if (restoredMutation) {
+                temporary.swapPayloadIdentity(displacedIdentity);
+                temporary.markRestored(static_cast<bool>(restored));
+            } else {
+                temporary.markUnknown();
+            }
             if (!restored) {
                 return Result<void>::fail(
                     {ErrorCode::ApplyFailed,
                      removedOldTarget.error().message + "; target restoration failed: " + restored.error().message});
             }
-            temporary.swapPayloadIdentity(displacedIdentity);
             return removedOldTarget;
         }
         temporary.clearPayload();
-        temporary.rootedFile().markCommitted();
         auto cleaned = temporary.cleanupNamespace();
         if (!cleaned) {
             return cleaned;
@@ -1354,10 +1535,32 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
         if (!quarantine) {
             return Result<void>::fail(quarantine.error());
         }
+        const auto finishQuarantine = [&](Result<void> operation) {
+            auto cleaned = quarantine.value().cleanupDirectory();
+            auto closed = quarantine.value().close();
+            if (!operation) {
+                auto error = operation.error();
+                if (!cleaned) {
+                    error.message += "; failed to clean removal quarantine: " + cleaned.error().message;
+                }
+                if (!closed) {
+                    error.message += "; failed to close removal quarantine: " + closed.error().message;
+                }
+                return Result<void>::fail(std::move(error));
+            }
+            if (!cleaned) {
+                auto error = cleaned.error();
+                if (!closed) {
+                    error.message += "; failed to close removal quarantine: " + closed.error().message;
+                }
+                return Result<void>::fail(std::move(error));
+            }
+            return closed;
+        };
         auto moved = renameNoReplace(file.parentDescriptor(), file.name(), quarantine.value().descriptor(),
                                      privatePayloadName, "Failed to quarantine managed removal target");
         if (!moved) {
-            return moved;
+            return finishQuarantine(moved);
         }
         auto quarantined = verifyEntryIdentity(quarantine.value().descriptor(), privatePayloadName, file.descriptor(),
                                                "Quarantined managed removal target");
@@ -1366,11 +1569,11 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
                 renameNoReplace(quarantine.value().descriptor(), privatePayloadName, file.parentDescriptor(),
                                 file.name(), "Failed to restore rejected managed removal target");
             if (!restored) {
-                return Result<void>::fail(
+                return finishQuarantine(Result<void>::fail(
                     {ErrorCode::ApplyFailed,
-                     quarantined.error().message + "; target restoration failed: " + restored.error().message});
+                     quarantined.error().message + "; target restoration failed: " + restored.error().message}));
             }
-            return quarantined;
+            return finishQuarantine(quarantined);
         }
         bool quarantinedTargetRemoved = false;
         auto removed =
@@ -1378,23 +1581,19 @@ Result<void> PosixRootedDirectory::quarantineAndRemoveOpenedFile(PosixRootedFile
                                     "quarantined managed removal target", &quarantinedTargetRemoved);
         if (!removed) {
             if (quarantinedTargetRemoved) {
-                return removed;
+                return finishQuarantine(removed);
             }
             auto restored =
                 renameNoReplace(quarantine.value().descriptor(), privatePayloadName, file.parentDescriptor(),
                                 file.name(), "Failed to restore managed removal target after cleanup failure");
             if (!restored) {
-                return Result<void>::fail(
+                return finishQuarantine(Result<void>::fail(
                     {ErrorCode::ApplyFailed,
-                     removed.error().message + "; target restoration failed: " + restored.error().message});
+                     removed.error().message + "; target restoration failed: " + restored.error().message}));
             }
-            return removed;
+            return finishQuarantine(removed);
         }
-        auto cleaned = quarantine.value().cleanupDirectory();
-        if (!cleaned) {
-            return cleaned;
-        }
-        return Result<void>::ok();
+        return finishQuarantine(Result<void>::ok());
     } catch (...) {
         return Result<void>::fail({ErrorCode::FileSystemError, "Unexpected rooted removal quarantine failure"});
     }

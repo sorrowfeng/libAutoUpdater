@@ -3,6 +3,7 @@
 #include "ApplyExecutor.h"
 #include "ApplyJournal.h"
 #include "ProcessWait.h"
+#include "RootedCommitFault.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
@@ -108,8 +109,7 @@ PublicRollbackScenario completePublicRollbackSource(const std::filesystem::path&
                                                "bin/replaced.txt", replacedHash.value(), kNewReplaced.size()});
     scenario.forwardPlan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/added.txt",
                                                "bin/added.txt", addedHash.value(), kNewAdded.size()});
-    scenario.forwardPlan.operations.push_back(
-        {autoupdater::ApplyOperationType::Remove, "", "bin/removed.txt", "", 0});
+    scenario.forwardPlan.operations.push_back({autoupdater::ApplyOperationType::Remove, "", "bin/removed.txt", "", 0});
     scenario.forwardPlan.operations.push_back(
         {autoupdater::ApplyOperationType::Remove, "", "bin/already-missing.txt", "", 0});
 
@@ -146,8 +146,8 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     std::filesystem::remove_all(root, ec);
 
     const std::string legacyTransactionId(64, 'a');
-    const autoupdater::ApplyOperation legacyOperation{
-        autoupdater::ApplyOperationType::Remove, "", "obsolete.txt", "", 0};
+    const autoupdater::ApplyOperation legacyOperation{autoupdater::ApplyOperationType::Remove, "", "obsolete.txt", "",
+                                                      0};
     std::string legacyIdentityMaterial = legacyTransactionId;
     const auto appendLegacy = [&legacyIdentityMaterial](std::string_view value) {
         legacyIdentityMaterial.push_back('\0');
@@ -161,8 +161,7 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     appendLegacy("0");
     auto identityHash = autoupdater::createDefaultHashProvider();
     const auto legacyExpectedId = identityHash->sha256Bytes(legacyIdentityMaterial);
-    const auto legacyActualId =
-        autoupdater::updater::applyOperationId(legacyTransactionId, 0, legacyOperation);
+    const auto legacyActualId = autoupdater::updater::applyOperationId(legacyTransactionId, 0, legacyOperation);
     LAU_REQUIRE(legacyExpectedId);
     LAU_REQUIRE(legacyActualId);
     LAU_REQUIRE(legacyActualId.value() == legacyExpectedId.value());
@@ -252,7 +251,6 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     LAU_REQUIRE(snapshot.value().toVersion == plan.toVersion);
 
     std::filesystem::remove_all(root, ec);
-
 }
 
 void testApplyExecutorRequiresWritableJournal() {
@@ -495,8 +493,7 @@ void testApplyExecutorExecutesOperationFreePublicRollback() {
     writeFile(scenario.installDir / "bin/replaced.txt", std::string(kNewReplaced));
 
     auto operationSmuggling = scenario.rollbackRequest;
-    operationSmuggling.operations.emplace_back(autoupdater::ApplyOperationType::Remove, "", "bin/replaced.txt", "",
-                                                0);
+    operationSmuggling.operations.emplace_back(autoupdater::ApplyOperationType::Remove, "", "bin/replaced.txt", "", 0);
     const auto rejectedSmuggling = autoupdater::updater::executeApplyPlan(operationSmuggling);
     LAU_REQUIRE(!rejectedSmuggling);
     LAU_REQUIRE(readTerminalTransaction(scenario.installDir).transactionId == scenario.forwardTerminal.transactionId);
@@ -525,8 +522,7 @@ void testApplyExecutorExecutesOperationFreePublicRollback() {
     const auto rollbackTerminal = readTerminalTransaction(scenario.installDir);
     LAU_REQUIRE(rollbackTerminal.transactionId != scenario.forwardTerminal.transactionId);
     const auto rollbackSnapshot = autoupdater::ApplyPlan::parse(
-        readFile(scenario.installDir / ".autoupdater" / "journal" /
-                 (rollbackTerminal.transactionId + ".plan.json")));
+        readFile(scenario.installDir / ".autoupdater" / "journal" / (rollbackTerminal.transactionId + ".plan.json")));
     LAU_REQUIRE(rollbackSnapshot);
     LAU_REQUIRE(rollbackSnapshot.value().intent == autoupdater::ApplyPlanIntent::Rollback);
     LAU_REQUIRE(rollbackSnapshot.value().rollbackOf.has_value());
@@ -579,12 +575,10 @@ void testApplyExecutorExecutesOperationFreePublicRollback() {
 
     std::filesystem::remove_all(root, ec);
 
-    const auto legacyRoot = std::filesystem::temp_directory_path() /
-                            "libAutoUpdater-public-rollback-schema1-test";
+    const auto legacyRoot = std::filesystem::temp_directory_path() / "libAutoUpdater-public-rollback-schema1-test";
     std::filesystem::remove_all(legacyRoot, ec);
     auto legacyScenario = completePublicRollbackSource(legacyRoot, true);
-    const auto legacyRollback =
-        autoupdater::updater::executeApplyPlan(legacyScenario.rollbackRequest);
+    const auto legacyRollback = autoupdater::updater::executeApplyPlan(legacyScenario.rollbackRequest);
     LAU_REQUIRE(legacyRollback);
     LAU_REQUIRE(readFile(legacyScenario.installDir / "bin/replaced.txt") == kOldReplaced);
     LAU_REQUIRE(!std::filesystem::exists(legacyScenario.installDir / "bin/added.txt"));
@@ -610,8 +604,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
             applyFailureInjected = true;
             return autoupdater::updater::ApplyFaultAction::Fail;
         }
-        if (applyFailureInjected && !compensatingRollbackFailureInjected &&
-            boundary == "rollback.replace.before" && operationIndex == 1) {
+        if (applyFailureInjected && !compensatingRollbackFailureInjected && boundary == "rollback.replace.before" &&
+            operationIndex == 1) {
             compensatingRollbackFailureInjected = true;
             return autoupdater::updater::ApplyFaultAction::Fail;
         }
@@ -628,8 +622,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     const auto active = autoupdater::updater::parseActiveTransaction(readFile(journalDir / "active.json"));
     LAU_REQUIRE(active);
     LAU_REQUIRE(active.value().transactionId != scenario.forwardTerminal.transactionId);
-    const auto failedSummary = autoupdater::updater::parseApplyJournalSummary(
-        readFile(journalDir / (active.value().transactionId + ".json")));
+    const auto failedSummary =
+        autoupdater::updater::parseApplyJournalSummary(readFile(journalDir / (active.value().transactionId + ".json")));
     LAU_REQUIRE(failedSummary);
     LAU_REQUIRE(failedSummary.value().fileState == autoupdater::updater::JournalFileState::RecoveryFailed);
     LAU_REQUIRE(!failedSummary.value().applyError.empty());
@@ -639,8 +633,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     LAU_REQUIRE(failedOperation);
     LAU_REQUIRE(failedOperation.value().rollbackState == autoupdater::updater::JournalRollbackState::Failed);
 
-    const auto activeSnapshot = autoupdater::ApplyPlan::parse(
-        readFile(journalDir / (active.value().transactionId + ".plan.json")));
+    const auto activeSnapshot =
+        autoupdater::ApplyPlan::parse(readFile(journalDir / (active.value().transactionId + ".plan.json")));
     LAU_REQUIRE(activeSnapshot);
     LAU_REQUIRE(activeSnapshot.value().intent == autoupdater::ApplyPlanIntent::Rollback);
     LAU_REQUIRE(activeSnapshot.value().rollbackOf.has_value());
@@ -661,22 +655,20 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     LAU_REQUIRE(readFile(scenario.installDir / "bin/removed.txt") == kOldRemoved);
     LAU_REQUIRE(!std::filesystem::exists(scenario.installDir / "bin/already-missing.txt"));
 
-    const auto recoveredSummary = autoupdater::updater::parseApplyJournalSummary(
-        readFile(journalDir / (active.value().transactionId + ".json")));
+    const auto recoveredSummary =
+        autoupdater::updater::parseApplyJournalSummary(readFile(journalDir / (active.value().transactionId + ".json")));
     LAU_REQUIRE(recoveredSummary);
     LAU_REQUIRE(recoveredSummary.value().fileState == autoupdater::updater::JournalFileState::RolledBack);
     LAU_REQUIRE(recoveredSummary.value().rollbackError.empty());
     const auto terminalAfterRecovery = readTerminalTransaction(scenario.installDir);
     LAU_REQUIRE(terminalAfterRecovery.transactionId != scenario.forwardTerminal.transactionId);
-    const auto terminalPlan = autoupdater::ApplyPlan::parse(
-        readFile(journalDir / (terminalAfterRecovery.transactionId + ".plan.json")));
+    const auto terminalPlan =
+        autoupdater::ApplyPlan::parse(readFile(journalDir / (terminalAfterRecovery.transactionId + ".plan.json")));
     LAU_REQUIRE(terminalPlan);
     LAU_REQUIRE(terminalPlan.value().intent == autoupdater::ApplyPlanIntent::Rollback);
     LAU_REQUIRE(terminalPlan.value().rollbackOf.has_value());
-    LAU_REQUIRE(terminalPlan.value().rollbackOf->transactionId ==
-                scenario.rollbackRequest.rollbackOf->transactionId);
-    LAU_REQUIRE(terminalPlan.value().rollbackOf->planDigest ==
-                scenario.rollbackRequest.rollbackOf->planDigest);
+    LAU_REQUIRE(terminalPlan.value().rollbackOf->transactionId == scenario.rollbackRequest.rollbackOf->transactionId);
+    LAU_REQUIRE(terminalPlan.value().rollbackOf->planDigest == scenario.rollbackRequest.rollbackOf->planDigest);
 
     std::filesystem::remove_all(root, ec);
 }
@@ -741,8 +733,8 @@ void testApplyExecutorValidatesProcessWaitInputs() {
     LAU_REQUIRE(!negative);
     LAU_REQUIRE(negative.error().code == autoupdater::ErrorCode::ApplyFailed);
 
-    const auto overlong = autoupdater::updater::waitForProcessExit(
-        0, autoupdater::detail::kMaximumProcessWaitTimeout + std::chrono::seconds(1));
+    const auto overlong = autoupdater::updater::waitForProcessExit(0, autoupdater::detail::kMaximumProcessWaitTimeout +
+                                                                          std::chrono::seconds(1));
     LAU_REQUIRE(!overlong);
     LAU_REQUIRE(overlong.error().code == autoupdater::ErrorCode::ApplyFailed);
 
@@ -750,4 +742,55 @@ void testApplyExecutorValidatesProcessWaitInputs() {
         autoupdater::detail::maximumPlatformProcessId() + 1, std::chrono::seconds(0));
     LAU_REQUIRE(!invalidPid);
     LAU_REQUIRE(invalidPid.error().code == autoupdater::ErrorCode::ApplyFailed);
+}
+
+void testApplyExecutorReconcilesPublishedCommitAcknowledgements() {
+    const auto root = std::filesystem::temp_directory_path() / "libAutoUpdater-apply-publish-ack-test";
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    auto hashProvider = autoupdater::createDefaultHashProvider();
+    const std::string oldContents = "old-contents";
+    const std::string newContents = "new-contents";
+    auto newHash = hashProvider->sha256Bytes(newContents);
+    LAU_REQUIRE(newHash);
+
+    const std::vector<std::string> faultTargets = {
+        "bin/app.txt",
+        ".autoupdater/journal/active.json",
+    };
+    for (std::size_t index = 0; index < faultTargets.size(); ++index) {
+        const auto caseRoot = root / std::to_string(index);
+        const auto installDir = caseRoot / "install";
+        const auto stagingDir = caseRoot / "staging";
+        const auto backupDir = caseRoot / "backup";
+        writeFile(installDir / "bin/app.txt", oldContents);
+        writeFile(stagingDir / "bin/app.txt", newContents);
+
+        autoupdater::ApplyPlan plan;
+        plan.schemaVersion = 2;
+        plan.appId = "com.example.publish-ack";
+        plan.fromVersion = "1.0.0";
+        plan.toVersion = "2.0.0";
+        plan.releaseId = "release-2";
+        plan.manifestSha256 = std::string(64, 'd');
+        plan.installDir = installDir;
+        plan.stagingDir = stagingDir;
+        plan.backupDir = backupDir;
+        plan.operations.push_back({autoupdater::ApplyOperationType::Replace, "bin/app.txt", "bin/app.txt",
+                                   newHash.value(), newContents.size()});
+
+        auto fault = std::make_shared<autoupdater::test::CommitAcknowledgementFault>();
+        fault->target = faultTargets[index];
+        fault->reportUnknownPublication = true;
+        autoupdater::updater::ApplyExecutorDependencies dependencies;
+        dependencies.fileSystem =
+            std::make_shared<autoupdater::test::CommitFaultFileSystem>(autoupdater::createDefaultFileSystem(), fault);
+        dependencies.hashProvider = hashProvider;
+        dependencies.processLauncher = autoupdater::createDefaultProcessLauncher();
+        auto applied = autoupdater::updater::executeApplyPlanWithDependencies(plan, std::move(dependencies));
+        LAU_REQUIRE(applied);
+        LAU_REQUIRE(fault->consumed.load(std::memory_order_acquire));
+        LAU_REQUIRE(readFile(installDir / "bin/app.txt") == newContents);
+    }
+    std::filesystem::remove_all(root, error);
 }

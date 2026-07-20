@@ -57,8 +57,7 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
     if (plan.schemaVersion != 1 && plan.schemaVersion != 2) {
         return Result<void>::fail({ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
     }
-    if (plan.schemaVersion == 1 &&
-        (plan.intent != ApplyPlanIntent::Install || plan.rollbackOf.has_value())) {
+    if (plan.schemaVersion == 1 && (plan.intent != ApplyPlanIntent::Install || plan.rollbackOf.has_value())) {
         return Result<void>::fail(
             {ErrorCode::ApplyFailed, "Apply plan schemaVersion 1 cannot contain transaction intent"});
     }
@@ -80,8 +79,7 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
     }
 
     if (plan.intent == ApplyPlanIntent::Rollback) {
-        if (plan.schemaVersion != 2 || !plan.rollbackOf ||
-            !util::isLowerHexSha256(plan.rollbackOf->transactionId) ||
+        if (plan.schemaVersion != 2 || !plan.rollbackOf || !util::isLowerHexSha256(plan.rollbackOf->transactionId) ||
             !util::isLowerHexSha256(plan.rollbackOf->planDigest)) {
             return Result<void>::fail({ErrorCode::ApplyFailed, "Rollback transaction reference is invalid"});
         }
@@ -104,7 +102,7 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
     }
     for (const auto& value :
          {plan.appId, plan.fromVersion, plan.toVersion, plan.releaseId, plan.manifestSha256,
-           util::pathToUtf8(plan.installDir), util::pathToUtf8(plan.stagingDir), util::pathToUtf8(plan.backupDir)}) {
+          util::pathToUtf8(plan.installDir), util::pathToUtf8(plan.stagingDir), util::pathToUtf8(plan.backupDir)}) {
         auto valid = consumePlanTextBudget(value, limits, consumedBytes);
         if (!valid) {
             return valid;
@@ -155,9 +153,8 @@ Result<void> validateApplyPlanResources(const ApplyPlan& plan, const ResourceLim
             if (plan.schemaVersion < 2 ||
                 (operation.precondition->permissions &&
                  *operation.precondition->permissions > kPortablePermissionMask) ||
-                (operation.precondition->exists &&
-                 (!util::isLowerHexSha256(operation.precondition->sha256) ||
-                  operation.precondition->size > limits.maxArtifactBytes)) ||
+                (operation.precondition->exists && (!util::isLowerHexSha256(operation.precondition->sha256) ||
+                                                    operation.precondition->size > limits.maxArtifactBytes)) ||
                 (!operation.precondition->exists &&
                  (operation.precondition->size != 0 || !operation.precondition->sha256.empty() ||
                   operation.precondition->permissions))) {
@@ -244,11 +241,7 @@ Result<void> copyRootedFile(IRootedFile& source, IRootedFile& destination) {
 }
 
 Result<void> copyPermissions(IRootedFile& source, IRootedFile& destination) {
-    auto metadata = source.metadata();
-    if (!metadata) {
-        return Result<void>::fail(metadata.error());
-    }
-    return destination.setPermissions(sanitizedFilePermissions(metadata.value().permissions));
+    return destination.copyPermissionsFrom(source);
 }
 
 Result<ObservedFile> observeFile(IRootedDirectory& root, const std::string& path, IHashProvider& hashProvider) {
@@ -261,16 +254,30 @@ Result<ObservedFile> observeFile(IRootedDirectory& root, const std::string& path
     }
     auto metadata = opened.value().file->metadata();
     if (!metadata) {
-        return Result<ObservedFile>::fail(metadata.error());
+        auto error = metadata.error();
+        auto closed = opened.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close observed file: " + closed.error().message;
+        }
+        return Result<ObservedFile>::fail(std::move(error));
     }
     auto hash = hashProvider.sha256Stream(*opened.value().file);
     if (!hash) {
-        return Result<ObservedFile>::fail(hash.error());
+        auto error = hash.error();
+        auto closed = opened.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close observed file: " + closed.error().message;
+        }
+        return Result<ObservedFile>::fail(std::move(error));
     }
     ObservedFile observed;
     observed.exists = true;
     observed.metadata = metadata.value();
     observed.sha256 = hash.value();
+    auto closed = opened.value().file->close();
+    if (!closed) {
+        return Result<ObservedFile>::fail(closed.error());
+    }
     return Result<ObservedFile>::ok(std::move(observed));
 }
 
@@ -302,9 +309,8 @@ bool matchesInstalled(const ObservedFile& file, const ApplyOperation& operation)
         return !file.exists;
     }
     return matchesEvidence(file, operation.size, operation.sha256) &&
-           (!operation.permissions ||
-            (permissionsKnown(file.metadata.permissions) &&
-             permissionBits(file.metadata.permissions) == *operation.permissions));
+           (!operation.permissions || (permissionsKnown(file.metadata.permissions) &&
+                                       permissionBits(file.metadata.permissions) == *operation.permissions));
 }
 
 bool matchesPrecondition(const ObservedFile& file, const ApplyOperationPrecondition& precondition) {
@@ -315,9 +321,8 @@ bool matchesPrecondition(const ObservedFile& file, const ApplyOperationPrecondit
         return true;
     }
     return matchesEvidence(file, precondition.size, precondition.sha256) &&
-           (!precondition.permissions ||
-            (permissionsKnown(file.metadata.permissions) &&
-             permissionBits(file.metadata.permissions) == *precondition.permissions));
+           (!precondition.permissions || (permissionsKnown(file.metadata.permissions) &&
+                                          permissionBits(file.metadata.permissions) == *precondition.permissions));
 }
 
 bool matchesOriginal(const ObservedFile& file, const ApplyJournalOperation& record) {
@@ -356,6 +361,36 @@ Error combinedError(const Error& primary, std::string_view context, const Error&
     return {ErrorCode::ApplyFailed, primary.message + "; " + std::string(context) + ": " + secondary.message};
 }
 
+Error preservePublicationFailure(const std::optional<Error>& publicationFailure, std::string_view context,
+                                 Error secondary) {
+    if (!publicationFailure) {
+        return secondary;
+    }
+    auto primary = *publicationFailure;
+    primary.message += "; " + std::string(context) + ": " + secondary.message;
+    return primary;
+}
+
+Result<void> finishTemporary(std::unique_ptr<IRootedTemporaryFile>& temporary, Result<void> operation,
+                             std::string_view context, std::optional<Error>* reconciledFailure = nullptr) {
+    auto discarded = temporary->discard();
+    const auto publication = temporary->publishStatus();
+    temporary.reset();
+    if (!operation) {
+        auto error = operation.error();
+        if (!discarded) {
+            error.message += "; " + std::string(context) + ": " + discarded.error().message;
+        }
+        if (discarded && reconciledFailure && publication.publication != RootedPublication::NotPublished &&
+            publication.namespaceDurable && publication.failureCanBeReconciled) {
+            *reconciledFailure = error;
+            return Result<void>::ok();
+        }
+        return Result<void>::fail(std::move(error));
+    }
+    return discarded;
+}
+
 Result<void> copyToReplacement(IRootedDirectory& targetRoot, const std::string& target,
                                RootedDirectoryCreationMode directoryMode, IRootedFile& source,
                                const RootedEntryExpectation& expectation, std::uint64_t expectedSize,
@@ -366,18 +401,42 @@ Result<void> copyToReplacement(IRootedDirectory& targetRoot, const std::string& 
     }
     auto copied = copyRootedFile(source, temporary.value()->file());
     if (!copied) {
-        return copied;
+        return finishTemporary(temporary.value(), std::move(copied), "failed to discard incomplete replacement");
     }
     auto permissions = copyPermissions(source, temporary.value()->file());
     if (!permissions) {
-        return permissions;
+        return finishTemporary(temporary.value(), std::move(permissions),
+                               "failed to discard replacement after permission error");
     }
     auto verified = verifyEvidence(temporary.value()->file(), expectedSize, expectedHash, hashProvider,
                                    "Prepared rooted replacement");
     if (!verified) {
-        return verified;
+        return finishTemporary(temporary.value(), std::move(verified), "failed to discard unverified replacement");
     }
-    return temporary.value()->commit(expectation);
+    auto preparedMetadata = temporary.value()->file().metadata();
+    if (!preparedMetadata) {
+        return finishTemporary(temporary.value(), Result<void>::fail(preparedMetadata.error()),
+                               "failed to discard replacement after metadata error");
+    }
+    auto committed = temporary.value()->commit(expectation);
+    std::optional<Error> publicationFailure;
+    auto finished = finishTemporary(temporary.value(), std::move(committed), "failed to finish replacement cleanup",
+                                    &publicationFailure);
+    if (!finished) {
+        return finished;
+    }
+    auto installed = observeFile(targetRoot, target, hashProvider);
+    if (!installed) {
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rooted replacement publication", installed.error()));
+    }
+    if (!matchesEvidence(installed.value(), expectedSize, expectedHash) ||
+        installed.value().metadata.identity != preparedMetadata.value().identity) {
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rooted replacement publication",
+            {ErrorCode::SecurityPolicyViolation, "Published rooted replacement identity or contents changed"}));
+    }
+    return Result<void>::ok();
 }
 
 Result<void> ensureBackup(IRootedDirectory& backupRoot, const std::string& target, IRootedFile& source,
@@ -390,10 +449,15 @@ Result<void> ensureBackup(IRootedDirectory& backupRoot, const std::string& targe
         auto verified =
             verifyOriginalEvidence(*existing.value().file, record, hashProvider, "Existing rollback backup");
         if (!verified) {
-            return Result<void>::fail(
-                {ErrorCode::SecurityPolicyViolation, "Existing rollback backup does not match the journal"});
+            auto error = verified.error();
+            error.message = "Existing rollback backup is not trustworthy: " + error.message;
+            auto closed = existing.value().file->close();
+            if (!closed) {
+                error.message += "; failed to close existing rollback backup: " + closed.error().message;
+            }
+            return Result<void>::fail(std::move(error));
         }
-        return Result<void>::ok();
+        return existing.value().file->close();
     }
 
     auto temporary = backupRoot.createAtomicReplacement(target);
@@ -402,29 +466,74 @@ Result<void> ensureBackup(IRootedDirectory& backupRoot, const std::string& targe
     }
     auto copied = copyRootedFile(source, temporary.value()->file());
     if (!copied) {
-        return copied;
+        return finishTemporary(temporary.value(), std::move(copied), "failed to discard incomplete backup");
     }
     auto permissions = copyPermissions(source, temporary.value()->file());
     if (!permissions) {
-        return permissions;
+        return finishTemporary(temporary.value(), std::move(permissions),
+                               "failed to discard backup after permission error");
     }
     auto verified = verifyOriginalEvidence(temporary.value()->file(), record, hashProvider, "Prepared rollback backup");
     if (!verified) {
-        return verified;
+        return finishTemporary(temporary.value(), std::move(verified), "failed to discard unverified backup");
+    }
+    auto preparedMetadata = temporary.value()->file().metadata();
+    if (!preparedMetadata) {
+        return finishTemporary(temporary.value(), Result<void>::fail(preparedMetadata.error()),
+                               "failed to discard backup after metadata error");
     }
     auto committed = temporary.value()->commit(RootedEntryExpectation::missing());
-    if (!committed) {
-        return committed;
+    std::optional<Error> publicationFailure;
+    auto finished = finishTemporary(temporary.value(), std::move(committed), "failed to finish backup cleanup",
+                                    &publicationFailure);
+    if (!finished) {
+        return finished;
     }
-    temporary.value().reset();
     auto durable = backupRoot.openRegularFile(target, RootedFileOpenMode::ReadOnly);
     if (!durable) {
-        return Result<void>::fail(durable.error());
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rollback backup publication", durable.error()));
     }
     if (!durable.value().exists()) {
-        return Result<void>::fail({ErrorCode::ApplyFailed, "Rollback backup disappeared after commit"});
+        return Result<void>::fail(
+            preservePublicationFailure(publicationFailure, "failed to reconcile rollback backup publication",
+                                       {ErrorCode::ApplyFailed, "Rollback backup disappeared after commit"}));
     }
-    return verifyOriginalEvidence(*durable.value().file, record, hashProvider, "Committed rollback backup");
+    auto durableMetadata = durable.value().file->metadata();
+    if (!durableMetadata) {
+        auto error = durableMetadata.error();
+        auto closed = durable.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close committed rollback backup: " + closed.error().message;
+        }
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rollback backup publication", std::move(error)));
+    }
+    if (durableMetadata.value().identity != preparedMetadata.value().identity) {
+        Error error{ErrorCode::SecurityPolicyViolation, "Committed rollback backup identity changed"};
+        auto closed = durable.value().file->close();
+        if (!closed) {
+            error.message += "; failed to close committed rollback backup: " + closed.error().message;
+        }
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rollback backup publication", std::move(error)));
+    }
+    auto durableVerified =
+        verifyOriginalEvidence(*durable.value().file, record, hashProvider, "Committed rollback backup");
+    auto closed = durable.value().file->close();
+    if (!durableVerified) {
+        auto error = durableVerified.error();
+        if (!closed) {
+            error.message += "; failed to close committed rollback backup: " + closed.error().message;
+        }
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rollback backup publication", std::move(error)));
+    }
+    if (!closed) {
+        return Result<void>::fail(preservePublicationFailure(
+            publicationFailure, "failed to reconcile rollback backup publication", closed.error()));
+    }
+    return Result<void>::ok();
 }
 
 bool hasReplaceOperation(const ApplyPlan& plan) {
@@ -724,8 +833,7 @@ class ApplyTransaction final {
         }
         if (operation.precondition && !matchesPrecondition(original.value(), *operation.precondition)) {
             return Result<void>::fail(
-                {ErrorCode::SecurityPolicyViolation,
-                 "Managed target no longer matches the transaction precondition"});
+                {ErrorCode::SecurityPolicyViolation, "Managed target no longer matches the transaction precondition"});
         }
 
         ApplyJournalOperation record;
@@ -783,15 +891,33 @@ class ApplyTransaction final {
             }
             auto metadata = source.value().file->metadata();
             if (!metadata) {
-                return failOperation(record, metadata.error());
+                auto error = metadata.error();
+                auto closed = source.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close backup source: " + closed.error().message;
+                }
+                return failOperation(record, error);
             }
             if (metadata.value().identity != record.originalIdentity) {
-                return failOperation(
-                    record, {ErrorCode::SecurityPolicyViolation, "Managed target identity changed before backup"});
+                Error error{ErrorCode::SecurityPolicyViolation, "Managed target identity changed before backup"};
+                auto closed = source.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close backup source: " + closed.error().message;
+                }
+                return failOperation(record, error);
             }
             auto backup = ensureBackup(backupRoot_, operation.target, *source.value().file, record, hashProvider_);
             if (!backup) {
-                return failOperation(record, backup.error());
+                auto error = backup.error();
+                auto closed = source.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close backup source: " + closed.error().message;
+                }
+                return failOperation(record, error);
+            }
+            auto sourceClosed = source.value().file->close();
+            if (!sourceClosed) {
+                return failOperation(record, sourceClosed.error());
             }
             boundary = checkpoint("backup.after", index);
             if (!boundary) {
@@ -869,60 +995,95 @@ class ApplyTransaction final {
         auto sourceVerified =
             verifyEvidence(*source.value().file, operation.size, operation.sha256, hashProvider_, "Staged update file");
         if (!sourceVerified) {
-            return failOperation(record, sourceVerified.error());
+            auto error = sourceVerified.error();
+            auto closed = source.value().file->close();
+            if (!closed) {
+                error.message += "; failed to close staged update file: " + closed.error().message;
+            }
+            return failOperation(record, error);
         }
 
         auto temporary =
             installRoot_.createAtomicReplacement(operation.target, RootedDirectoryCreationMode::InstalledContent);
         if (!temporary) {
-            return failOperation(record, temporary.error());
+            auto error = temporary.error();
+            auto closed = source.value().file->close();
+            if (!closed) {
+                error.message += "; failed to close staged update file: " + closed.error().message;
+            }
+            return failOperation(record, error);
         }
+        const auto abandonTemporary = [&](Error error, std::string_view context) {
+            auto finished = finishTemporary(temporary.value(), Result<void>::fail(std::move(error)), context);
+            return failOperation(record, finished.error());
+        };
         auto copied = copyRootedFile(*source.value().file, temporary.value()->file());
         if (!copied) {
-            return failOperation(record, copied.error());
+            auto error = copied.error();
+            auto closed = source.value().file->close();
+            if (!closed) {
+                error.message += "; failed to close staged update file: " + closed.error().message;
+            }
+            return abandonTemporary(std::move(error), "failed to discard incomplete installed file");
         }
-        Result<void> permissions = operation.permissions
-                                       ? temporary.value()->file().setPermissions(
-                                             static_cast<std::filesystem::perms>(*operation.permissions))
-                                       : (original.exists ? temporary.value()->file().setPermissions(
-                                                                sanitizedFilePermissions(original.metadata.permissions))
-                                                          : temporary.value()->file().setPermissions(
-                                                                defaultInstalledFilePermissions()));
+        auto sourceClosed = source.value().file->close();
+        if (!sourceClosed) {
+            return abandonTemporary(sourceClosed.error(), "failed to discard installed file after source close error");
+        }
+        Result<void> permissions =
+            operation.permissions
+                ? temporary.value()->file().setPermissions(static_cast<std::filesystem::perms>(*operation.permissions))
+                : (original.exists ? temporary.value()->file().setPermissions(
+                                         sanitizedFilePermissions(original.metadata.permissions))
+                                   : temporary.value()->file().setPermissions(defaultInstalledFilePermissions()));
         if (!permissions) {
-            return failOperation(record, permissions.error());
+            return abandonTemporary(permissions.error(), "failed to discard installed file after permission error");
         }
         auto prepared = verifyEvidence(temporary.value()->file(), operation.size, operation.sha256, hashProvider_,
                                        "Prepared installed file");
         if (!prepared) {
-            return failOperation(record, prepared.error());
+            return abandonTemporary(prepared.error(), "failed to discard unverified installed file");
+        }
+        auto preparedMetadata = temporary.value()->file().metadata();
+        if (!preparedMetadata) {
+            return abandonTemporary(preparedMetadata.error(), "failed to discard installed file after metadata error");
         }
 
         record.applyState = JournalApplyState::Intent;
         auto intent = persistOperation(record, "journal.apply_intent.after");
         if (!intent) {
-            return failOperation(record, intent.error());
+            return abandonTemporary(intent.error(), "failed to discard installed file after journal error");
         }
         auto boundary = checkpoint("replace.before", record.index);
         if (!boundary) {
-            return failOperation(record, boundary.error());
+            return abandonTemporary(boundary.error(), "failed to discard installed file after checkpoint error");
         }
         auto committed = temporary.value()->commit(expectation);
-        if (!committed) {
-            return failOperation(record, committed.error());
+        std::optional<Error> publicationFailure;
+        auto finished = finishTemporary(temporary.value(), std::move(committed),
+                                        "failed to finish installed-file cleanup", &publicationFailure);
+        if (!finished) {
+            return failOperation(record, finished.error());
         }
-        temporary.value().reset();
         boundary = checkpoint("replace.after", record.index);
         if (!boundary) {
-            return failOperation(record, boundary.error());
+            return failOperation(
+                record,
+                preservePublicationFailure(publicationFailure, "post-publication checkpoint failed", boundary.error()));
         }
 
         auto installed = observeFile(installRoot_, operation.target, hashProvider_);
         if (!installed) {
-            return failOperation(record, installed.error());
+            return failOperation(record, preservePublicationFailure(publicationFailure,
+                                                                    "failed to reconcile installed-file publication",
+                                                                    installed.error()));
         }
-        if (!matchesInstalled(installed.value(), operation)) {
+        if (!matchesInstalled(installed.value(), operation) ||
+            installed.value().metadata.identity != preparedMetadata.value().identity) {
             return failOperation(record,
-                                 {ErrorCode::HashMismatch, "Installed file does not match the signed apply plan"});
+                                 preservePublicationFailure(
+                                     publicationFailure, "failed to reconcile installed-file publication",
+                                     {ErrorCode::HashMismatch, "Installed file does not match the signed apply plan"}));
         }
         record.installedIdentity = installed.value().metadata.identity;
         record.applyState = JournalApplyState::Complete;
@@ -948,7 +1109,21 @@ class ApplyTransaction final {
             }
             auto removed = installRoot_.removeRegularFile(operation.target, expectation);
             if (!removed) {
-                return failOperation(record, removed.error());
+                auto error = removed.error();
+                auto observed = observeFile(installRoot_, operation.target, hashProvider_);
+                if (!observed) {
+                    error.message += "; failed to reconcile managed removal: " + observed.error().message;
+                    return failOperation(record, error);
+                }
+                if (observed.value().exists) {
+                    return failOperation(record, error);
+                }
+                auto durable = installRoot_.removeRegularFile(operation.target, RootedEntryExpectation::missing());
+                if (!durable) {
+                    error.message += "; failed to persist reconciled managed removal: " + durable.error().message;
+                    return failOperation(record, error);
+                }
+                return failOperation(record, error);
             }
             boundary = checkpoint("remove.after", record.index);
             if (!boundary) {
@@ -1044,7 +1219,16 @@ class ApplyTransaction final {
                 auto verified =
                     verifyOriginalEvidence(*backup.value().file, record, hashProvider_, "Applied transaction backup");
                 if (!verified) {
-                    return verified;
+                    auto error = verified.error();
+                    auto closed = backup.value().file->close();
+                    if (!closed) {
+                        error.message += "; failed to close applied transaction backup: " + closed.error().message;
+                    }
+                    return Result<void>::fail(std::move(error));
+                }
+                auto closed = backup.value().file->close();
+                if (!closed) {
+                    return closed;
                 }
             } else if (record.backupState != JournalBackupState::NotRequired) {
                 return Result<void>::fail(
@@ -1112,11 +1296,21 @@ class ApplyTransaction final {
             }
             auto verified = verifyOriginalEvidence(*backup.value().file, record, hashProvider_, "Rollback backup");
             if (!verified) {
-                return markRollbackOperationFailed(record, verified.error());
+                auto error = verified.error();
+                auto closed = backup.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close rollback backup: " + closed.error().message;
+                }
+                return markRollbackOperationFailed(record, error);
             }
             auto boundary = checkpoint("rollback.replace.before", record.index);
             if (!boundary) {
-                return markRollbackOperationFailed(record, boundary.error());
+                auto error = boundary.error();
+                auto closed = backup.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close rollback backup: " + closed.error().message;
+                }
+                return markRollbackOperationFailed(record, error);
             }
             const auto expectation = target.value().exists ? RootedEntryExpectation::matching(target.value().metadata)
                                                            : RootedEntryExpectation::missing();
@@ -1124,7 +1318,16 @@ class ApplyTransaction final {
                                               RootedDirectoryCreationMode::InstalledContent, *backup.value().file,
                                               expectation, record.originalSize, record.originalSha256, hashProvider_);
             if (!restored) {
-                return markRollbackOperationFailed(record, restored.error());
+                auto error = restored.error();
+                auto closed = backup.value().file->close();
+                if (!closed) {
+                    error.message += "; failed to close rollback backup: " + closed.error().message;
+                }
+                return markRollbackOperationFailed(record, error);
+            }
+            auto backupClosed = backup.value().file->close();
+            if (!backupClosed) {
+                return markRollbackOperationFailed(record, backupClosed.error());
             }
             boundary = checkpoint("rollback.replace.after", record.index);
             if (!boundary) {
@@ -1138,7 +1341,21 @@ class ApplyTransaction final {
             auto removed = installRoot_.removeRegularFile(operation.target,
                                                           RootedEntryExpectation::matching(target.value().metadata));
             if (!removed) {
-                return markRollbackOperationFailed(record, removed.error());
+                auto error = removed.error();
+                auto observed = observeFile(installRoot_, operation.target, hashProvider_);
+                if (!observed) {
+                    error.message += "; failed to reconcile rollback removal: " + observed.error().message;
+                    return markRollbackOperationFailed(record, error);
+                }
+                if (observed.value().exists) {
+                    return markRollbackOperationFailed(record, error);
+                }
+                auto durable = installRoot_.removeRegularFile(operation.target, RootedEntryExpectation::missing());
+                if (!durable) {
+                    error.message += "; failed to persist reconciled rollback removal: " + durable.error().message;
+                    return markRollbackOperationFailed(record, error);
+                }
+                return markRollbackOperationFailed(record, error);
             }
             boundary = checkpoint("rollback.remove.after", record.index);
             if (!boundary) {
@@ -1510,13 +1727,12 @@ Result<void> validateRollbackRequest(const ApplyPlan& request, const ApplyPlan& 
         return Result<void>::fail(
             {ErrorCode::SecurityPolicyViolation, "Rollback source is not a completed install transaction"});
     }
-    if (!samePath(request.installDir, sourcePlan.installDir) ||
-        !samePath(request.stagingDir, sourcePlan.backupDir) ||
+    if (!samePath(request.installDir, sourcePlan.installDir) || !samePath(request.stagingDir, sourcePlan.backupDir) ||
         !samePath(request.backupDir, rollbackUndoRoot(request))) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rollback request roots are invalid"});
     }
-    if ((!request.appId.empty() && request.appId != sourcePlan.appId) ||
-        request.fromVersion != sourcePlan.toVersion || request.releaseId != sourcePlan.releaseId) {
+    if ((!request.appId.empty() && request.appId != sourcePlan.appId) || request.fromVersion != sourcePlan.toVersion ||
+        request.releaseId != sourcePlan.releaseId) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Rollback request metadata is invalid"});
     }
     return Result<void>::ok();
@@ -1564,17 +1780,16 @@ Result<void> startNewTransaction(const ApplyPlan& plan, IRootedDirectory& instal
     if (!transactionId) {
         return Result<void>::fail(transactionId.error());
     }
-    ApplyTransaction transaction(plan, installRoot, *backupRoot.value(), stagingRoot.get(),
-                                 *dependencies.hashProvider, *dependencies.processLauncher, dependencies.limits, hooks,
-                                 transactionId.value(), planDigest.value());
+    ApplyTransaction transaction(plan, installRoot, *backupRoot.value(), stagingRoot.get(), *dependencies.hashProvider,
+                                 *dependencies.processLauncher, dependencies.limits, hooks, transactionId.value(),
+                                 planDigest.value());
     return transaction.start();
 }
 
 Result<ApplyPlan> deriveRollbackPlan(const ApplyPlan& request, const ApplyPlan& sourcePlan,
                                      const std::vector<ApplyJournalOperation>& records) {
     if (records.size() != sourcePlan.operations.size()) {
-        return Result<ApplyPlan>::fail(
-            {ErrorCode::ApplyFailed, "Rollback source operation records are incomplete"});
+        return Result<ApplyPlan>::fail({ErrorCode::ApplyFailed, "Rollback source operation records are incomplete"});
     }
     std::vector<std::string> targets;
     targets.reserve(sourcePlan.operations.size());
@@ -1603,8 +1818,7 @@ Result<ApplyPlan> deriveRollbackPlan(const ApplyPlan& request, const ApplyPlan& 
     for (auto iterator = records.rbegin(); iterator != records.rend(); ++iterator) {
         const auto& record = *iterator;
         if (record.index >= sourcePlan.operations.size()) {
-            return Result<ApplyPlan>::fail(
-                {ErrorCode::ApplyFailed, "Rollback source operation index is invalid"});
+            return Result<ApplyPlan>::fail({ErrorCode::ApplyFailed, "Rollback source operation index is invalid"});
         }
         const auto& sourceOperation = sourcePlan.operations[record.index];
         if (record.rollbackState == JournalRollbackState::NotRequired) {
@@ -1683,8 +1897,7 @@ Result<void> executeRollbackRequest(const ApplyPlan& request, IRootedDirectory& 
     if (!validRequest) {
         return validRequest;
     }
-    auto sourceBackup =
-        dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadOnly, false);
+    auto sourceBackup = dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadOnly, false);
     if (!sourceBackup) {
         return Result<void>::fail(sourceBackup.error());
     }
@@ -1722,9 +1935,8 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
         if (error == ERROR_INVALID_PARAMETER) {
             return Result<void>::ok();
         }
-        return Result<void>::fail(
-            {ErrorCode::ApplyFailed, "Failed to open process for waiting (Windows error " + std::to_string(error) +
-                                         ")"});
+        return Result<void>::fail({ErrorCode::ApplyFailed,
+                                   "Failed to open process for waiting (Windows error " + std::to_string(error) + ")"});
     }
     const DWORD waitMs = static_cast<DWORD>(timeout.count() * 1000);
     const DWORD result = WaitForSingleObject(handle, waitMs);
@@ -1737,9 +1949,8 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
         return Result<void>::ok();
     }
     if (result == WAIT_FAILED) {
-        return Result<void>::fail(
-            {ErrorCode::ApplyFailed, "Failed while waiting for process exit (Windows error " +
-                                         std::to_string(waitError) + ")"});
+        return Result<void>::fail({ErrorCode::ApplyFailed, "Failed while waiting for process exit (Windows error " +
+                                                               std::to_string(waitError) + ")"});
     }
     return Result<void>::fail({ErrorCode::ApplyFailed, "Unexpected process wait result"});
 #else
@@ -1811,8 +2022,7 @@ Result<void> executeApplyPlanWithDependencies(const ApplyPlan& plan, ApplyExecut
                 return Result<void>::fail(remainingActive.error());
             }
             if (remainingActive.value()) {
-                return recovered ? Result<void>::fail(
-                                       {ErrorCode::ApplyFailed, "Recovered transaction remains active"})
+                return recovered ? Result<void>::fail({ErrorCode::ApplyFailed, "Recovered transaction remains active"})
                                  : recovered;
             }
             auto recoveredTerminal = journal.loadTerminal();

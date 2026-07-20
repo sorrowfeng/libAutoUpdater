@@ -7,6 +7,7 @@
 #include "NetworkLimits.h"
 #include "NetworkRequest.h"
 #include "NetworkTestCommon.h"
+#include "RootedCommitFault.h"
 #include "UrlPolicy.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/Manifest.h"
@@ -93,6 +94,10 @@ class MemoryRootedFile final : public autoupdater::IRootedFile {
         return autoupdater::Result<void>::ok();
     }
 
+    autoupdater::Result<void> close() noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
     const std::string& contents() const noexcept {
         return contents_;
     }
@@ -139,6 +144,10 @@ class LogicalLargeFile final : public autoupdater::IRootedFile {
         return autoupdater::Result<autoupdater::RootedFileMetadata>::ok(metadata);
     }
     autoupdater::Result<void> setPermissions(std::filesystem::perms) noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<void> close() noexcept override {
         return autoupdater::Result<void>::ok();
     }
 
@@ -477,4 +486,50 @@ void testManifestAndSignatureResourceLimits() {
         LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
         LAU_REQUIRE(!std::filesystem::exists(root));
     }
+}
+
+void testApplyPlanWriterReconcilesPublishedCommitAcknowledgement() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root =
+        std::filesystem::temp_directory_path() / ("libAutoUpdater-plan-publish-ack-" + std::to_string(nonce));
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+
+    auto currentVersion = autoupdater::Version::parse("1.0.0");
+    auto nextVersion = autoupdater::Version::parse("2.0.0");
+    LAU_REQUIRE(currentVersion && nextVersion);
+    autoupdater::Config config;
+    config.appId = "com.example.plan-ack";
+    config.currentVersion = currentVersion.value();
+    config.installDir = root / "install";
+    config.tempDir = root / "staging";
+    autoupdater::ManifestEnvelope envelope;
+    envelope.manifest.appId = config.appId;
+    envelope.manifest.version = nextVersion.value();
+    envelope.manifest.releaseId = "release-2";
+    envelope.sha256 = std::string(64, 'a');
+    autoupdater::UpdateDecision decision;
+    decision.operations.push_back({autoupdater::ApplyOperationType::Remove, "", "obsolete.bin", "", 0});
+
+    auto fault = std::make_shared<autoupdater::test::CommitAcknowledgementFault>();
+    fault->target = "apply-plan.json";
+    auto fileSystem =
+        std::make_shared<autoupdater::test::CommitFaultFileSystem>(autoupdater::createDefaultFileSystem(), fault);
+    auto written = autoupdater::writeApplyPlan(config, envelope, decision, *fileSystem);
+    LAU_REQUIRE(written);
+    LAU_REQUIRE(fault->consumed.load(std::memory_order_acquire));
+    LAU_REQUIRE(std::filesystem::is_regular_file(written.value().path));
+
+    config.tempDir = root / "non-reconcilable";
+    auto nonReconcilableFault = std::make_shared<autoupdater::test::CommitAcknowledgementFault>();
+    nonReconcilableFault->target = "apply-plan.json";
+    nonReconcilableFault->failureCanBeReconciled = false;
+    auto nonReconcilableFileSystem = std::make_shared<autoupdater::test::CommitFaultFileSystem>(
+        autoupdater::createDefaultFileSystem(), nonReconcilableFault);
+    auto rejected = autoupdater::writeApplyPlan(config, envelope, decision, *nonReconcilableFileSystem);
+    LAU_REQUIRE(!rejected);
+    LAU_REQUIRE(nonReconcilableFault->consumed.load(std::memory_order_acquire));
+    LAU_REQUIRE(rejected.error().message.find("Injected post-publish commit acknowledgement failure") !=
+                std::string::npos);
+    std::filesystem::remove_all(root, error);
 }
