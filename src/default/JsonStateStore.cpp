@@ -453,7 +453,7 @@ Result<void> writeAtomic(IRootedDirectory& root, const std::string& name, const 
     return Result<void>::ok();
 }
 
-class JsonStateStore final : public IStateStore {
+class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAndSet {
   public:
     JsonStateStore(std::filesystem::path path, ResourceLimits limits, std::shared_ptr<IFileSystem> fileSystem,
                    detail::JsonStateStoreHooks hooks)
@@ -574,6 +574,16 @@ class JsonStateStore final : public IStateStore {
             if (!state) {
                 return Result<void>::fail(state.error());
             }
+            auto actualPending = pendingFromRoot(state.value().document);
+            if (!actualPending) {
+                return Result<void>::fail(actualPending.error());
+            }
+            if (actualPending.value()) {
+                if (pendingUpdatesEqual(*actualPending.value(), pending)) {
+                    return Result<void>::ok();
+                }
+                return Result<void>::fail(stateError("A different pending update is already persisted"));
+            }
             state.value().document["pendingUpdate"] = std::move(validated.value());
             return saveLocked(state.value());
         } catch (...) {
@@ -590,6 +600,38 @@ class JsonStateStore final : public IStateStore {
             return pendingFromRoot(state.value().document);
         } catch (...) {
             return Result<std::optional<PendingUpdate>>::fail(stateError("Unexpected pending-update load failure"));
+        }
+    }
+
+    Result<void> clearPendingUpdateIfMatches(const PendingUpdate& expectedPending) noexcept override {
+        try {
+            // A legacy state document may legitimately omit applyPlanDigest.
+            // The expected value came from this store and is compared against
+            // the persisted value below, so accepting an empty digest here
+            // does not make it a wildcard or permit new legacy state writes.
+            auto validated = pendingToJson(expectedPending, expectedPending.applyPlanDigest.empty());
+            if (!validated) {
+                return Result<void>::fail(validated.error());
+            }
+            auto state = lockAndLoad();
+            if (!state) {
+                return Result<void>::fail(state.error());
+            }
+            auto actualPending = pendingFromRoot(state.value().document);
+            if (!actualPending) {
+                return Result<void>::fail(actualPending.error());
+            }
+            if (!actualPending.value()) {
+                return Result<void>::fail(stateError("No pending update exists to clear"));
+            }
+            if (!pendingUpdatesEqual(*actualPending.value(), expectedPending)) {
+                return Result<void>::fail(
+                    stateError("Persisted pending update does not match the expected value"));
+            }
+            state.value().document.erase("pendingUpdate");
+            return saveLocked(state.value());
+        } catch (...) {
+            return Result<void>::fail(stateError("Unexpected pending-update compare-and-set clear failure"));
         }
     }
 
@@ -826,9 +868,10 @@ class JsonStateStore final : public IStateStore {
         }
     }
 
-    Result<util::Json> pendingToJson(const PendingUpdate& pending) const {
+    Result<util::Json> pendingToJson(const PendingUpdate& pending, bool allowLegacyDigest = false) const {
         if (pending.backupDir.empty() || pending.applyPlanPath.empty() ||
-            !util::isLowerHexSha256(pending.applyPlanDigest)) {
+            (pending.applyPlanDigest.empty() ? !allowLegacyDigest
+                                             : !util::isLowerHexSha256(pending.applyPlanDigest))) {
             return Result<util::Json>::fail(stateError("Pending update metadata is incomplete or invalid"));
         }
         util::Json::Object object;
@@ -838,7 +881,7 @@ class JsonStateStore final : public IStateStore {
         object.emplace("applyPlanPath", util::pathToUtf8(pending.applyPlanPath));
         object.emplace("applyPlanDigest", pending.applyPlanDigest);
         util::Json value(std::move(object));
-        auto parsed = parsePendingUpdate(value);
+        auto parsed = parsePendingUpdate(value, allowLegacyDigest);
         if (!parsed) {
             return Result<util::Json>::fail(parsed.error());
         }

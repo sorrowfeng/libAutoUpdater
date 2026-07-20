@@ -242,7 +242,7 @@ likelihood of affecting production update flows.
     - Timeout, cancellation, TLS verification, and write failures honor the
       core network interface contract.
 
-- [ ] **AU-017 — Complete health confirmation and backup retention behavior**
+- [x] **AU-017 — Complete health confirmation and backup retention behavior**
   - Classification: Verified implementation/documentation mismatch.
   - Key code: `include/libAutoUpdater/Config.h:61`,
     `src/Updater.cpp:506-520`.

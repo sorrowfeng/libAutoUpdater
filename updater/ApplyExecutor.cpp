@@ -7,6 +7,7 @@
 #include "libAutoUpdater/interfaces/IProcessLauncher.h"
 #include "libAutoUpdater/interfaces/IRootedFileSystem.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 #include "util/Sha256.h"
 
 #include <algorithm>
@@ -647,6 +648,12 @@ class ApplyTransaction final {
                                               verified.error().message};
                 return recordTerminalReconciliationFailure(terminalError);
             }
+            if (!summary_.completedAt) {
+                auto completed = persistCompletion("journal.complete.after");
+                if (!completed) {
+                    return completed;
+                }
+            }
             const auto restartFailure = completedRestartFailure();
             auto cleared = publishTerminalAndClear();
             if (!cleared) {
@@ -799,6 +806,18 @@ class ApplyTransaction final {
             return saved;
         }
         return checkpoint(boundaryName, kNoOperation);
+    }
+
+    Result<void> persistCompletion(std::string_view boundaryName) {
+        if (!summary_.completedAt) {
+            auto completedAt = util::currentUtcInstant();
+            if (!completedAt) {
+                return Result<void>::fail(completedAt.error());
+            }
+            summary_.completedAt = completedAt.value();
+        }
+        summary_.fileState = JournalFileState::Complete;
+        return persistSummary(boundaryName);
     }
 
     Result<void> persistOperation(ApplyJournalOperation& record, std::string_view boundaryName) {
@@ -1453,8 +1472,7 @@ class ApplyTransaction final {
     Result<void> finishRestart() {
         if (plan_.restartCommand.empty()) {
             summary_.restartState = JournalRestartState::NotRequested;
-            summary_.fileState = JournalFileState::Complete;
-            auto completed = persistSummary("journal.complete.after");
+            auto completed = persistCompletion("journal.complete.after");
             if (!completed) {
                 return completed;
             }
@@ -1465,8 +1483,7 @@ class ApplyTransaction final {
             summary_.restartState = JournalRestartState::OutcomeUnknown;
             summary_.restartError = {toString(ErrorCode::ApplyLaunchFailed),
                                      "Restart intent was interrupted; the process was not launched again"};
-            summary_.fileState = JournalFileState::Complete;
-            auto completed = persistSummary("journal.complete.after");
+            auto completed = persistCompletion("journal.complete.after");
             if (!completed) {
                 return completed;
             }
@@ -1477,8 +1494,7 @@ class ApplyTransaction final {
             return Result<void>::fail({ErrorCode::ApplyLaunchFailed, summary_.restartError.message});
         }
         if (summary_.restartState == JournalRestartState::Launched) {
-            summary_.fileState = JournalFileState::Complete;
-            auto completed = persistSummary("journal.complete.after");
+            auto completed = persistCompletion("journal.complete.after");
             if (!completed) {
                 return completed;
             }
@@ -1486,9 +1502,8 @@ class ApplyTransaction final {
         }
         if (summary_.restartState == JournalRestartState::Failed ||
             summary_.restartState == JournalRestartState::OutcomeUnknown) {
-            summary_.fileState = JournalFileState::Complete;
             auto failure = completedRestartFailure();
-            auto completed = persistSummary("journal.complete.after");
+            auto completed = persistCompletion("journal.complete.after");
             if (!completed) {
                 return completed;
             }
@@ -1512,8 +1527,7 @@ class ApplyTransaction final {
         if (!launched) {
             summary_.restartState = JournalRestartState::Failed;
             summary_.restartError = toJournalError(launched.error());
-            summary_.fileState = JournalFileState::Complete;
-            auto recorded = persistSummary("journal.restart_failed.after");
+            auto recorded = persistCompletion("journal.restart_failed.after");
             if (!recorded) {
                 return Result<void>::fail(
                     combinedError(launched.error(), "failed to record restart failure", recorded.error()));
@@ -1531,8 +1545,7 @@ class ApplyTransaction final {
             return boundary;
         }
         summary_.restartState = JournalRestartState::Launched;
-        summary_.fileState = JournalFileState::Complete;
-        auto completed = persistSummary("journal.complete.after");
+        auto completed = persistCompletion("journal.complete.after");
         if (!completed) {
             return completed;
         }
@@ -1540,7 +1553,11 @@ class ApplyTransaction final {
     }
 
     Result<void> publishTerminalAndClear() {
-        auto published = journal_.writeTerminal({transactionId_, planDigest_});
+        if (!summary_.completedAt) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "Completed apply journal is missing its completion timestamp"});
+        }
+        auto published = journal_.writeTerminal({transactionId_, planDigest_, summary_.completedAt});
         if (!published) {
             return published;
         }
@@ -1577,7 +1594,7 @@ class ApplyTransaction final {
 };
 
 Result<void> validateRecoveredSummary(const ApplyPlan& plan, const ActiveTransaction& transaction,
-                                      const ApplyJournalSummary& summary) {
+                                       const ApplyJournalSummary& summary) {
     if (summary.transactionId != transaction.transactionId || summary.planDigest != transaction.planDigest) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Apply transaction and journal summary disagree"});
     }
@@ -1632,6 +1649,15 @@ Result<void> validateRecoveredSummary(const ApplyPlan& plan, const ActiveTransac
     }
     if (!stateCombinationAllowed) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Apply journal file and restart states are inconsistent"});
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validateTerminalCompletionTimestamp(const ActiveTransaction& terminal,
+                                                 const ApplyJournalSummary& summary) {
+    if (terminal.completedAt != summary.completedAt) {
+        return Result<void>::fail(
+            {ErrorCode::ApplyFailed, "Terminal apply receipt and journal summary completion timestamps disagree"});
     }
     return Result<void>::ok();
 }
@@ -1693,6 +1719,10 @@ Result<void> replayTerminalTransaction(const ApplyPlan& requestedPlan, IRootedDi
     auto validSummary = validateRecoveredSummary(terminalPlan.value(), terminal, summary.value());
     if (!validSummary) {
         return validSummary;
+    }
+    auto validCompletion = validateTerminalCompletionTimestamp(terminal, summary.value());
+    if (!validCompletion) {
+        return validCompletion;
     }
     auto backupRoot = dependencies.fileSystem->openRoot(terminalPlan.value().backupDir, RootAccess::ReadOnly, false);
     if (!backupRoot) {
@@ -1882,6 +1912,10 @@ Result<void> executeRollbackRequest(const ApplyPlan& request, IRootedDirectory& 
     auto validSummary = validateRecoveredSummary(terminalPlan.value(), *terminal, summary.value());
     if (!validSummary) {
         return validSummary;
+    }
+    auto validCompletion = validateTerminalCompletionTimestamp(*terminal, summary.value());
+    if (!validCompletion) {
+        return validCompletion;
     }
 
     if (terminal->transactionId != request.rollbackOf->transactionId ||

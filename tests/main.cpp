@@ -110,6 +110,11 @@ void testUpdaterPeriodicCheckPreservesReadyGeneration();
 void testUpdaterQueueOverflowErrorReentryIsBounded();
 void testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction();
 void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt();
+void testUpdaterConfirmsLegacyPendingFromTerminalSnapshot();
+void testUpdaterScopesCustomStagingByManifest();
+void testUpdaterHealthConfirmationDeadlineAndRetention();
+void testUpdaterReconcilesCompletedRollbackPendingState();
+void testUpdaterReconcilesLegacyCompletedRollbackPendingState();
 void testApplyLauncherBoundsProcessWaitTimeout();
 void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan();
 void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable();
@@ -257,6 +262,15 @@ int main(int argc, char* argv[]) {
          testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction},
         {"UpdaterHealthyMarkRequiresMatchingTerminalReceipt",
          testUpdaterHealthyMarkRequiresMatchingTerminalReceipt},
+        {"UpdaterConfirmsLegacyPendingFromTerminalSnapshot",
+         testUpdaterConfirmsLegacyPendingFromTerminalSnapshot},
+        {"UpdaterScopesCustomStagingByManifest", testUpdaterScopesCustomStagingByManifest},
+        {"UpdaterHealthConfirmationDeadlineAndRetention",
+         testUpdaterHealthConfirmationDeadlineAndRetention},
+        {"UpdaterReconcilesCompletedRollbackPendingState",
+         testUpdaterReconcilesCompletedRollbackPendingState},
+        {"UpdaterReconcilesLegacyCompletedRollbackPendingState",
+         testUpdaterReconcilesLegacyCompletedRollbackPendingState},
         {"ApplyLauncherBoundsProcessWaitTimeout", testApplyLauncherBoundsProcessWaitTimeout},
         {"UpdaterDelegatesRollbackToTerminalBoundExternalPlan",
          testUpdaterDelegatesRollbackToTerminalBoundExternalPlan},

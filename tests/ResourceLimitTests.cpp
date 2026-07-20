@@ -519,6 +519,16 @@ void testApplyPlanWriterReconcilesPublishedCommitAcknowledgement() {
     LAU_REQUIRE(written);
     LAU_REQUIRE(fault->consumed.load(std::memory_order_acquire));
     LAU_REQUIRE(std::filesystem::is_regular_file(written.value().path));
+    LAU_REQUIRE(written.value().plan.backupDir.filename() == envelope.sha256);
+
+    auto laterEnvelope = envelope;
+    laterEnvelope.manifest.releaseId = "release-2-rebuilt";
+    laterEnvelope.sha256 = std::string(64, 'b');
+    auto laterWritten = autoupdater::writeApplyPlan(config, laterEnvelope, decision, *fileSystem);
+    LAU_REQUIRE(laterWritten);
+    LAU_REQUIRE(laterWritten.value().plan.backupDir.filename() == laterEnvelope.sha256);
+    LAU_REQUIRE(laterWritten.value().plan.backupDir.lexically_normal() !=
+                written.value().plan.backupDir.lexically_normal());
 
     config.tempDir = root / "non-reconcilable";
     auto nonReconcilableFault = std::make_shared<autoupdater::test::CommitAcknowledgementFault>();

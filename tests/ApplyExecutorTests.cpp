@@ -239,12 +239,14 @@ void testApplyExecutorUsesSafeAtomicJournalName() {
     LAU_REQUIRE(planDigest);
     LAU_REQUIRE(terminal.value().planDigest == planDigest.value());
     LAU_REQUIRE(terminal.value().transactionId != terminal.value().planDigest);
+    LAU_REQUIRE(terminal.value().completedAt.has_value());
 
     const auto summary = autoupdater::updater::parseApplyJournalSummary(
         readFile(journalDir / (terminal.value().transactionId + ".json")));
     LAU_REQUIRE(summary);
     LAU_REQUIRE(summary.value().fileState == autoupdater::updater::JournalFileState::Complete);
     LAU_REQUIRE(summary.value().restartState == autoupdater::updater::JournalRestartState::NotRequested);
+    LAU_REQUIRE(summary.value().completedAt == terminal.value().completedAt);
     const auto snapshot =
         autoupdater::ApplyPlan::parse(readFile(journalDir / (terminal.value().transactionId + ".plan.json")));
     LAU_REQUIRE(snapshot);

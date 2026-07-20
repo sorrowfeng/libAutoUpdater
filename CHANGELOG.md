@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-No unreleased changes yet.
+### Changed
+
+- `Config::tempDir` is now consistently treated as a staging root; the updater
+  derives version- and manifest-specific directories beneath it.
+- Healthy confirmation now enforces the configured completion deadline while
+  retaining manifest-scoped rollback backups for operator-managed cleanup.
 
 ## v0.1.5 - 2026-06-05
 

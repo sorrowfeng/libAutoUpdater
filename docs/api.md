@@ -29,10 +29,21 @@ The output directory is `build/docs/html`.
 
 - Application identity: `appId`, `channel`, `platform`, `arch`.
 - Versions: `currentVersion`, `clientVersion`.
-- Paths: `installDir`, `tempDir`, `updaterExecutable`.
+- Paths: `installDir`, `tempDir`, `updaterExecutable`. `tempDir` is a staging
+  root; `Updater` always derives `<version>/<manifest-sha256>` beneath it so
+  caller-supplied roots cannot mix artifacts or apply plans from two manifests.
+  Give each installation its own root; sharing one custom `tempDir` across
+  installations is unsupported.
 - Network policy: connect and transfer timeouts, TLS, resumable downloads. Positive timeout values bound transport waits; zero disables the corresponding bound.
 - Security policy: signatures, public key, URL allowlist, anti-downgrade, expired manifest rejection. Setting `rejectDowngrade=false` permits only downgrades requested by an independently verified release manifest; it does not make unsigned downgrade requests effective.
-- Apply policy: process wait timeout and healthy-confirmation timeout. `applyWaitTimeout` is restricted to the inclusive range from zero to 24 hours.
+- Apply policy: process wait timeout and healthy-confirmation timeout. Both
+  values are restricted to the inclusive range from zero to 24 hours. A zero
+  `healthConfirmationTimeout` disables the deadline. Otherwise the deadline
+  starts at the durable completion time recorded by the external updater;
+  equality is expired. An expired pending update makes a check enter `Failed`
+  and `markCurrentVersionHealthy()` fail while retaining rollback evidence.
+  Successful confirmation clears only the exact pending state and retains the
+  manifest-specific backup for operator-managed cleanup.
 
 ## Manifest
 
@@ -71,6 +82,14 @@ Injectable interfaces:
 - `IStateStore`
 
 Use these interfaces for tests, Qt integration, custom network stacks, and sandboxed environments.
+
+`IStateStore::savePendingUpdate()` is create-if-absent: replaying the exact
+value is idempotent, while a different existing pending value must not be
+overwritten. The bundled JSON store also implements the separate
+`IPendingUpdateCompareAndSet` capability. Custom stores that want `Updater` to
+reconcile a completed rollback must implement that atomic capability; it is
+kept outside `IStateStore` so existing implementations retain their interface
+and virtual-table contract.
 
 `IProcessLauncher::launch()` reports success only after the operating system has
 created the requested executable image. Arguments are UTF-8 values passed

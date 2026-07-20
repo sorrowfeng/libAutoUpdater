@@ -46,13 +46,33 @@ class IStateStore {
     virtual Result<void> commitHealthyVersion(const Version& version, const std::string& releaseId,
                                               const std::optional<PendingUpdate>& expectedPending) noexcept = 0;
 
+    /// Atomically creates the pending update when none exists. Saving the
+    /// exact persisted value again is an idempotent success; a different
+    /// existing value must fail without changing persistent state.
     virtual Result<void> savePendingUpdate(const PendingUpdate& pending) noexcept = 0;
     virtual Result<std::optional<PendingUpdate>> loadPendingUpdate() noexcept = 0;
+
+    /// Unconditionally clears any pending update.
     virtual Result<void> clearPendingUpdate() noexcept = 0;
 
     virtual Result<void> saveDownloadResume(const DownloadResumeState& state) noexcept = 0;
     virtual Result<std::optional<DownloadResumeState>> loadDownloadResume(const std::string& key) noexcept = 0;
     virtual Result<void> clearDownloadResume(const std::string& key) noexcept = 0;
+};
+
+/// Optional capability implemented by state stores that can atomically clear
+/// an exact pending value. It is separate from IStateStore so existing custom
+/// implementations keep their source and virtual-table contract. Updater
+/// fails closed when rollback reconciliation needs this capability and the
+/// configured store does not provide it.
+class IPendingUpdateCompareAndSet {
+  public:
+    virtual ~IPendingUpdateCompareAndSet() = default;
+
+    /// Atomically clears the pending update only when every persisted field
+    /// matches expectedPending. Missing or mismatched state must fail without
+    /// changing persistent state.
+    virtual Result<void> clearPendingUpdateIfMatches(const PendingUpdate& expectedPending) noexcept = 0;
 };
 
 std::shared_ptr<IStateStore> createJsonStateStore(const std::filesystem::path& path);

@@ -3,7 +3,9 @@
 #include "ApplyJournal.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/interfaces/IHashProvider.h"
+#include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 
 #include <algorithm>
 #include <chrono>
@@ -461,6 +463,14 @@ std::filesystem::path terminalJournal(const autoupdater::ApplyPlan& plan) {
     return plan.installDir / std::filesystem::u8path(autoupdater::updater::ApplyJournalStore::terminalPath());
 }
 
+autoupdater::util::UtcInstant requireMatchingCompletionTimestamp(const autoupdater::ApplyPlan& plan) {
+    const auto terminal = readTerminalTransaction(plan);
+    const auto summary = readSummary(plan, terminal.transactionId);
+    LAU_REQUIRE(terminal.completedAt.has_value());
+    LAU_REQUIRE(summary.completedAt == terminal.completedAt);
+    return *terminal.completedAt;
+}
+
 std::size_t launchCount(const std::filesystem::path& marker) {
     if (!std::filesystem::exists(marker)) {
         return 0;
@@ -650,9 +660,36 @@ void testReplaceAndJournalBoundaries(const std::filesystem::path& helper) {
             LAU_REQUIRE(readFile(backup) == kOldContents);
         }
 
+        std::optional<autoupdater::util::UtcInstant> completionBeforeRecovery;
+        const auto boundaryName = std::string_view(boundary.name);
+        if (boundaryName == "journal.complete.after" || boundaryName == "journal.terminal.after" ||
+            boundaryName == "journal.active_clear.after") {
+            const auto transaction = boundary.activeRecorded ? readActiveTransaction(plan)
+                                                             : readTerminalTransaction(plan);
+            auto summary = readSummary(plan, transaction.transactionId);
+            LAU_REQUIRE(summary.completedAt.has_value());
+            if (boundaryName == "journal.complete.after") {
+                const auto fixedTimestamp =
+                    autoupdater::util::parseRfc3339("2001-02-03T04:05:06.000000007Z");
+                LAU_REQUIRE(fixedTimestamp);
+                summary.completedAt = fixedTimestamp.value();
+                const auto serialized = autoupdater::updater::serializeApplyJournalSummary(summary);
+                LAU_REQUIRE(serialized);
+                writeFile(summaryJournal(plan, transaction.transactionId), serialized.value());
+            }
+            completionBeforeRecovery = summary.completedAt;
+            if (std::filesystem::exists(terminalJournal(plan))) {
+                const auto terminal = readTerminalTransaction(plan);
+                LAU_REQUIRE(terminal.completedAt == summary.completedAt);
+            }
+        }
+
         LAU_REQUIRE(recover(helper, planPath) == 0);
         requireActiveJournalCleared(plan, boundary.name);
         LAU_REQUIRE(readFile(target) == (boundary.expectedNewAfterNextStart ? kNewContents : kOldContents));
+        if (completionBeforeRecovery) {
+            LAU_REQUIRE(requireMatchingCompletionTimestamp(plan) == *completionBeforeRecovery);
+        }
     }
 }
 
@@ -817,6 +854,34 @@ void testRepeatedPlanReplaysTerminalReceipt(const std::filesystem::path& helper)
         requireActiveJournalCleared(plan, "terminal receipt after active clear crash");
         LAU_REQUIRE(readFile(target) == kNewContents);
         LAU_REQUIRE(planSnapshotNames(plan) == firstSnapshots);
+    }
+
+    {
+        TemporaryDirectory temporary("legacy-complete-timestamp-migration");
+        const auto plan = replacePlan(temporary, true);
+        const auto planPath = savePlan(temporary, plan);
+
+        LAU_REQUIRE(crashAt(helper, planPath, "journal.complete.after", false) == kCrashExitCode);
+        const auto active = readActiveTransaction(plan);
+        LAU_REQUIRE(!active.completedAt);
+        const auto summaryPath = summaryJournal(plan, active.transactionId);
+        auto parsedSummary = autoupdater::util::Json::parse(readFile(summaryPath), autoupdater::JsonResourceLimits{});
+        LAU_REQUIRE(parsedSummary);
+        auto legacySummary = parsedSummary.value().asObject();
+        legacySummary["schemaVersion"] = autoupdater::util::Json(UINT64_C(2));
+        LAU_REQUIRE(legacySummary.erase("completedAt") == 1);
+        writeFile(summaryPath, autoupdater::util::Json(std::move(legacySummary)).stringify(2));
+        const auto parsedLegacy = readSummary(plan, active.transactionId);
+        LAU_REQUIRE(parsedLegacy.schemaVersion == 2);
+        LAU_REQUIRE(!parsedLegacy.completedAt);
+
+        LAU_REQUIRE(recover(helper, planPath) == 0);
+        const auto migratedTimestamp = requireMatchingCompletionTimestamp(plan);
+        const auto migratedSummary = readSummary(plan, active.transactionId);
+        LAU_REQUIRE(migratedSummary.schemaVersion == 3);
+        LAU_REQUIRE(migratedSummary.completedAt == migratedTimestamp);
+        LAU_REQUIRE(recover(helper, planPath) == 0);
+        LAU_REQUIRE(requireMatchingCompletionTimestamp(plan) == migratedTimestamp);
     }
 }
 
@@ -1251,6 +1316,11 @@ void testDamagedActiveTransactionRecordsFailClosed(const std::filesystem::path& 
         summary.restartError = state.restartErrorRequired
                                    ? autoupdater::updater::JournalError{"ApplyLaunchFailed", "injected outcome unknown"}
                                    : autoupdater::updater::JournalError{};
+        if (state.fileState == autoupdater::updater::JournalFileState::Complete) {
+            const auto completedAt = autoupdater::util::parseRfc3339("2026-07-20T12:34:56Z");
+            LAU_REQUIRE(completedAt);
+            summary.completedAt = completedAt.value();
+        }
         const auto serialized = autoupdater::updater::serializeApplyJournalSummary(summary);
         LAU_REQUIRE(serialized);
         writeFile(summaryJournal(plan, active.transactionId), serialized.value());
@@ -1364,6 +1434,7 @@ void testInterruptedRestartIsNotRepeated(const std::filesystem::path& helper) {
         const auto summary = readSummary(plan, terminal.transactionId);
         LAU_REQUIRE(summary.fileState == autoupdater::updater::JournalFileState::Complete);
         LAU_REQUIRE(summary.restartState == autoupdater::updater::JournalRestartState::Failed);
+        LAU_REQUIRE(summary.completedAt == terminal.completedAt);
         LAU_REQUIRE(recoverWithFailingMarker(helper, planPath, marker) == 0);
         LAU_REQUIRE(launchCount(marker) == 1);
     }
@@ -1392,6 +1463,8 @@ void testInterruptedRestartIsNotRepeated(const std::filesystem::path& helper) {
         summary = readSummary(plan, active.transactionId);
         LAU_REQUIRE(summary.fileState == autoupdater::updater::JournalFileState::Complete);
         LAU_REQUIRE(summary.restartState == autoupdater::updater::JournalRestartState::Failed);
+        LAU_REQUIRE(summary.completedAt.has_value());
+        LAU_REQUIRE(requireMatchingCompletionTimestamp(plan) == *summary.completedAt);
     }
 
     {

@@ -54,6 +54,7 @@ struct ApplyJournalSummary {
     std::string transactionId;
     std::string planDigest;
     JournalFileState fileState = JournalFileState::Prepared;
+    std::optional<util::UtcInstant> completedAt;
     std::size_t operationCount = 0;
     JournalError applyError;
     JournalError rollbackError;

@@ -116,7 +116,20 @@ Replacement is performed by `autoupdater_apply`:
 5. Verify installed files by SHA-256.
 6. Roll back backups on failure.
 
-Callers should invoke `markCurrentVersionHealthy()` after the new version starts successfully so the previous version can be considered healthy.
+Callers should invoke `markCurrentVersionHealthy()` after the new version
+starts successfully. The configured health deadline is measured from the
+external updater's durable completion receipt and is evaluated against the
+local wall clock. Deadline expiry fails closed and retains both pending state
+and rollback evidence. A successful confirmation atomically clears only the
+matching pending record. Backups are deliberately retained in
+manifest-specific directories and are not garbage-collected by the library;
+deployments may remove them later only under an explicit retention policy.
+Legacy schema-v2 receipts have no authoritative completion time, so they
+remain confirmable without enforcing a guessed deadline. Legacy pending state
+that predates apply-plan digests is never treated as a wildcard: confirmation
+or completed-rollback reconciliation must first match the digest-verified
+immutable transaction snapshot against all persisted version, release, and
+path metadata.
 
 ## Security Review Checklist
 

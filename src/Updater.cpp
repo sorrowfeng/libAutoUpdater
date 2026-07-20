@@ -9,10 +9,12 @@
 #include "ProcessWait.h"
 #include "UpdatePlanner.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <limits>
 #include <utility>
 
 namespace autoupdater {
@@ -79,6 +81,32 @@ Result<void> validateResourceLimits(const ResourceLimits& resources) {
         return Result<void>::fail({ErrorCode::InvalidConfig, "Resource byte limits are inconsistent"});
     }
     return Result<void>::ok();
+}
+
+constexpr std::chrono::seconds kMaximumHealthConfirmationTimeout{24 * 60 * 60};
+
+bool validHealthConfirmationTimeout(std::chrono::seconds timeout) noexcept {
+    return timeout.count() >= 0 && timeout <= kMaximumHealthConfirmationTimeout;
+}
+
+Result<bool> healthConfirmationExpired(const std::optional<util::UtcInstant>& completedAt,
+                                       std::chrono::seconds timeout) {
+    if (!validHealthConfirmationTimeout(timeout)) {
+        return Result<bool>::fail(
+            {ErrorCode::InvalidConfig, "healthConfirmationTimeout is outside the safe range"});
+    }
+    if (!completedAt || timeout.count() == 0) {
+        return Result<bool>::ok(false);
+    }
+    if (completedAt->unixSeconds > std::numeric_limits<std::int64_t>::max() - timeout.count()) {
+        return Result<bool>::ok(false);
+    }
+    const util::UtcInstant deadline{completedAt->unixSeconds + timeout.count(), completedAt->nanoseconds};
+    auto now = util::currentUtcInstant();
+    if (!now) {
+        return Result<bool>::fail(now.error());
+    }
+    return Result<bool>::ok(now.value() >= deadline);
 }
 
 } // namespace
@@ -381,6 +409,146 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (!detail::validProcessWaitTimeout(config.applyWaitTimeout)) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "applyWaitTimeout is outside the safe range"});
         }
+        if (!validHealthConfirmationTimeout(config.healthConfirmationTimeout)) {
+            return Result<void>::fail(
+                {ErrorCode::InvalidConfig, "healthConfirmationTimeout is outside the safe range"});
+        }
+        return Result<void>::ok();
+    }
+
+    bool installPlanMatchesPending(const ApplyPlan& plan, const PendingUpdate& pending,
+                                   bool requireCurrentFromVersion) const {
+        return plan.intent == ApplyPlanIntent::Install && !plan.rollbackOf &&
+               (!requireCurrentFromVersion || plan.fromVersion == config.currentVersion.toString()) &&
+               plan.toVersion == pending.version.toString() && plan.releaseId == pending.releaseId &&
+               (config.appId.empty() || plan.appId == config.appId) &&
+               plan.installDir.lexically_normal() == config.installDir.lexically_normal() &&
+               plan.stagingDir.lexically_normal() == pending.applyPlanPath.parent_path().lexically_normal() &&
+               plan.backupDir.lexically_normal() == pending.backupDir.lexically_normal();
+    }
+
+    Result<bool> terminalAuthorizesPendingInstall(IFileSystem& receiptFileSystem,
+                                                  const ApplyTransactionReceipt& terminal,
+                                                  const PendingUpdate& pending) const {
+        if (!pending.applyPlanDigest.empty()) {
+            return Result<bool>::ok(terminal.planDigest == pending.applyPlanDigest);
+        }
+
+        // Legacy pending state did not persist the digest. Bind it to the
+        // immutable, digest-verified terminal plan snapshot and compare every
+        // piece of install identity that the legacy state did retain. The
+        // empty digest is never treated as a wildcard.
+        auto plan = detail::loadTerminalApplyPlan(receiptFileSystem, config.installDir, terminal, config.resources);
+        if (!plan) {
+            return Result<bool>::fail(plan.error());
+        }
+        return Result<bool>::ok(installPlanMatchesPending(plan.value(), pending, false));
+    }
+
+    Result<std::optional<PendingUpdate>> loadPendingAndReconcileRollback(const Dependencies& deps) {
+        if (!deps.stateStore) {
+            return Result<std::optional<PendingUpdate>>::ok(std::nullopt);
+        }
+        auto pending = deps.stateStore->loadPendingUpdate();
+        if (!pending) {
+            return Result<std::optional<PendingUpdate>>::fail(pending.error());
+        }
+        if (!pending.value() || pending.value()->version == config.currentVersion) {
+            return pending;
+        }
+        if (!deps.fileSystem) {
+            return Result<std::optional<PendingUpdate>>::fail(
+                {ErrorCode::InvalidConfig, "File system dependency is missing"});
+        }
+        auto terminal = loadTerminalApplyTransaction(*deps.fileSystem, config.installDir);
+        if (!terminal) {
+            return Result<std::optional<PendingUpdate>>::fail(terminal.error());
+        }
+        if (!terminal.value() || terminal.value()->planDigest == pending.value()->applyPlanDigest) {
+            return pending;
+        }
+        auto terminalPlan =
+            detail::loadTerminalApplyPlan(*deps.fileSystem, config.installDir, *terminal.value(), config.resources);
+        if (!terminalPlan) {
+            return Result<std::optional<PendingUpdate>>::fail(terminalPlan.error());
+        }
+        bool completedRollback =
+            terminalPlan.value().intent == ApplyPlanIntent::Rollback && terminalPlan.value().rollbackOf &&
+            (pending.value()->applyPlanDigest.empty() ||
+             terminalPlan.value().rollbackOf->planDigest == pending.value()->applyPlanDigest) &&
+            terminalPlan.value().fromVersion == pending.value()->version.toString() &&
+            terminalPlan.value().toVersion == config.currentVersion.toString() &&
+            terminalPlan.value().releaseId == pending.value()->releaseId &&
+            (config.appId.empty() || terminalPlan.value().appId == config.appId) &&
+            terminalPlan.value().installDir.lexically_normal() == config.installDir.lexically_normal() &&
+            terminalPlan.value().stagingDir.lexically_normal() == pending.value()->backupDir.lexically_normal();
+        if (completedRollback && pending.value()->applyPlanDigest.empty()) {
+            const ApplyTransactionReceipt forwardReceipt{
+                terminalPlan.value().rollbackOf->transactionId,
+                terminalPlan.value().rollbackOf->planDigest,
+                std::nullopt,
+            };
+            auto forwardPlan = detail::loadTerminalApplyPlan(*deps.fileSystem, config.installDir, forwardReceipt,
+                                                             config.resources);
+            if (!forwardPlan) {
+                return Result<std::optional<PendingUpdate>>::fail(forwardPlan.error());
+            }
+            completedRollback = installPlanMatchesPending(forwardPlan.value(), *pending.value(), true) &&
+                                forwardPlan.value().appId == terminalPlan.value().appId &&
+                                forwardPlan.value().manifestSha256 == terminalPlan.value().manifestSha256;
+        }
+        if (!completedRollback) {
+            return pending;
+        }
+        auto* compareAndSet = dynamic_cast<IPendingUpdateCompareAndSet*>(deps.stateStore.get());
+        if (!compareAndSet) {
+            return Result<std::optional<PendingUpdate>>::fail(
+                {ErrorCode::StateStoreError,
+                 "State store does not support atomic pending-update reconciliation"});
+        }
+        auto cleared = compareAndSet->clearPendingUpdateIfMatches(*pending.value());
+        if (!cleared) {
+            return Result<std::optional<PendingUpdate>>::fail(cleared.error());
+        }
+        return Result<std::optional<PendingUpdate>>::ok(std::nullopt);
+    }
+
+    Result<void> validatePendingHealth(const Dependencies& deps) {
+        auto pending = loadPendingAndReconcileRollback(deps);
+        if (!pending) {
+            return Result<void>::fail(pending.error());
+        }
+        if (!pending.value() || pending.value()->version != config.currentVersion) {
+            return Result<void>::ok();
+        }
+        if (!deps.fileSystem) {
+            return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
+        }
+        auto terminal = loadTerminalApplyTransaction(*deps.fileSystem, config.installDir);
+        if (!terminal) {
+            return Result<void>::fail(terminal.error());
+        }
+        if (!terminal.value()) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+        }
+        auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
+        if (!authorized) {
+            return Result<void>::fail(authorized.error());
+        }
+        if (!authorized.value()) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+        }
+        auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
+        if (!expired) {
+            return Result<void>::fail(expired.error());
+        }
+        if (expired.value()) {
+            return Result<void>::fail(
+                {ErrorCode::ApplyFailed,
+                 "Health confirmation deadline expired; pending state and rollback backup were retained"});
+        }
         return Result<void>::ok();
     }
 
@@ -389,6 +557,11 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         auto valid = validateConfig(deps);
         if (!valid) {
             return Result<UpdateDecision>::fail(valid.error());
+        }
+
+        auto health = validatePendingHealth(deps);
+        if (!health) {
+            return Result<UpdateDecision>::fail(health.error());
         }
 
         if (!setGenerationState(generation, State::Checking)) {
@@ -404,10 +577,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             return Result<UpdateDecision>::fail(envelope.error());
         }
 
-        if (effectiveConfig.tempDir == util::defaultStagingRoot(effectiveConfig.installDir) / "staging") {
-            effectiveConfig.tempDir = util::defaultStagingRoot(effectiveConfig.installDir) / "staging" /
-                                      safeVersionForPath(envelope.value().manifest.version);
-        }
+        effectiveConfig.tempDir = effectiveConfig.tempDir / safeVersionForPath(envelope.value().manifest.version) /
+                                  util::pathFromUtf8(envelope.value().sha256);
 
         auto snapshot =
             buildLocalSnapshot(effectiveConfig, envelope.value().manifest, *deps.fileSystem, *deps.hashProvider);
@@ -1029,11 +1200,15 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (!validResources) {
             return validResources;
         }
+        if (!validHealthConfirmationTimeout(config.healthConfirmationTimeout)) {
+            return Result<void>::fail(
+                {ErrorCode::InvalidConfig, "healthConfirmationTimeout is outside the safe range"});
+        }
         auto deps = dependenciesCopy();
         if (!deps.stateStore) {
             return Result<void>::ok();
         }
-        auto pending = deps.stateStore->loadPendingUpdate();
+        auto pending = loadPendingAndReconcileRollback(deps);
         if (!pending) {
             return Result<void>::fail(pending.error());
         }
@@ -1051,9 +1226,26 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             if (!terminal) {
                 return Result<void>::fail(terminal.error());
             }
-            if (!terminal.value() || terminal.value()->planDigest != pending.value()->applyPlanDigest) {
+            if (!terminal.value()) {
                 return Result<void>::fail(
                     {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+            }
+            auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
+            if (!authorized) {
+                return Result<void>::fail(authorized.error());
+            }
+            if (!authorized.value()) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt"});
+            }
+            auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
+            if (!expired) {
+                return Result<void>::fail(expired.error());
+            }
+            if (expired.value()) {
+                return Result<void>::fail(
+                    {ErrorCode::ApplyFailed,
+                     "Health confirmation deadline expired; pending state and rollback backup were retained"});
             }
             releaseId = pending.value()->releaseId;
         }
@@ -1084,7 +1276,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (!deps.processLauncher) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "Process launcher dependency is missing"});
         }
-        auto pending = deps.stateStore->loadPendingUpdate();
+        auto pending = loadPendingAndReconcileRollback(deps);
         if (!pending) {
             return Result<void>::fail(pending.error());
         }

@@ -1,6 +1,7 @@
 #include "ApplyJournal.h"
 
 #include "util/Json.h"
+#include "util/Rfc3339.h"
 #include "util/Sha256.h"
 
 #include <algorithm>
@@ -19,7 +20,9 @@ namespace autoupdater::updater {
 
 namespace {
 
-constexpr std::uint64_t kJournalSchemaVersion = 2;
+constexpr std::uint64_t kLegacySummarySchemaVersion = 2;
+constexpr std::uint64_t kSummarySchemaVersion = 3;
+constexpr std::uint64_t kOperationSchemaVersion = 2;
 constexpr std::size_t kReadChunkBytes = 64 * 1024;
 
 Error journalError(const std::string& message) {
@@ -47,7 +50,8 @@ JsonResourceLimits journalJsonLimits() {
     return limits;
 }
 
-Result<util::Json> parseObject(const std::string& text, const std::string& description) {
+Result<util::Json> parseObject(const std::string& text, const std::string& description,
+                               std::initializer_list<std::uint64_t> supportedSchemas) {
     if (text.size() > kMaxJournalRecordBytes) {
         return Result<util::Json>::fail({ErrorCode::ResourceLimitExceeded, description + " exceeds its byte limit"});
     }
@@ -59,7 +63,8 @@ Result<util::Json> parseObject(const std::string& text, const std::string& descr
         return Result<util::Json>::fail(journalError(description + " must be a JSON object"));
     }
     const auto* schema = parsed.value().get("schemaVersion");
-    if (!schema || !schema->isUnsignedInteger() || schema->asUInt64() != kJournalSchemaVersion) {
+    if (!schema || !schema->isUnsignedInteger() ||
+        std::find(supportedSchemas.begin(), supportedSchemas.end(), schema->asUInt64()) == supportedSchemas.end()) {
         return Result<util::Json>::fail(journalError("Unsupported " + description + " schema version"));
     }
     return parsed;
@@ -257,7 +262,7 @@ Result<void> validateOperationRecord(const ApplyJournalOperation& operation) {
     return Result<void>::ok();
 }
 
-Result<void> validateSummaryRecord(const ApplyJournalSummary& summary) {
+Result<void> validateSummaryRecord(const ApplyJournalSummary& summary, bool allowLegacyCompleteWithoutTimestamp) {
     auto transaction = validateTransaction(summary.transactionId, summary.planDigest);
     if (!transaction) {
         return transaction;
@@ -270,6 +275,18 @@ Result<void> validateSummaryRecord(const ApplyJournalSummary& summary) {
     if (!completeError(summary.applyError) || !completeError(summary.rollbackError) ||
         !completeError(summary.restartError)) {
         return Result<void>::fail(journalError("Apply journal summary contains an incomplete error"));
+    }
+    if (summary.completedAt) {
+        if (summary.fileState != JournalFileState::Complete) {
+            return Result<void>::fail(
+                journalError("Apply journal completion timestamp is present before completion"));
+        }
+        auto formatted = autoupdater::detail::formatApplyCompletionTimestamp(*summary.completedAt);
+        if (!formatted) {
+            return Result<void>::fail(journalError("Invalid apply journal completion timestamp"));
+        }
+    } else if (summary.fileState == JournalFileState::Complete && !allowLegacyCompleteWithoutTimestamp) {
+        return Result<void>::fail(journalError("Completed apply journal summary is missing completedAt"));
     }
     return Result<void>::ok();
 }
@@ -436,14 +453,22 @@ Result<ActiveTransaction> parseActiveTransaction(const std::string& text) noexce
 
 Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summary) noexcept {
     try {
-        auto valid = validateSummaryRecord(summary);
+        auto valid = validateSummaryRecord(summary, false);
         if (!valid)
             return Result<std::string>::fail(valid.error());
         util::Json::Object object;
-        object.emplace("schemaVersion", kJournalSchemaVersion);
+        object.emplace("schemaVersion",
+                       summary.completedAt ? kSummarySchemaVersion : kLegacySummarySchemaVersion);
         object.emplace("transactionId", summary.transactionId);
         object.emplace("planDigest", summary.planDigest);
         object.emplace("fileState", journalFileStateName(summary.fileState));
+        if (summary.completedAt) {
+            auto timestamp = autoupdater::detail::formatApplyCompletionTimestamp(*summary.completedAt);
+            if (!timestamp) {
+                return Result<std::string>::fail(timestamp.error());
+            }
+            object.emplace("completedAt", std::move(timestamp.value()));
+        }
         object.emplace("operationCount", std::to_string(summary.operationCount));
         object.emplace("applyError", errorToJson(summary.applyError));
         object.emplace("rollbackError", errorToJson(summary.rollbackError));
@@ -457,13 +482,22 @@ Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summ
 
 Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) noexcept {
     try {
-        auto object = parseObject(text, "apply journal summary");
+        auto object = parseObject(text, "apply journal summary",
+                                  {kLegacySummarySchemaVersion, kSummarySchemaVersion});
         if (!object)
             return Result<ApplyJournalSummary>::fail(object.error());
-        auto keys = requireOnlyKeys(object.value().asObject(),
-                                    {"schemaVersion", "transactionId", "planDigest", "fileState", "operationCount",
-                                     "applyError", "rollbackError", "restartState", "restartError"},
-                                    "Apply journal summary");
+        const auto schemaVersion = object.value().get("schemaVersion")->asUInt64();
+        auto keys = schemaVersion == kLegacySummarySchemaVersion
+                        ? requireOnlyKeys(object.value().asObject(),
+                                          {"schemaVersion", "transactionId", "planDigest", "fileState",
+                                           "operationCount", "applyError", "rollbackError", "restartState",
+                                           "restartError"},
+                                          "Apply journal summary")
+                        : requireOnlyKeys(object.value().asObject(),
+                                          {"schemaVersion", "transactionId", "planDigest", "fileState",
+                                           "completedAt", "operationCount", "applyError", "rollbackError",
+                                           "restartState", "restartError"},
+                                          "Apply journal summary");
         if (!keys)
             return Result<ApplyJournalSummary>::fail(keys.error());
         auto transactionId = requiredString(object.value(), "transactionId");
@@ -502,15 +536,38 @@ Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) no
             return Result<ApplyJournalSummary>::fail(fileState.error());
         if (!restartState)
             return Result<ApplyJournalSummary>::fail(restartState.error());
+        std::optional<util::UtcInstant> completedAt;
+        if (const auto* timestamp = object.value().get("completedAt")) {
+            if (!timestamp->isString()) {
+                return Result<ApplyJournalSummary>::fail(
+                    journalError("Apply journal completion timestamp must be a string"));
+            }
+            auto instant = util::parseRfc3339(timestamp->asString());
+            if (!instant || !autoupdater::detail::formatApplyCompletionTimestamp(instant.value())) {
+                return Result<ApplyJournalSummary>::fail(
+                    journalError("Invalid apply journal completion timestamp"));
+            }
+            completedAt = instant.value();
+        } else if (schemaVersion == kSummarySchemaVersion) {
+            return Result<ApplyJournalSummary>::fail(
+                journalError("Apply journal schemaVersion 3 summary is missing completedAt"));
+        }
         ApplyJournalSummary summary;
+        summary.schemaVersion = static_cast<int>(schemaVersion);
         summary.transactionId = transactionId.value();
         summary.planDigest = planDigest.value();
         summary.fileState = fileState.value();
+        summary.completedAt = std::move(completedAt);
         summary.operationCount = static_cast<std::size_t>(operationCount.value());
         summary.applyError = applyError.value();
         summary.rollbackError = rollbackError.value();
         summary.restartState = restartState.value();
         summary.restartError = restartError.value();
+        auto validSummary =
+            validateSummaryRecord(summary, schemaVersion == kLegacySummarySchemaVersion);
+        if (!validSummary) {
+            return Result<ApplyJournalSummary>::fail(validSummary.error());
+        }
         return Result<ApplyJournalSummary>::ok(std::move(summary));
     } catch (...) {
         return Result<ApplyJournalSummary>::fail(journalError("Failed to parse apply journal summary"));
@@ -523,7 +580,7 @@ Result<std::string> serializeApplyJournalOperation(const ApplyJournalOperation& 
         if (!valid)
             return Result<std::string>::fail(valid.error());
         util::Json::Object object;
-        object.emplace("schemaVersion", kJournalSchemaVersion);
+        object.emplace("schemaVersion", kOperationSchemaVersion);
         object.emplace("transactionId", operation.transactionId);
         object.emplace("index", std::to_string(operation.index));
         object.emplace("operationId", operation.operationId);
@@ -547,7 +604,7 @@ Result<std::string> serializeApplyJournalOperation(const ApplyJournalOperation& 
 
 Result<ApplyJournalOperation> parseApplyJournalOperation(const std::string& text) noexcept {
     try {
-        auto object = parseObject(text, "apply journal operation");
+        auto object = parseObject(text, "apply journal operation", {kOperationSchemaVersion});
         if (!object)
             return Result<ApplyJournalOperation>::fail(object.error());
         auto keys = requireOnlyKeys(object.value().asObject(),
@@ -820,6 +877,10 @@ Result<std::optional<ActiveTransaction>> ApplyJournalStore::loadActive() noexcep
         auto active = parseActiveTransaction(*contents.value());
         if (!active)
             return Result<std::optional<ActiveTransaction>>::fail(active.error());
+        if (active.value().completedAt) {
+            return Result<std::optional<ActiveTransaction>>::fail(
+                journalError("Active apply transaction contains a completion timestamp"));
+        }
         return Result<std::optional<ActiveTransaction>>::ok(std::move(active.value()));
     } catch (...) {
         return Result<std::optional<ActiveTransaction>>::fail(journalError("Failed to load active apply transaction"));
@@ -828,6 +889,10 @@ Result<std::optional<ActiveTransaction>> ApplyJournalStore::loadActive() noexcep
 
 Result<void> ApplyJournalStore::writeActive(const ActiveTransaction& active) noexcept {
     try {
+        if (active.completedAt) {
+            return Result<void>::fail(
+                journalError("Active apply transaction cannot contain a completion timestamp"));
+        }
         auto serialized = serializeActiveTransaction(active);
         if (!serialized)
             return Result<void>::fail(serialized.error());
@@ -856,6 +921,10 @@ Result<std::optional<ActiveTransaction>> ApplyJournalStore::loadTerminal() noexc
 
 Result<void> ApplyJournalStore::writeTerminal(const ActiveTransaction& terminal) noexcept {
     try {
+        if (!terminal.completedAt) {
+            return Result<void>::fail(
+                journalError("Terminal apply transaction is missing its completion timestamp"));
+        }
         auto serialized = serializeActiveTransaction(terminal);
         if (!serialized)
             return Result<void>::fail(serialized.error());

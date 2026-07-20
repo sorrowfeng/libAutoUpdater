@@ -384,7 +384,8 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
     std::string contents_;
 };
 
-class RecordingStateStore final : public autoupdater::IStateStore {
+class RecordingStateStore final : public autoupdater::IStateStore,
+                                  public autoupdater::IPendingUpdateCompareAndSet {
   public:
     autoupdater::Result<void> saveLastAcceptedVersion(const autoupdater::Version&,
                                                       const std::string&) noexcept override {
@@ -413,6 +414,11 @@ class RecordingStateStore final : public autoupdater::IStateStore {
     }
 
     autoupdater::Result<void> clearPendingUpdate() noexcept override {
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<void>
+    clearPendingUpdateIfMatches(const autoupdater::PendingUpdate&) noexcept override {
         return autoupdater::Result<void>::ok();
     }
 

@@ -3,6 +3,8 @@
 #include "ApplyLauncher.h"
 #include "ApplyTransactionReceipt.h"
 #include "ProcessWait.h"
+#include "util/Rfc3339.h"
+#include "util/Sha256.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/Updater.h"
 #include "libAutoUpdater/interfaces/IEventDispatcher.h"
@@ -193,7 +195,8 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
 
 std::filesystem::path uniqueTempDir();
 
-class PendingStateStore final : public autoupdater::IStateStore {
+class PendingStateStore final : public autoupdater::IStateStore,
+                                public autoupdater::IPendingUpdateCompareAndSet {
   public:
     PendingStateStore() = default;
     explicit PendingStateStore(std::optional<autoupdater::PendingUpdate> pending) : pending_(std::move(pending)) {}
@@ -252,6 +255,20 @@ class PendingStateStore final : public autoupdater::IStateStore {
             return autoupdater::Result<void>::fail(
                 {autoupdater::ErrorCode::StateStoreError, "scripted pending-state save failed"});
         }
+        const auto samePending = [](const autoupdater::PendingUpdate& left,
+                                    const autoupdater::PendingUpdate& right) {
+            return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
+                   left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
+                   left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
+                   left.applyPlanDigest == right.applyPlanDigest;
+        };
+        if (pending_) {
+            if (samePending(*pending_, pending)) {
+                return autoupdater::Result<void>::ok();
+            }
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "scripted different pending state exists"});
+        }
         pending_ = pending;
         return autoupdater::Result<void>::ok();
     }
@@ -263,6 +280,25 @@ class PendingStateStore final : public autoupdater::IStateStore {
 
     autoupdater::Result<void> clearPendingUpdate() noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
+        ++clearCalls_;
+        pending_.reset();
+        return autoupdater::Result<void>::ok();
+    }
+
+    autoupdater::Result<void>
+    clearPendingUpdateIfMatches(const autoupdater::PendingUpdate& expectedPending) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto samePending = [](const autoupdater::PendingUpdate& left,
+                                    const autoupdater::PendingUpdate& right) {
+            return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
+                   left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
+                   left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
+                   left.applyPlanDigest == right.applyPlanDigest;
+        };
+        if (!pending_ || !samePending(*pending_, expectedPending)) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "scripted pending state changed"});
+        }
         ++clearCalls_;
         pending_.reset();
         return autoupdater::Result<void>::ok();
@@ -331,6 +367,59 @@ class PendingStateStore final : public autoupdater::IStateStore {
     int savePendingCalls_ = 0;
     int saveLastAcceptedCalls_ = 0;
     int clearCalls_ = 0;
+};
+
+class StateStoreWithoutPendingCompareAndSet final : public autoupdater::IStateStore {
+  public:
+    explicit StateStoreWithoutPendingCompareAndSet(std::shared_ptr<autoupdater::IStateStore> delegate)
+        : delegate_(std::move(delegate)) {}
+
+    autoupdater::Result<void> saveLastAcceptedVersion(const autoupdater::Version& version,
+                                                      const std::string& releaseId) noexcept override {
+        return delegate_->saveLastAcceptedVersion(version, releaseId);
+    }
+
+    autoupdater::Result<std::optional<autoupdater::Version>> loadLastAcceptedVersion() noexcept override {
+        return delegate_->loadLastAcceptedVersion();
+    }
+
+    autoupdater::Result<std::string> loadLastAcceptedReleaseId() noexcept override {
+        return delegate_->loadLastAcceptedReleaseId();
+    }
+
+    autoupdater::Result<void>
+    commitHealthyVersion(const autoupdater::Version& version, const std::string& releaseId,
+                         const std::optional<autoupdater::PendingUpdate>& expectedPending) noexcept override {
+        return delegate_->commitHealthyVersion(version, releaseId, expectedPending);
+    }
+
+    autoupdater::Result<void> savePendingUpdate(const autoupdater::PendingUpdate& pending) noexcept override {
+        return delegate_->savePendingUpdate(pending);
+    }
+
+    autoupdater::Result<std::optional<autoupdater::PendingUpdate>> loadPendingUpdate() noexcept override {
+        return delegate_->loadPendingUpdate();
+    }
+
+    autoupdater::Result<void> clearPendingUpdate() noexcept override {
+        return delegate_->clearPendingUpdate();
+    }
+
+    autoupdater::Result<void> saveDownloadResume(const autoupdater::DownloadResumeState& state) noexcept override {
+        return delegate_->saveDownloadResume(state);
+    }
+
+    autoupdater::Result<std::optional<autoupdater::DownloadResumeState>>
+    loadDownloadResume(const std::string& key) noexcept override {
+        return delegate_->loadDownloadResume(key);
+    }
+
+    autoupdater::Result<void> clearDownloadResume(const std::string& key) noexcept override {
+        return delegate_->clearDownloadResume(key);
+    }
+
+  private:
+    std::shared_ptr<autoupdater::IStateStore> delegate_;
 };
 
 class CapturingProcessLauncher final : public autoupdater::IProcessLauncher {
@@ -466,10 +555,23 @@ std::string readFileContents(const std::filesystem::path& path) {
 }
 
 void writeTerminalReceipt(const std::filesystem::path& installDir, const std::string& transactionId,
-                          const std::string& planDigest) {
-    auto serialized = autoupdater::serializeApplyTransactionReceipt({transactionId, planDigest});
+                          const std::string& planDigest,
+                          std::optional<autoupdater::util::UtcInstant> completedAt = std::nullopt) {
+    auto serialized =
+        autoupdater::serializeApplyTransactionReceipt({transactionId, planDigest, std::move(completedAt)});
     LAU_REQUIRE(serialized);
     writeFileContents(installDir / ".autoupdater" / "journal" / "terminal.json", serialized.value());
+}
+
+std::string writeApplyPlanSnapshot(const std::filesystem::path& installDir,
+                                   const std::string& transactionId,
+                                   const autoupdater::ApplyPlan& plan) {
+    const auto json = plan.toJson();
+    const auto digest = autoupdater::util::sha256Bytes(json);
+    writeFileContents(installDir / ".autoupdater" / "journal" /
+                          (transactionId + ".plan.json"),
+                      json);
+    return digest;
 }
 
 autoupdater::Config rollbackConfig(const std::filesystem::path& root) {
@@ -491,6 +593,16 @@ autoupdater::PendingUpdate pendingUpdateFor(const autoupdater::Config& config, c
     pending.applyPlanPath = config.tempDir / "apply-plan.json";
     pending.applyPlanDigest = planDigest;
     return pending;
+}
+
+void writeLegacyPendingState(const std::filesystem::path& statePath,
+                             const autoupdater::PendingUpdate& pending) {
+    const std::string json =
+        "{\"pendingUpdate\":{\"version\":\"" + pending.version.toString() +
+        "\",\"releaseId\":\"" + pending.releaseId + "\",\"backupDir\":\"" +
+        pending.backupDir.generic_u8string() + "\",\"applyPlanPath\":\"" +
+        pending.applyPlanPath.generic_u8string() + "\"}}";
+    writeFileContents(statePath, json);
 }
 
 std::optional<std::string> argumentValue(const autoupdater::ProcessLaunchRequest& request,
@@ -1169,6 +1281,362 @@ void testUpdaterHealthyMarkRequiresMatchingTerminalReceipt() {
     LAU_REQUIRE(stateStore->saveLastAcceptedCalls() == 1);
     LAU_REQUIRE(stateStore->clearCalls() == 1);
     LAU_REQUIRE(!stateStore->hasPendingUpdate());
+}
+
+void testUpdaterConfirmsLegacyPendingFromTerminalSnapshot() {
+    ScopedTempDir temp;
+    auto config = updaterConfig(temp.path());
+    config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+    auto pending = pendingUpdateFor(config, "");
+    const auto backupMarker = pending.backupDir / "retained.marker";
+    writeFileContents(backupMarker, "legacy rollback evidence");
+
+    autoupdater::ApplyPlan forward;
+    forward.schemaVersion = 2;
+    forward.intent = autoupdater::ApplyPlanIntent::Install;
+    forward.appId = config.appId;
+    forward.fromVersion = "1.0.0";
+    forward.toVersion = pending.version.toString();
+    forward.releaseId = pending.releaseId;
+    forward.manifestSha256 = std::string(64, 'e');
+    forward.installDir = config.installDir;
+    forward.stagingDir = pending.applyPlanPath.parent_path();
+    forward.backupDir = pending.backupDir;
+    const std::string transactionId(64, 'a');
+    const auto forwardDigest = writeApplyPlanSnapshot(config.installDir, transactionId, forward);
+    // A schema-v2 terminal receipt has no completedAt. It remains confirmable,
+    // but the legacy pending value is authorized only by its exact snapshot.
+    writeTerminalReceipt(config.installDir, transactionId, forwardDigest);
+
+    const auto statePath = config.installDir / ".autoupdater" / "state.json";
+    writeLegacyPendingState(statePath, pending);
+    auto stateStore = autoupdater::createJsonStateStore(statePath);
+    autoupdater::Updater updater(config);
+    updater.setStateStore(stateStore);
+
+    const auto healthy = updater.markCurrentVersionHealthy();
+    LAU_REQUIRE(healthy);
+    auto afterHealthy = stateStore->loadPendingUpdate();
+    LAU_REQUIRE(afterHealthy);
+    LAU_REQUIRE(!afterHealthy.value().has_value());
+    auto accepted = stateStore->loadLastAcceptedVersion();
+    LAU_REQUIRE(accepted);
+    LAU_REQUIRE(accepted.value().has_value());
+    LAU_REQUIRE(accepted.value()->toString() == "2.0.0");
+    LAU_REQUIRE(std::filesystem::is_regular_file(backupMarker));
+}
+
+void testUpdaterScopesCustomStagingByManifest() {
+    ScopedTempDir temp;
+    const auto config = updaterConfig(temp.path());
+
+    const auto prepare = [&](const std::string& releaseId) {
+        auto network = std::make_shared<ScriptedManifestNetwork>(
+            std::vector<ScriptedManifestNetwork::Step>{
+                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", releaseId))});
+        auto stateStore = std::make_shared<PendingStateStore>();
+        {
+            autoupdater::Updater updater(config);
+            updater.setNetworkClient(network);
+            updater.setStateStore(stateStore);
+            updater.checkAndDownloadAsync();
+            LAU_REQUIRE(waitUntil([&] { return updater.state() == autoupdater::State::ReadyToApply; }));
+        }
+        auto pending = stateStore->pendingUpdate();
+        LAU_REQUIRE(pending.has_value());
+        LAU_REQUIRE(std::filesystem::is_regular_file(pending->applyPlanPath));
+        return *pending;
+    };
+
+    const auto first = prepare("release-2-first");
+    const auto firstPlanContents = readFileContents(first.applyPlanPath);
+    const auto second = prepare("release-2-second");
+
+    LAU_REQUIRE(first.applyPlanPath.parent_path().parent_path().parent_path().lexically_normal() ==
+                config.tempDir.lexically_normal());
+    LAU_REQUIRE(second.applyPlanPath.parent_path().parent_path().parent_path().lexically_normal() ==
+                config.tempDir.lexically_normal());
+    LAU_REQUIRE(first.applyPlanPath.parent_path().parent_path().filename() == "2.0.0");
+    LAU_REQUIRE(second.applyPlanPath.parent_path().parent_path().filename() == "2.0.0");
+    LAU_REQUIRE(first.applyPlanPath.parent_path().filename().string().size() == 64);
+    LAU_REQUIRE(second.applyPlanPath.parent_path().filename().string().size() == 64);
+    LAU_REQUIRE(first.applyPlanPath.parent_path().lexically_normal() !=
+                second.applyPlanPath.parent_path().lexically_normal());
+    LAU_REQUIRE(first.backupDir.lexically_normal() != second.backupDir.lexically_normal());
+    LAU_REQUIRE(readFileContents(first.applyPlanPath) == firstPlanContents);
+}
+
+void testUpdaterHealthConfirmationDeadlineAndRetention() {
+    {
+        ScopedTempDir temp;
+        auto config = updaterConfig(temp.path());
+        config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+        config.healthConfirmationTimeout = std::chrono::seconds(1);
+        const std::string planDigest(64, 'b');
+        const auto pending = pendingUpdateFor(config, planDigest);
+        const auto backupMarker = pending.backupDir / "retained.marker";
+        writeFileContents(backupMarker, "rollback evidence");
+        writeTerminalReceipt(config.installDir, std::string(64, 'a'), planDigest,
+                             autoupdater::util::UtcInstant{0, 0});
+
+        auto stateStore = std::make_shared<PendingStateStore>(pending);
+        auto network = std::make_shared<ScriptedManifestNetwork>(
+            std::vector<ScriptedManifestNetwork::Step>{
+                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+        autoupdater::Updater updater(config);
+        updater.setStateStore(stateStore);
+        updater.setNetworkClient(network);
+
+        std::atomic<int> deadlineErrors{0};
+        autoupdater::Callbacks callbacks;
+        callbacks.onError = [&](const autoupdater::Error& error) {
+            if (error.code == autoupdater::ErrorCode::ApplyFailed &&
+                error.message.find("deadline expired") != std::string::npos) {
+                deadlineErrors.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+        updater.setCallbacks(std::move(callbacks));
+        updater.checkOnStartupAsync();
+        LAU_REQUIRE(waitUntil([&] {
+            return updater.state() == autoupdater::State::Failed &&
+                   deadlineErrors.load(std::memory_order_relaxed) == 1;
+        }));
+        LAU_REQUIRE(network->calls() == 0);
+        LAU_REQUIRE(stateStore->hasPendingUpdate());
+        LAU_REQUIRE(std::filesystem::is_regular_file(backupMarker));
+
+        std::optional<autoupdater::Result<void>> rejectedHealth;
+        LAU_REQUIRE(waitUntil([&] {
+            auto attempted = updater.markCurrentVersionHealthy();
+            if (!attempted && attempted.error().code == autoupdater::ErrorCode::InternalError) {
+                return false;
+            }
+            rejectedHealth = std::move(attempted);
+            return true;
+        }));
+        LAU_REQUIRE(rejectedHealth.has_value());
+        LAU_REQUIRE(!*rejectedHealth);
+        LAU_REQUIRE(rejectedHealth->error().code == autoupdater::ErrorCode::ApplyFailed);
+        LAU_REQUIRE(stateStore->hasPendingUpdate());
+        LAU_REQUIRE(std::filesystem::is_regular_file(backupMarker));
+    }
+
+    {
+        ScopedTempDir temp;
+        auto config = updaterConfig(temp.path());
+        config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+        config.healthConfirmationTimeout = std::chrono::seconds(60);
+        const std::string planDigest(64, 'f');
+        const auto pending = pendingUpdateFor(config, planDigest);
+        const auto completedAt = autoupdater::util::currentUtcInstant();
+        LAU_REQUIRE(completedAt);
+        writeTerminalReceipt(config.installDir, std::string(64, 'e'), planDigest, completedAt.value());
+        auto stateStore = std::make_shared<PendingStateStore>(pending);
+        autoupdater::Updater updater(config);
+        updater.setStateStore(stateStore);
+
+        const auto healthy = updater.markCurrentVersionHealthy();
+        LAU_REQUIRE(healthy);
+        LAU_REQUIRE(!stateStore->hasPendingUpdate());
+    }
+
+    {
+        ScopedTempDir temp;
+        auto config = updaterConfig(temp.path());
+        config.currentVersion = autoupdater::Version::parse("2.0.0").value();
+        config.healthConfirmationTimeout = std::chrono::seconds(0);
+        const std::string planDigest(64, 'd');
+        const auto pending = pendingUpdateFor(config, planDigest);
+        const auto backupMarker = pending.backupDir / "retained.marker";
+        writeFileContents(backupMarker, "rollback evidence");
+        writeTerminalReceipt(config.installDir, std::string(64, 'c'), planDigest,
+                             autoupdater::util::UtcInstant{0, 0});
+        auto stateStore = std::make_shared<PendingStateStore>(pending);
+        autoupdater::Updater updater(config);
+        updater.setStateStore(stateStore);
+
+        const auto healthy = updater.markCurrentVersionHealthy();
+        LAU_REQUIRE(healthy);
+        LAU_REQUIRE(!stateStore->hasPendingUpdate());
+        LAU_REQUIRE(stateStore->clearCalls() == 1);
+        LAU_REQUIRE(std::filesystem::is_regular_file(backupMarker));
+    }
+
+    for (const auto invalidTimeout : {std::chrono::seconds(-1), std::chrono::seconds(24 * 60 * 60 + 1)}) {
+        ScopedTempDir temp;
+        auto config = updaterConfig(temp.path());
+        config.healthConfirmationTimeout = invalidTimeout;
+        auto network = std::make_shared<ScriptedManifestNetwork>(
+            std::vector<ScriptedManifestNetwork::Step>{
+                ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+        autoupdater::Updater updater(config);
+        updater.setNetworkClient(network);
+        std::atomic<int> invalidConfigErrors{0};
+        autoupdater::Callbacks callbacks;
+        callbacks.onError = [&](const autoupdater::Error& error) {
+            if (error.code == autoupdater::ErrorCode::InvalidConfig) {
+                invalidConfigErrors.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+        updater.setCallbacks(std::move(callbacks));
+        updater.checkOnStartupAsync();
+        LAU_REQUIRE(waitUntil([&] {
+            return updater.state() == autoupdater::State::Failed &&
+                   invalidConfigErrors.load(std::memory_order_relaxed) == 1;
+        }));
+        LAU_REQUIRE(network->calls() == 0);
+    }
+}
+
+void testUpdaterReconcilesCompletedRollbackPendingState() {
+    ScopedTempDir temp;
+    auto config = updaterConfig(temp.path());
+    const std::string forwardTransactionId(64, 'a');
+    const std::string forwardPlanDigest(64, 'b');
+    autoupdater::PendingUpdate pending;
+    pending.version = autoupdater::Version::parse("2.0.0").value();
+    pending.releaseId = "release-2";
+    pending.backupDir = config.installDir / ".autoupdater" / "backup" / "1.0.0-to-2.0.0" /
+                        std::string(64, 'e');
+    pending.applyPlanPath = config.tempDir / "apply-plan.json";
+    pending.applyPlanDigest = forwardPlanDigest;
+
+    autoupdater::ApplyPlan rollback;
+    rollback.schemaVersion = 2;
+    rollback.intent = autoupdater::ApplyPlanIntent::Rollback;
+    rollback.rollbackOf = autoupdater::ApplyTransactionReference{forwardTransactionId, forwardPlanDigest};
+    rollback.appId = config.appId;
+    rollback.fromVersion = pending.version.toString();
+    rollback.toVersion = config.currentVersion.toString();
+    rollback.releaseId = pending.releaseId;
+    rollback.manifestSha256 = std::string(64, 'e');
+    rollback.installDir = config.installDir;
+    rollback.stagingDir = pending.backupDir;
+    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" /
+                         forwardTransactionId;
+    const auto rollbackJson = rollback.toJson();
+    const auto rollbackDigest = autoupdater::util::sha256Bytes(rollbackJson);
+    const std::string rollbackTransactionId(64, 'c');
+    writeFileContents(config.installDir / ".autoupdater" / "journal" /
+                          (rollbackTransactionId + ".plan.json"),
+                      rollbackJson);
+    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest,
+                         autoupdater::util::UtcInstant{0, 0});
+
+    auto stateStore = std::make_shared<PendingStateStore>(pending);
+    auto network = std::make_shared<ScriptedManifestNetwork>(
+        std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    autoupdater::Updater updater(config);
+    updater.setStateStore(stateStore);
+    updater.setNetworkClient(network);
+    updater.checkOnStartupAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        return updater.state() == autoupdater::State::UpToDate && network->calls() == 1;
+    }));
+    LAU_REQUIRE(!stateStore->hasPendingUpdate());
+    LAU_REQUIRE(stateStore->clearCalls() == 1);
+
+    auto pendingWithoutCapability = std::make_shared<PendingStateStore>(pending);
+    auto stateStoreWithoutCapability = std::make_shared<StateStoreWithoutPendingCompareAndSet>(
+        pendingWithoutCapability);
+    auto unusedNetwork = std::make_shared<ScriptedManifestNetwork>(
+        std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    autoupdater::Updater updaterWithoutCapability(config);
+    updaterWithoutCapability.setStateStore(stateStoreWithoutCapability);
+    updaterWithoutCapability.setNetworkClient(unusedNetwork);
+    std::atomic<int> capabilityErrors{0};
+    autoupdater::Callbacks callbacks;
+    callbacks.onError = [&](const autoupdater::Error& error) {
+        if (error.code == autoupdater::ErrorCode::StateStoreError &&
+            error.message.find("atomic pending-update reconciliation") != std::string::npos) {
+            capabilityErrors.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    updaterWithoutCapability.setCallbacks(std::move(callbacks));
+    updaterWithoutCapability.checkOnStartupAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        return updaterWithoutCapability.state() == autoupdater::State::Failed &&
+               capabilityErrors.load(std::memory_order_relaxed) == 1;
+    }));
+    LAU_REQUIRE(unusedNetwork->calls() == 0);
+    LAU_REQUIRE(pendingWithoutCapability->hasPendingUpdate());
+    LAU_REQUIRE(pendingWithoutCapability->clearCalls() == 0);
+}
+
+void testUpdaterReconcilesLegacyCompletedRollbackPendingState() {
+    ScopedTempDir temp;
+    const auto config = updaterConfig(temp.path());
+    autoupdater::PendingUpdate pending;
+    pending.version = autoupdater::Version::parse("2.0.0").value();
+    pending.releaseId = "release-2";
+    pending.backupDir = config.installDir / ".autoupdater" / "backup" /
+                        "1.0.0-to-2.0.0" / std::string(64, 'e');
+    pending.applyPlanPath = config.tempDir / "2.0.0" / std::string(64, 'e') /
+                            "apply-plan.json";
+
+    autoupdater::ApplyPlan forward;
+    forward.schemaVersion = 2;
+    forward.intent = autoupdater::ApplyPlanIntent::Install;
+    forward.appId = config.appId;
+    forward.fromVersion = config.currentVersion.toString();
+    forward.toVersion = pending.version.toString();
+    forward.releaseId = pending.releaseId;
+    forward.manifestSha256 = std::string(64, 'e');
+    forward.installDir = config.installDir;
+    forward.stagingDir = pending.applyPlanPath.parent_path();
+    forward.backupDir = pending.backupDir;
+    const std::string forwardTransactionId(64, 'a');
+    const auto forwardDigest = writeApplyPlanSnapshot(config.installDir, forwardTransactionId, forward);
+
+    autoupdater::ApplyPlan rollback;
+    rollback.schemaVersion = 2;
+    rollback.intent = autoupdater::ApplyPlanIntent::Rollback;
+    rollback.rollbackOf = autoupdater::ApplyTransactionReference{forwardTransactionId, forwardDigest};
+    rollback.appId = forward.appId;
+    rollback.fromVersion = forward.toVersion;
+    rollback.toVersion = forward.fromVersion;
+    rollback.releaseId = forward.releaseId;
+    rollback.manifestSha256 = forward.manifestSha256;
+    rollback.installDir = forward.installDir;
+    rollback.stagingDir = forward.backupDir;
+    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" /
+                         forwardTransactionId;
+    const std::string rollbackTransactionId(64, 'c');
+    const auto rollbackDigest = writeApplyPlanSnapshot(config.installDir, rollbackTransactionId, rollback);
+    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest,
+                         autoupdater::util::UtcInstant{0, 0});
+
+    const auto statePath = config.installDir / ".autoupdater" / "state.json";
+    writeLegacyPendingState(statePath, pending);
+    auto stateStore = autoupdater::createJsonStateStore(statePath);
+    auto network = std::make_shared<ScriptedManifestNetwork>(
+        std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1")),
+            ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3")),
+        });
+    autoupdater::Updater updater(config);
+    updater.setStateStore(stateStore);
+    updater.setNetworkClient(network);
+
+    updater.checkOnStartupAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        return updater.state() == autoupdater::State::UpToDate && network->calls() == 1;
+    }));
+    auto afterRollback = stateStore->loadPendingUpdate();
+    LAU_REQUIRE(afterRollback);
+    LAU_REQUIRE(!afterRollback.value().has_value());
+
+    updater.checkAndDownloadAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        return updater.state() == autoupdater::State::ReadyToApply && network->calls() == 2;
+    }));
+    auto nextPending = stateStore->loadPendingUpdate();
+    LAU_REQUIRE(nextPending);
+    LAU_REQUIRE(nextPending.value().has_value());
+    LAU_REQUIRE(nextPending.value()->version.toString() == "3.0.0");
+    LAU_REQUIRE(!nextPending.value()->applyPlanDigest.empty());
 }
 
 void testApplyLauncherBoundsProcessWaitTimeout() {

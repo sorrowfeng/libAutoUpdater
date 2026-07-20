@@ -245,7 +245,8 @@ Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnve
     const auto stateRoot = util::defaultStagingRoot(config.installDir);
     const auto backupDir =
         stateRoot / "backup" /
-        (safeVersionForPath(config.currentVersion) + "-to-" + safeVersionForPath(envelope.manifest.version));
+        (safeVersionForPath(config.currentVersion) + "-to-" + safeVersionForPath(envelope.manifest.version)) /
+        util::pathFromUtf8(envelope.sha256);
 
     ApplyPlan plan;
     plan.schemaVersion = 2;

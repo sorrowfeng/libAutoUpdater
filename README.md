@@ -85,6 +85,12 @@ When an update is ready, call `applyAndRestartAsync()` from your UI or command f
 updater.markCurrentVersionHealthy();
 ```
 
+`healthConfirmationTimeout` is measured from the external updater's durable
+completion receipt. A value of zero disables the deadline. Confirmation
+atomically clears the matching pending record, but rollback backups are
+retained under a manifest-specific directory; the library does not delete
+them automatically.
+
 ## Install and Integration
 
 After installation:
@@ -262,7 +268,7 @@ The same flow runs in CI on Ubuntu/libcurl, Windows/WinHTTP, and macOS/CFNetwork
 | Manifest signatures | Optional | Require for public channels |
 | Trusted base URLs | Optional | Use for public channels |
 | External apply process | Required | Always use it |
-| Rollback | Implemented | Keep backups until healthy confirmation |
+| Rollback | Implemented | Backups remain retained after healthy confirmation |
 | Path traversal protection | Enforced | Do not bypass manifest validation |
 | Package-manager-owned installs | Rejected by layout policy | Use the package manager |
 

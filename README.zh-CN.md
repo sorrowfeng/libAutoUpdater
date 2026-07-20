@@ -85,6 +85,10 @@ updater.checkAndDownloadAsync();
 updater.markCurrentVersionHealthy();
 ```
 
+`healthConfirmationTimeout` 从外部 updater 持久化完成回执时开始计算，设为
+零表示禁用截止时间。健康确认会原子清除匹配的 pending 记录，但回滚备份会保留
+在按 manifest 隔离的目录中；库不会自动删除这些备份。
+
 ## 安装和集成
 
 安装后使用：
@@ -262,7 +266,7 @@ CI 也会在 Ubuntu/libcurl、Windows/WinHTTP 和 macOS/CFNetwork 上运行这�
 | Manifest 签名 | 可选 | 公开渠道强制开启 |
 | 可信 base URL | 可选 | 公开渠道建议开启 |
 | 外部 apply 进程 | 必需 | 始终使用 |
-| 回滚 | 已实现 | 健康确认前保留备份 |
+| 回滚 | 已实现 | 健康确认后仍保留备份 |
 | 路径穿越保护 | 强制校验 | 不要绕过 manifest 校验 |
 | package-manager-owned 安装 | 按布局策略拒绝 | 使用系统包管理器 |
 

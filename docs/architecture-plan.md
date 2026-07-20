@@ -428,15 +428,16 @@ Example:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "intent": "install",
   "appId": "com.example.myapp",
   "fromVersion": "1.3.0",
   "toVersion": "1.4.0",
   "releaseId": "1.4.0+20260601.1",
   "manifestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "installDir": "C:/Program Files/MyApp",
-  "stagingDir": "C:/Program Files/MyApp/.autoupdater/staging/1.4.0",
-  "backupDir": "C:/Program Files/MyApp/.autoupdater/backup/1.3.0-to-1.4.0",
+  "stagingDir": "C:/Program Files/MyApp/.autoupdater/staging/1.4.0/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "backupDir": "C:/Program Files/MyApp/.autoupdater/backup/1.3.0-to-1.4.0/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "restartCommand": [
     "C:/Program Files/MyApp/MyApp.exe"
   ],
@@ -590,10 +591,28 @@ new app starts
 markCurrentVersionHealthy()
   |
   v
-clear backup / clear pending state
+atomically clear matching pending state
+  |
+  v
+retain manifest-specific rollback backup
 ```
 
-If the new version does not confirm health within the configured window, the next startup can prompt the user, roll back automatically, or enter safe mode.
+The external updater records the durable completion time in its terminal
+receipt. `healthConfirmationTimeout` accepts zero through 24 hours; zero
+disables the deadline and equality with the deadline counts as expired. Check
+operations evaluate the deadline lazily. Expiry transitions the updater to
+`Failed`, reports an apply error, and retains the pending record and backup so
+the application can offer `rollbackLastUpdate()`. It never triggers an
+in-process or automatic rollback.
+
+Successful confirmation updates the accepted version and clears the exact
+pending record atomically. The backup is intentionally retained beneath a
+path scoped by the complete manifest SHA-256. The library performs no
+automatic backup garbage collection; applications and installers must define
+their own retention policy. Legacy schema-v2 terminal receipts contain no
+authoritative completion time and therefore remain exempt from the deadline.
+Because the policy uses the local wall clock, clock rollback can extend the
+window and clock jumps can shorten it.
 
 ## 8. Security Strategy
 
@@ -1072,5 +1091,6 @@ The library should satisfy:
 - Local versions below `minVersion` return a reinstall-required result.
 - The updater can safely replace files of a running application.
 - Apply failure can roll back.
-- Healthy confirmation can clear backups after a successful new-version start.
+- Healthy confirmation atomically clears pending state while retaining backups
+  for an explicit operator-managed retention policy.
 - CMake supports both `find_package` and `add_subdirectory`.

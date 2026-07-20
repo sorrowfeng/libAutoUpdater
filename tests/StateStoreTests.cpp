@@ -714,7 +714,18 @@ void testStateStoreDistinguishesMissingAndCorruptState() {
     LAU_REQUIRE(!rejectedLegacyPendingWrite);
     LAU_REQUIRE(rejectedLegacyPendingWrite.error().code == autoupdater::ErrorCode::StateStoreError);
 
-    LAU_REQUIRE(reopenedLegacyStore->clearPendingUpdate());
+    auto legacyCompareAndSet =
+        std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(reopenedLegacyStore);
+    LAU_REQUIRE(legacyCompareAndSet);
+    const auto legacyBeforeRejectedClear = readFile(legacyPath);
+    auto mismatchedLegacyPending = *reopenedPending.value();
+    mismatchedLegacyPending.releaseId = "different-legacy-pending";
+    auto rejectedLegacyClear = legacyCompareAndSet->clearPendingUpdateIfMatches(mismatchedLegacyPending);
+    LAU_REQUIRE(!rejectedLegacyClear);
+    LAU_REQUIRE(rejectedLegacyClear.error().code == autoupdater::ErrorCode::StateStoreError);
+    LAU_REQUIRE(readFile(legacyPath) == legacyBeforeRejectedClear);
+
+    LAU_REQUIRE(legacyCompareAndSet->clearPendingUpdateIfMatches(*reopenedPending.value()));
     const auto migrated = readFile(legacyPath);
     LAU_REQUIRE(migrated.find("\"schemaVersion\"") != std::string::npos);
     auto migratedStore = autoupdater::createJsonStateStore(legacyPath);
@@ -789,10 +800,85 @@ void testStateStoreConcurrentInstancesDoNotLoseUpdates() {
 
 void testStateStoreHealthyCommitUsesCompareAndSet() {
     TemporaryDirectory temporary("healthy-cas");
-    const auto statePath = temporary.path() / "state.json";
+
+    const auto pendingStatePath = temporary.path() / "pending-state.json";
+    auto pendingStore = autoupdater::createJsonStateStore(pendingStatePath);
+    auto pendingCompareAndSet =
+        std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(pendingStore);
+    LAU_REQUIRE(pendingCompareAndSet);
+    LAU_REQUIRE(pendingStore->saveLastAcceptedVersion(version("1.0.0"), "release-1"));
+    LAU_REQUIRE(pendingStore->saveLastAcceptedVersion(version("1.1.0"), "release-1.1"));
+
+    const auto pending = pendingUpdate(temporary.path(), "2.0.0", 'a');
+    LAU_REQUIRE(pendingStore->savePendingUpdate(pending));
+    const auto afterFirstCreate = readFile(pendingStatePath);
+    const auto lastKnownGoodAfterFirstCreate = readFile(pendingStatePath.string() + ".lkg");
+
+    auto loadedPending = pendingStore->loadPendingUpdate();
+    LAU_REQUIRE(loadedPending);
+    LAU_REQUIRE(loadedPending.value().has_value());
+    LAU_REQUIRE(loadedPending.value()->version.toString() == pending.version.toString());
+    LAU_REQUIRE(loadedPending.value()->releaseId == pending.releaseId);
+    LAU_REQUIRE(loadedPending.value()->backupDir == pending.backupDir);
+    LAU_REQUIRE(loadedPending.value()->applyPlanPath == pending.applyPlanPath);
+    LAU_REQUIRE(loadedPending.value()->applyPlanDigest == pending.applyPlanDigest);
+
+    LAU_REQUIRE(pendingStore->savePendingUpdate(pending));
+    LAU_REQUIRE(readFile(pendingStatePath) == afterFirstCreate);
+    LAU_REQUIRE(readFile(pendingStatePath.string() + ".lkg") == lastKnownGoodAfterFirstCreate);
+
+    const auto conflictingPending = pendingUpdate(temporary.path(), "3.0.0", 'b');
+    auto rejectedConflict = pendingStore->savePendingUpdate(conflictingPending);
+    LAU_REQUIRE(!rejectedConflict);
+    LAU_REQUIRE(rejectedConflict.error().code == autoupdater::ErrorCode::StateStoreError);
+    LAU_REQUIRE(readFile(pendingStatePath) == afterFirstCreate);
+    LAU_REQUIRE(readFile(pendingStatePath.string() + ".lkg") == lastKnownGoodAfterFirstCreate);
+
+    auto accepted = pendingStore->loadLastAcceptedVersion();
+    LAU_REQUIRE(accepted);
+    LAU_REQUIRE(accepted.value().has_value());
+    LAU_REQUIRE(accepted.value()->toString() == "1.1.0");
+    auto acceptedRelease = pendingStore->loadLastAcceptedReleaseId();
+    LAU_REQUIRE(acceptedRelease);
+    LAU_REQUIRE(acceptedRelease.value() == "release-1.1");
+    loadedPending = pendingStore->loadPendingUpdate();
+    LAU_REQUIRE(loadedPending);
+    LAU_REQUIRE(loadedPending.value().has_value());
+    LAU_REQUIRE(loadedPending.value()->version.toString() == pending.version.toString());
+    LAU_REQUIRE(loadedPending.value()->applyPlanDigest == pending.applyPlanDigest);
+
+    auto mismatchedPending = pending;
+    mismatchedPending.applyPlanDigest = std::string(64, 'c');
+    auto rejectedClear = pendingCompareAndSet->clearPendingUpdateIfMatches(mismatchedPending);
+    LAU_REQUIRE(!rejectedClear);
+    LAU_REQUIRE(rejectedClear.error().code == autoupdater::ErrorCode::StateStoreError);
+    LAU_REQUIRE(readFile(pendingStatePath) == afterFirstCreate);
+    LAU_REQUIRE(readFile(pendingStatePath.string() + ".lkg") == lastKnownGoodAfterFirstCreate);
+
+    LAU_REQUIRE(pendingCompareAndSet->clearPendingUpdateIfMatches(pending));
+    auto afterClear = pendingStore->loadPendingUpdate();
+    LAU_REQUIRE(afterClear);
+    LAU_REQUIRE(!afterClear.value().has_value());
+    LAU_REQUIRE(readFile(pendingStatePath.string() + ".lkg") == afterFirstCreate);
+    accepted = pendingStore->loadLastAcceptedVersion();
+    LAU_REQUIRE(accepted);
+    LAU_REQUIRE(accepted.value().has_value());
+    LAU_REQUIRE(accepted.value()->toString() == "1.1.0");
+    acceptedRelease = pendingStore->loadLastAcceptedReleaseId();
+    LAU_REQUIRE(acceptedRelease);
+    LAU_REQUIRE(acceptedRelease.value() == "release-1.1");
+
+    const auto afterSuccessfulClear = readFile(pendingStatePath);
+    const auto lastKnownGoodAfterSuccessfulClear = readFile(pendingStatePath.string() + ".lkg");
+    auto rejectedMissingClear = pendingCompareAndSet->clearPendingUpdateIfMatches(pending);
+    LAU_REQUIRE(!rejectedMissingClear);
+    LAU_REQUIRE(rejectedMissingClear.error().code == autoupdater::ErrorCode::StateStoreError);
+    LAU_REQUIRE(readFile(pendingStatePath) == afterSuccessfulClear);
+    LAU_REQUIRE(readFile(pendingStatePath.string() + ".lkg") == lastKnownGoodAfterSuccessfulClear);
+
+    const auto statePath = temporary.path() / "healthy-state.json";
     auto store = autoupdater::createJsonStateStore(statePath);
     LAU_REQUIRE(store->saveLastAcceptedVersion(version("1.0.0"), "release-1"));
-    const auto pending = pendingUpdate(temporary.path(), "2.0.0", 'a');
     LAU_REQUIRE(store->savePendingUpdate(pending));
     const auto beforeFailedCas = readFile(statePath);
 
@@ -809,7 +895,7 @@ void testStateStoreHealthyCommitUsesCompareAndSet() {
     LAU_REQUIRE(readFile(statePath) == beforeFailedCas);
 
     LAU_REQUIRE(store->commitHealthyVersion(version("2.0.0"), "release-2", pending));
-    auto accepted = store->loadLastAcceptedVersion();
+    accepted = store->loadLastAcceptedVersion();
     LAU_REQUIRE(accepted);
     LAU_REQUIRE(accepted.value().has_value());
     LAU_REQUIRE(accepted.value()->toString() == "2.0.0");

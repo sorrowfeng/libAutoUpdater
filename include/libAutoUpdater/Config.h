@@ -55,6 +55,9 @@ struct Config {
     Version clientVersion = libraryVersion();
 
     std::filesystem::path installDir;
+    /// Per-installation root beneath which Updater creates version- and
+    /// manifest-specific staging directories. Do not share it across installs
+    /// or point it at a pre-derived release leaf.
     std::filesystem::path tempDir;
     std::filesystem::path updaterExecutable;
     std::vector<std::string> restartCommand;
@@ -69,6 +72,8 @@ struct Config {
     std::vector<std::string> managedPathWhitelist;
     /// Must be between zero and 24 hours, inclusive.
     std::chrono::seconds applyWaitTimeout{60};
+    /// Maximum time after a completed install may be marked healthy. Zero
+    /// disables the deadline. Must be between zero and 24 hours, inclusive.
     std::chrono::seconds healthConfirmationTimeout{120};
 };
 

@@ -4,8 +4,10 @@
 #include "ApplyTransactionReceipt.h"
 #include "libAutoUpdater/ApplyPlan.h"
 #include "libAutoUpdater/Manifest.h"
+#include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IStateStore.h"
 #include "util/Json.h"
+#include "util/Rfc3339.h"
 
 #include <atomic>
 #include <cmath>
@@ -473,14 +475,63 @@ void testStateAndJournalSchemasFailClosed() {
     const auto planDigest = sha('b');
     auto receipt = autoupdater::serializeApplyTransactionReceipt({transactionId, planDigest});
     LAU_REQUIRE(receipt);
-    LAU_REQUIRE(autoupdater::parseApplyTransactionReceipt(receipt.value()));
+    const auto legacyReceipt = autoupdater::parseApplyTransactionReceipt(receipt.value());
+    LAU_REQUIRE(legacyReceipt);
+    LAU_REQUIRE(!legacyReceipt.value().completedAt);
+    LAU_REQUIRE(parseJson(receipt.value()).get("schemaVersion")->asUInt64() == 2);
     LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(addField(receipt.value(), "unknown", Json(true))));
     LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
         replaceField(receipt.value(), "schemaVersion", Json(2.0))));
     const auto futureReceipt = autoupdater::parseApplyTransactionReceipt(
-        R"json({"schemaVersion":3,"transactionId":"ignored","futureField":true})json");
+        R"json({"schemaVersion":4,"transactionId":"ignored","futureField":true})json");
     LAU_REQUIRE(!futureReceipt);
     LAU_REQUIRE(futureReceipt.error().message.find("Unsupported") != std::string::npos);
+
+    const auto completedAt = autoupdater::util::parseRfc3339("2026-07-20T12:34:56.123456789Z");
+    LAU_REQUIRE(completedAt);
+    auto terminalReceiptJson =
+        autoupdater::serializeApplyTransactionReceipt({transactionId, planDigest, completedAt.value()});
+    LAU_REQUIRE(terminalReceiptJson);
+    LAU_REQUIRE(parseJson(terminalReceiptJson.value()).get("schemaVersion")->asUInt64() == 3);
+    const auto terminalReceipt = autoupdater::parseApplyTransactionReceipt(terminalReceiptJson.value());
+    LAU_REQUIRE(terminalReceipt);
+    LAU_REQUIRE(terminalReceipt.value().completedAt == completedAt.value());
+    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
+        replaceField(receipt.value(), "schemaVersion", Json(UINT64_C(3)))));
+    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
+        replaceField(terminalReceiptJson.value(), "schemaVersion", Json(UINT64_C(2)))));
+    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
+        replaceField(terminalReceiptJson.value(), "completedAt", Json("0001-01-01T00:00:00+23:59"))));
+    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
+        replaceField(terminalReceiptJson.value(), "completedAt", Json(true))));
+    LAU_REQUIRE(!autoupdater::serializeApplyTransactionReceipt(
+        {transactionId, planDigest, autoupdater::util::UtcInstant{0, 1000000000U}}));
+    LAU_REQUIRE(!autoupdater::serializeApplyTransactionReceipt(
+        {transactionId, planDigest, autoupdater::util::UtcInstant{INT64_C(-62135596801), 0}}));
+
+    auto snapshotPlan = autoupdater::ApplyPlan::parse(validApplyPlan(1), limits);
+    LAU_REQUIRE(snapshotPlan);
+    const auto snapshotJson = snapshotPlan.value().toJson();
+    const auto snapshotDigest = autoupdater::updater::applyPlanDigest(snapshotPlan.value());
+    LAU_REQUIRE(snapshotDigest);
+    const autoupdater::ApplyTransactionReceipt snapshotReceipt{transactionId, snapshotDigest.value(),
+                                                               completedAt.value()};
+    const auto snapshotPath = temporary.path() / "terminal-plan-install" / ".autoupdater" / "journal" /
+                              (transactionId + ".plan.json");
+    writeFile(snapshotPath, snapshotJson);
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto loadedSnapshot = autoupdater::detail::loadTerminalApplyPlan(
+        *fileSystem, temporary.path() / "terminal-plan-install", snapshotReceipt, limits);
+    LAU_REQUIRE(loadedSnapshot);
+    LAU_REQUIRE(loadedSnapshot.value().toVersion == snapshotPlan.value().toVersion);
+    writeFile(snapshotPath, "{}");
+    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(
+        *fileSystem, temporary.path() / "terminal-plan-install", snapshotReceipt, limits));
+    std::error_code snapshotError;
+    LAU_REQUIRE(std::filesystem::remove(snapshotPath, snapshotError));
+    LAU_REQUIRE(!snapshotError);
+    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(
+        *fileSystem, temporary.path() / "terminal-plan-install", snapshotReceipt, limits));
 
     autoupdater::updater::ApplyJournalSummary summary;
     summary.transactionId = transactionId;
@@ -488,6 +539,7 @@ void testStateAndJournalSchemasFailClosed() {
     summary.operationCount = 0;
     auto summaryJson = autoupdater::updater::serializeApplyJournalSummary(summary);
     LAU_REQUIRE(summaryJson);
+    LAU_REQUIRE(parseJson(summaryJson.value()).get("schemaVersion")->asUInt64() == 2);
     auto invalidSummary = summary;
     invalidSummary.applyError = {"ApplyFailed", ""};
     LAU_REQUIRE(!autoupdater::updater::serializeApplyJournalSummary(invalidSummary));
@@ -499,6 +551,39 @@ void testStateAndJournalSchemasFailClosed() {
         addField(summaryJson.value(), "unknown", Json(true))));
     LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
         replaceField(summaryJson.value(), "operationCount", Json("00"))));
+
+    auto completeSummary = summary;
+    completeSummary.fileState = autoupdater::updater::JournalFileState::Complete;
+    completeSummary.restartState = autoupdater::updater::JournalRestartState::NotRequested;
+    completeSummary.completedAt = completedAt.value();
+    const auto completeSummaryJson = autoupdater::updater::serializeApplyJournalSummary(completeSummary);
+    LAU_REQUIRE(completeSummaryJson);
+    const auto parsedCompleteSummary =
+        autoupdater::updater::parseApplyJournalSummary(completeSummaryJson.value());
+    LAU_REQUIRE(parsedCompleteSummary);
+    LAU_REQUIRE(parsedCompleteSummary.value().completedAt == completedAt.value());
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
+        replaceField(replaceField(replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(3))),
+                                  "fileState", Json("complete")),
+                     "restartState", Json("not_requested"))));
+    auto legacyCompleteJson = replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(2)));
+    legacyCompleteJson = replaceField(legacyCompleteJson, "fileState", Json("complete"));
+    legacyCompleteJson = replaceField(legacyCompleteJson, "restartState", Json("not_requested"));
+    const auto parsedLegacyComplete = autoupdater::updater::parseApplyJournalSummary(legacyCompleteJson);
+    LAU_REQUIRE(parsedLegacyComplete);
+    LAU_REQUIRE(parsedLegacyComplete.value().schemaVersion == 2);
+    LAU_REQUIRE(!parsedLegacyComplete.value().completedAt);
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
+        replaceField(completeSummaryJson.value(), "schemaVersion", Json(UINT64_C(2)))));
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
+        addField(summaryJson.value(), "completedAt", Json("2026-07-20T12:34:56Z"))));
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
+        replaceField(completeSummaryJson.value(), "completedAt", Json("9999-12-31T23:59:59-23:59"))));
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
+        replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(4)))));
+    auto invalidTimestampSummary = completeSummary;
+    invalidTimestampSummary.completedAt = autoupdater::util::UtcInstant{INT64_C(253402300800), 0};
+    LAU_REQUIRE(!autoupdater::updater::serializeApplyJournalSummary(invalidTimestampSummary));
 
     auto summaryRoot = parseJson(summaryJson.value()).asObject();
     auto applyError = summaryRoot.at("applyError").asObject();
