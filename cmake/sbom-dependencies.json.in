@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+@LIBAUTOUPDATER_SBOM_DEPENDENCIES@
+  ]
+}

@@ -87,5 +87,8 @@ Before a release, confirm:
 1. `project(... VERSION ...)` in `CMakeLists.txt` is updated.
 2. `version-string` in `vcpkg.json` is updated.
 3. `CHANGELOG.md` contains a matching `vX.Y.Z` section.
-4. `main` branch CI and CodeQL are passing.
-5. After pushing the `vX.Y.Z` tag, the release workflow uploads Windows, macOS, and Linux ZIPs, SHA-256 files, and SBOM files.
+4. The exact release commit is merged to protected `main`, has the required
+   approval, and has passing CI and CodeQL checks.
+5. A protected `vX.Y.Z` tag triggers tested Windows, macOS, and Linux ZIPs and
+   dependency-aware SPDX SBOM files; the protected `release` environment must
+   approve publication.

@@ -118,6 +118,14 @@ if(Python3_Interpreter_FOUND)
             --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
             --make-index ${libAutoUpdater_SOURCE_DIR}/tools/make_index.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/metadata-tools-validation)
+    add_test(
+        NAME libAutoUpdater_sbom_tool_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/sbom_tool_tests.py
+            --make-sbom ${libAutoUpdater_SOURCE_DIR}/tools/make_sbom.py
+            --configured-dependencies ${libAutoUpdater_BINARY_DIR}/libAutoUpdater-sbom-dependencies.json
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/sbom-tool-validation)
 endif()
 
 if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)

@@ -293,7 +293,7 @@ likelihood of affecting production update flows.
     consumer project, and add Windows shared-library export support or document
     that only static builds are supported.
 
-- [ ] **AU-024 — Harden CI and release provenance**
+- [x] **AU-024 — Harden CI and release provenance**
   - Require release tags to refer to an approved, tested commit.
   - Run relevant tests in or before every release job.
   - Limit `contents: write` to the publishing job.

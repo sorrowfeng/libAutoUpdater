@@ -23,6 +23,11 @@
   static and shared consumers are validated from a clean `find_package()`
   project. Windows shared builds produce an import library, while installed
   Unix updater helpers use a relative runtime search path.
+- Release tags now require an exact successful `main` CI run, release packages
+  rerun tests, publishing uses an approval environment and job-scoped write
+  access, and workflow Actions are pinned to immutable revisions. SPDX SBOMs
+  now describe selected HTTP/crypto components, relationships, and unique
+  build provenance.
 
 ## v0.1.5 - 2026-06-05
 

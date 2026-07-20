@@ -29,6 +29,40 @@ endif()
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
 set(LIBAUTOUPDATER_HAS_HTTP_BACKEND FALSE)
+set(LIBAUTOUPDATER_SBOM_DEPENDENCIES "")
+
+function(libautoupdater_json_escape output value)
+    string(REPLACE "\\" "\\\\" escaped "${value}")
+    string(REPLACE "\"" "\\\"" escaped "${escaped}")
+    string(REPLACE "\r" "\\r" escaped "${escaped}")
+    string(REPLACE "\n" "\\n" escaped "${escaped}")
+    string(REPLACE "\t" "\\t" escaped "${escaped}")
+    set(${output} "${escaped}" PARENT_SCOPE)
+endfunction()
+
+function(libautoupdater_append_sbom_dependency name spdx_id version download_location license supplier)
+    libautoupdater_json_escape(escaped_name "${name}")
+    libautoupdater_json_escape(escaped_spdx_id "${spdx_id}")
+    libautoupdater_json_escape(escaped_version "${version}")
+    libautoupdater_json_escape(escaped_download_location "${download_location}")
+    libautoupdater_json_escape(escaped_license "${license}")
+    libautoupdater_json_escape(escaped_supplier "${supplier}")
+    string(CONCAT entry
+        "    {\n"
+        "      \"name\": \"${escaped_name}\",\n"
+        "      \"SPDXID\": \"${escaped_spdx_id}\",\n"
+        "      \"versionInfo\": \"${escaped_version}\",\n"
+        "      \"downloadLocation\": \"${escaped_download_location}\",\n"
+        "      \"licenseDeclared\": \"${escaped_license}\",\n"
+        "      \"supplier\": \"${escaped_supplier}\"\n"
+        "    }")
+    if(LIBAUTOUPDATER_SBOM_DEPENDENCIES)
+        set(dependencies "${LIBAUTOUPDATER_SBOM_DEPENDENCIES},\n${entry}")
+    else()
+        set(dependencies "${entry}")
+    endif()
+    set(LIBAUTOUPDATER_SBOM_DEPENDENCIES "${dependencies}" PARENT_SCOPE)
+endfunction()
 
 if(LIBAUTOUPDATER_REQUIRE_CURL AND NOT LIBAUTOUPDATER_WITH_CURL)
     message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON requires LIBAUTOUPDATER_WITH_CURL=ON")
@@ -167,6 +201,20 @@ if(LIBAUTOUPDATER_WITH_CURL)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CURL=1)
         set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL TRUE)
         set(LIBAUTOUPDATER_HAS_HTTP_BACKEND TRUE)
+        set(libautoupdater_curl_version "${CURL_VERSION}")
+        if(NOT libautoupdater_curl_version)
+            set(libautoupdater_curl_version "${CURL_VERSION_STRING}")
+        endif()
+        if(NOT libautoupdater_curl_version)
+            set(libautoupdater_curl_version "NOASSERTION")
+        endif()
+        libautoupdater_append_sbom_dependency(
+            "CURL"
+            "SPDXRef-Package-CURL"
+            "${libautoupdater_curl_version}"
+            "https://curl.se/"
+            "curl"
+            "Organization: curl")
     elseif(LIBAUTOUPDATER_REQUIRE_CURL)
         message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON but CMake could not find CURL")
     endif()
@@ -177,6 +225,13 @@ if(WIN32 AND LIBAUTOUPDATER_WITH_WINHTTP AND NOT LIBAUTOUPDATER_HAS_HTTP_BACKEND
     target_link_libraries(libAutoUpdater PRIVATE winhttp)
     target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_WINHTTP=1)
     set(LIBAUTOUPDATER_HAS_HTTP_BACKEND TRUE)
+    libautoupdater_append_sbom_dependency(
+        "WinHTTP"
+        "SPDXRef-Package-WinHTTP"
+        "NOASSERTION"
+        "https://learn.microsoft.com/windows/win32/winhttp/about-winhttp"
+        "NOASSERTION"
+        "Organization: Microsoft Corporation")
 endif()
 
 if(APPLE AND LIBAUTOUPDATER_WITH_CFNETWORK AND NOT LIBAUTOUPDATER_HAS_HTTP_BACKEND)
@@ -185,6 +240,13 @@ if(APPLE AND LIBAUTOUPDATER_WITH_CFNETWORK AND NOT LIBAUTOUPDATER_HAS_HTTP_BACKE
     target_link_libraries(libAutoUpdater PRIVATE "-framework CFNetwork" "-framework CoreFoundation")
     target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CFNETWORK=1)
     set(LIBAUTOUPDATER_HAS_HTTP_BACKEND TRUE)
+    libautoupdater_append_sbom_dependency(
+        "CFNetwork"
+        "SPDXRef-Package-CFNetwork"
+        "NOASSERTION"
+        "https://developer.apple.com/documentation/cfnetwork"
+        "NOASSERTION"
+        "Organization: Apple Inc.")
 endif()
 
 if(LIBAUTOUPDATER_WITH_OPENSSL)
@@ -194,8 +256,27 @@ if(LIBAUTOUPDATER_WITH_OPENSSL)
         target_link_libraries(libAutoUpdater PRIVATE OpenSSL::Crypto)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_OPENSSL=1)
         set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL TRUE)
+        set(libautoupdater_openssl_version "${OPENSSL_VERSION}")
+        if(NOT libautoupdater_openssl_version)
+            set(libautoupdater_openssl_version "${OpenSSL_VERSION}")
+        endif()
+        if(NOT libautoupdater_openssl_version)
+            set(libautoupdater_openssl_version "NOASSERTION")
+        endif()
+        libautoupdater_append_sbom_dependency(
+            "OpenSSL"
+            "SPDXRef-Package-OpenSSL"
+            "${libautoupdater_openssl_version}"
+            "https://www.openssl.org/"
+            "NOASSERTION"
+            "Organization: OpenSSL Software Foundation")
     endif()
 endif()
+
+configure_file(
+    cmake/sbom-dependencies.json.in
+    ${CMAKE_CURRENT_BINARY_DIR}/libAutoUpdater-sbom-dependencies.json
+    @ONLY)
 
 if(LIBAUTOUPDATER_BUILD_UPDATER)
     add_subdirectory(updater)
