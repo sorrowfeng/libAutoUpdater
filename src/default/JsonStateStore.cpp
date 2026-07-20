@@ -1,9 +1,11 @@
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include "DownloadResumeStore.h"
 #include "default/JsonStateStoreInternal.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "util/Json.h"
 #include "util/PathUtil.h"
+#include "util/Rfc3339.h"
 #include "util/Sha256.h"
 
 #include <algorithm>
@@ -12,18 +14,26 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace autoupdater {
 
 namespace {
 
 constexpr std::uint64_t kStateSchemaVersion = 1;
+constexpr std::uint64_t kDownloadResumeSchemaVersion = 1;
+constexpr std::size_t kDownloadResumeEntryLimit = 256;
+constexpr std::uint64_t kDownloadResumeByteLimit = 1024 * 1024;
+constexpr std::uint64_t kLegacyDownloadResumeMaxAgeSeconds = 7 * 24 * 60 * 60;
 constexpr auto kLockRetryDelay = std::chrono::milliseconds(10);
 constexpr std::size_t kLockAttempts = 500;
 
@@ -270,6 +280,175 @@ Result<util::Json::Object> parseRoot(const std::string& contents, const Resource
     return Result<util::Json::Object>::ok(std::move(root));
 }
 
+struct StoredDownloadResume {
+    std::uint64_t offset = 0;
+    std::string etag;
+    std::string lastModified;
+    std::string sha256;
+    std::string releaseKey;
+    std::uint64_t updatedAtUnixSeconds = 0;
+};
+
+using StoredDownloadResumes = std::map<std::string, StoredDownloadResume>;
+
+std::string downloadResumeStorageKey(std::string_view logicalKey) {
+    static constexpr char domain[] = "libAutoUpdater/download-resume-storage/v1\0";
+    std::string material(domain, sizeof(domain) - 1);
+    material.append(logicalKey.data(), logicalKey.size());
+    return util::sha256Bytes(material);
+}
+
+Result<void> validateDownloadResumeValue(const DownloadResumeState& resume, const ResourceLimits& limits) {
+    if (resume.key.empty() || containsControlCharacter(resume.key) || !util::isLowerHexSha256(resume.sha256)) {
+        return Result<void>::fail(stateError("Download resume key or SHA-256 is invalid"));
+    }
+    if (containsControlCharacter(resume.etag) || containsControlCharacter(resume.lastModified)) {
+        return Result<void>::fail(stateError("Download resume validators contain control characters"));
+    }
+    if (resume.offset > limits.maxArtifactBytes) {
+        return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
+    }
+    return Result<void>::ok();
+}
+
+Result<void> validateDownloadResumeScope(const detail::DownloadResumeScope& scope) {
+    if (!util::isLowerHexSha256(scope.releaseKey)) {
+        return Result<void>::fail(stateError("Download resume release key must be a lowercase SHA-256"));
+    }
+    return Result<void>::ok();
+}
+
+Result<StoredDownloadResumes> parseDownloadResumeDocument(const std::string& contents, const ResourceLimits& limits,
+                                                          std::size_t entryLimit) {
+    auto json = util::Json::parse(contents, limits.json);
+    if (!json) {
+        if (json.error().code == ErrorCode::ResourceLimitExceeded) {
+            return Result<StoredDownloadResumes>::fail(json.error());
+        }
+        return Result<StoredDownloadResumes>::fail(
+            stateError("Download resume state contains invalid JSON: " + json.error().message));
+    }
+    if (!json.value().isObject()) {
+        return Result<StoredDownloadResumes>::fail(stateError("Download resume state root must be an object"));
+    }
+    const auto& root = json.value().asObject();
+    auto rootKeys = requireOnlyKeys(root, {"schemaVersion", "entries"}, "Download resume state root");
+    if (!rootKeys) {
+        return Result<StoredDownloadResumes>::fail(rootKeys.error());
+    }
+    const auto schema = root.find("schemaVersion");
+    const auto entries = root.find("entries");
+    if (schema == root.end() || !schema->second.isUnsignedInteger() ||
+        schema->second.asUInt64() != kDownloadResumeSchemaVersion) {
+        return Result<StoredDownloadResumes>::fail(stateError("Download resume state schemaVersion is unsupported"));
+    }
+    if (entries == root.end() || !entries->second.isObject()) {
+        return Result<StoredDownloadResumes>::fail(stateError("Download resume state entries must be an object"));
+    }
+    if (entries->second.asObject().size() > entryLimit) {
+        return Result<StoredDownloadResumes>::fail(
+            {ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
+    }
+
+    StoredDownloadResumes parsed;
+    for (const auto& entry : entries->second.asObject()) {
+        if (!util::isLowerHexSha256(entry.first) || !entry.second.isObject()) {
+            return Result<StoredDownloadResumes>::fail(
+                stateError("Download resume entries must use opaque SHA-256 keys and object values"));
+        }
+        const auto& record = entry.second.asObject();
+        auto recordKeys =
+            requireOnlyKeys(record, {"offset", "etag", "lastModified", "sha256", "releaseKey", "updatedAt"},
+                            "Download resume sidecar record");
+        if (!recordKeys) {
+            return Result<StoredDownloadResumes>::fail(recordKeys.error());
+        }
+        const auto offset = record.find("offset");
+        const auto etag = record.find("etag");
+        const auto lastModified = record.find("lastModified");
+        const auto sha256 = record.find("sha256");
+        const auto releaseKey = record.find("releaseKey");
+        const auto updatedAt = record.find("updatedAt");
+        if (offset == record.end() || etag == record.end() || lastModified == record.end() || sha256 == record.end() ||
+            releaseKey == record.end() || updatedAt == record.end() || !etag->second.isString() ||
+            !lastModified->second.isString() || !sha256->second.isString() || !releaseKey->second.isString() ||
+            !updatedAt->second.isUnsignedInteger()) {
+            return Result<StoredDownloadResumes>::fail(
+                stateError("Download resume sidecar record is incomplete or has invalid types"));
+        }
+        auto parsedOffset = parseOffset(offset->second);
+        if (!parsedOffset) {
+            return Result<StoredDownloadResumes>::fail(parsedOffset.error());
+        }
+        if (parsedOffset.value() > limits.maxArtifactBytes) {
+            return Result<StoredDownloadResumes>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
+        }
+        if (!util::isLowerHexSha256(sha256->second.asString()) ||
+            !util::isLowerHexSha256(releaseKey->second.asString())) {
+            return Result<StoredDownloadResumes>::fail(
+                stateError("Download resume sidecar hashes must be lowercase SHA-256 values"));
+        }
+        if (containsControlCharacter(etag->second.asString()) ||
+            containsControlCharacter(lastModified->second.asString())) {
+            return Result<StoredDownloadResumes>::fail(
+                stateError("Download resume validators contain control characters"));
+        }
+
+        StoredDownloadResume value;
+        value.offset = parsedOffset.value();
+        value.etag = etag->second.asString();
+        value.lastModified = lastModified->second.asString();
+        value.sha256 = sha256->second.asString();
+        value.releaseKey = releaseKey->second.asString();
+        value.updatedAtUnixSeconds = updatedAt->second.asUInt64();
+        parsed.emplace(entry.first, std::move(value));
+    }
+    return Result<StoredDownloadResumes>::ok(std::move(parsed));
+}
+
+util::Json downloadResumeDocument(const StoredDownloadResumes& entries) {
+    util::Json::Object serializedEntries;
+    for (const auto& entry : entries) {
+        util::Json::Object record;
+        record.emplace("offset", entry.second.offset);
+        record.emplace("etag", entry.second.etag);
+        record.emplace("lastModified", entry.second.lastModified);
+        record.emplace("sha256", entry.second.sha256);
+        record.emplace("releaseKey", entry.second.releaseKey);
+        record.emplace("updatedAt", entry.second.updatedAtUnixSeconds);
+        serializedEntries.emplace(entry.first, util::Json(std::move(record)));
+    }
+    util::Json::Object root;
+    root.emplace("schemaVersion", kDownloadResumeSchemaVersion);
+    root.emplace("entries", util::Json(std::move(serializedEntries)));
+    return util::Json(std::move(root));
+}
+
+bool downloadResumeIsFresh(const StoredDownloadResume& record, const detail::DownloadResumeScope& scope) {
+    if (record.releaseKey != scope.releaseKey) {
+        return false;
+    }
+    if (record.updatedAtUnixSeconds > scope.nowUnixSeconds) {
+        return record.updatedAtUnixSeconds - scope.nowUnixSeconds <= scope.maxAgeSeconds;
+    }
+    return scope.nowUnixSeconds - record.updatedAtUnixSeconds <= scope.maxAgeSeconds;
+}
+
+Result<detail::DownloadResumeScope> legacyDownloadResumeScope() {
+    auto now = util::currentUtcInstant();
+    if (!now || now.value().unixSeconds < 0) {
+        return Result<detail::DownloadResumeScope>::fail(
+            stateError("The current time is unavailable for download resume persistence"));
+    }
+    static constexpr char domain[] = "libAutoUpdater/download-resume-legacy-release/v1";
+    detail::DownloadResumeScope scope;
+    scope.releaseKey = util::sha256Bytes(std::string_view(domain, sizeof(domain) - 1));
+    scope.nowUnixSeconds = static_cast<std::uint64_t>(now.value().unixSeconds);
+    scope.maxAgeSeconds = kLegacyDownloadResumeMaxAgeSeconds;
+    return Result<detail::DownloadResumeScope>::ok(std::move(scope));
+}
+
 struct StoredFile {
     bool exists = false;
     std::string contents;
@@ -453,7 +632,9 @@ Result<void> writeAtomic(IRootedDirectory& root, const std::string& name, const 
     return Result<void>::ok();
 }
 
-class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAndSet {
+class JsonStateStore final : public IStateStore,
+                             public IPendingUpdateCompareAndSet,
+                             public detail::IDownloadResumeBatchStore {
   public:
     JsonStateStore(std::filesystem::path path, ResourceLimits limits, std::shared_ptr<IFileSystem> fileSystem,
                    detail::JsonStateStoreHooks hooks)
@@ -474,7 +655,9 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
             }
             backupName_ = fileName_ + ".lkg";
             lockName_ = fileName_ + ".lock";
-            if (!util::validateManagedPath(backupName_) || !util::validateManagedPath(lockName_)) {
+            resumeName_ = fileName_ + ".resume";
+            if (!util::validateManagedPath(backupName_) || !util::validateManagedPath(lockName_) ||
+                !util::validateManagedPath(resumeName_)) {
                 configurationError_ = stateError("State companion file names are invalid");
             }
         } catch (...) {
@@ -625,8 +808,7 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
                 return Result<void>::fail(stateError("No pending update exists to clear"));
             }
             if (!pendingUpdatesEqual(*actualPending.value(), expectedPending)) {
-                return Result<void>::fail(
-                    stateError("Persisted pending update does not match the expected value"));
+                return Result<void>::fail(stateError("Persisted pending update does not match the expected value"));
             }
             state.value().document.erase("pendingUpdate");
             return saveLocked(state.value());
@@ -650,36 +832,11 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
 
     Result<void> saveDownloadResume(const DownloadResumeState& resume) noexcept override {
         try {
-            if (resume.key.empty() || containsControlCharacter(resume.key) || !util::isLowerHexSha256(resume.sha256)) {
-                return Result<void>::fail(stateError("Download resume key or SHA-256 is invalid"));
+            auto scope = legacyDownloadResumeScope();
+            if (!scope) {
+                return Result<void>::fail(scope.error());
             }
-            if (containsControlCharacter(resume.etag) || containsControlCharacter(resume.lastModified)) {
-                return Result<void>::fail(stateError("Download resume validators contain control characters"));
-            }
-            if (resume.offset > limits_.maxArtifactBytes) {
-                return Result<void>::fail(
-                    {ErrorCode::ResourceLimitExceeded, "Resume offset exceeds the artifact byte limit"});
-            }
-            auto state = lockAndLoad();
-            if (!state) {
-                return Result<void>::fail(state.error());
-            }
-            util::Json::Object downloads;
-            const auto downloadsIt = state.value().document.find("downloadResume");
-            if (downloadsIt != state.value().document.end()) {
-                downloads = downloadsIt->second.asObject();
-            }
-            if (downloads.find(resume.key) == downloads.end() && downloads.size() >= limits_.json.maxContainerEntries) {
-                return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
-            }
-            util::Json::Object record;
-            record.emplace("offset", resume.offset);
-            record.emplace("etag", resume.etag);
-            record.emplace("lastModified", resume.lastModified);
-            record.emplace("sha256", resume.sha256);
-            downloads[resume.key] = util::Json(std::move(record));
-            state.value().document["downloadResume"] = util::Json(std::move(downloads));
-            return saveLocked(state.value());
+            return applyDownloadResumeBatch(scope.value(), {resume}, {});
         } catch (...) {
             return Result<void>::fail(stateError("Unexpected download-resume save failure"));
         }
@@ -687,29 +844,25 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
 
     Result<std::optional<DownloadResumeState>> loadDownloadResume(const std::string& key) noexcept override {
         try {
-            auto state = lockAndLoad();
-            if (!state) {
-                return Result<std::optional<DownloadResumeState>>::fail(state.error());
+            if (key.empty() || containsControlCharacter(key)) {
+                return Result<std::optional<DownloadResumeState>>::fail(stateError("Download resume key is invalid"));
             }
-            const auto downloads = state.value().document.find("downloadResume");
-            if (downloads == state.value().document.end()) {
-                return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+            auto scope = legacyDownloadResumeScope();
+            if (!scope) {
+                return Result<std::optional<DownloadResumeState>>::fail(scope.error());
             }
-            const auto record = downloads->second.asObject().find(key);
-            if (record == downloads->second.asObject().end()) {
-                return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+            auto loaded = loadDownloadResumeBatch(scope.value(), {key});
+            if (!loaded) {
+                return Result<std::optional<DownloadResumeState>>::fail(loaded.error());
             }
-            DownloadResumeState resume;
-            resume.key = key;
-            auto offset = parseOffset(*record->second.get("offset"));
-            if (!offset) {
-                return Result<std::optional<DownloadResumeState>>::fail(offset.error());
+            if (!loaded.value().empty()) {
+                return Result<std::optional<DownloadResumeState>>::ok(std::move(loaded.value().front()));
             }
-            resume.offset = offset.value();
-            resume.etag = record->second.get("etag")->asString();
-            resume.lastModified = record->second.get("lastModified")->asString();
-            resume.sha256 = record->second.get("sha256")->asString();
-            return Result<std::optional<DownloadResumeState>>::ok(std::move(resume));
+
+            // Legacy schema stored caller keys directly in the authoritative
+            // state document. Preserve read compatibility until the first new
+            // batch mutation scrubs that advisory map.
+            return loadEmbeddedDownloadResume(key);
         } catch (...) {
             return Result<std::optional<DownloadResumeState>>::fail(
                 stateError("Unexpected download-resume load failure"));
@@ -718,19 +871,132 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
 
     Result<void> clearDownloadResume(const std::string& key) noexcept override {
         try {
-            auto state = lockAndLoad();
+            if (key.empty() || containsControlCharacter(key)) {
+                return Result<void>::fail(stateError("Download resume key is invalid"));
+            }
+            auto scope = legacyDownloadResumeScope();
+            if (!scope) {
+                return Result<void>::fail(scope.error());
+            }
+            return applyDownloadResumeBatch(scope.value(), {}, {key});
+        } catch (...) {
+            return Result<void>::fail(stateError("Unexpected download-resume clear failure"));
+        }
+    }
+
+    Result<std::vector<DownloadResumeState>>
+    loadDownloadResumeBatch(const detail::DownloadResumeScope& scope,
+                            const std::vector<std::string>& keys) noexcept override {
+        try {
+            auto validScope = validateDownloadResumeScope(scope);
+            if (!validScope) {
+                return Result<std::vector<DownloadResumeState>>::fail(validScope.error());
+            }
+            if (keys.size() > limits_.json.maxContainerEntries) {
+                return Result<std::vector<DownloadResumeState>>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download resume batch key limit exceeded"});
+            }
+            for (const auto& key : keys) {
+                if (key.empty() || containsControlCharacter(key)) {
+                    return Result<std::vector<DownloadResumeState>>::fail(
+                        stateError("Download resume batch contains an invalid key"));
+                }
+            }
+
+            auto state = lockAndLoadDownloadResumes(false);
+            if (!state) {
+                return Result<std::vector<DownloadResumeState>>::fail(state.error());
+            }
+            std::vector<DownloadResumeState> loaded;
+            loaded.reserve(keys.size());
+            for (const auto& key : keys) {
+                const auto record = state.value().entries.find(downloadResumeStorageKey(key));
+                if (record == state.value().entries.end() || !downloadResumeIsFresh(record->second, scope)) {
+                    continue;
+                }
+                DownloadResumeState resume;
+                resume.key = key;
+                resume.offset = record->second.offset;
+                resume.etag = record->second.etag;
+                resume.lastModified = record->second.lastModified;
+                resume.sha256 = record->second.sha256;
+                loaded.push_back(std::move(resume));
+            }
+            return Result<std::vector<DownloadResumeState>>::ok(std::move(loaded));
+        } catch (...) {
+            return Result<std::vector<DownloadResumeState>>::fail(
+                stateError("Unexpected download-resume batch load failure"));
+        }
+    }
+
+    Result<void> applyDownloadResumeBatch(const detail::DownloadResumeScope& scope,
+                                          const std::vector<DownloadResumeState>& upserts,
+                                          const std::vector<std::string>& clears) noexcept override {
+        try {
+            auto validScope = validateDownloadResumeScope(scope);
+            if (!validScope) {
+                return validScope;
+            }
+            if (upserts.size() > limits_.json.maxContainerEntries || clears.size() > limits_.json.maxContainerEntries ||
+                upserts.size() > limits_.json.maxContainerEntries - clears.size()) {
+                return Result<void>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download resume batch mutation limit exceeded"});
+            }
+            for (const auto& resume : upserts) {
+                auto valid = validateDownloadResumeValue(resume, limits_);
+                if (!valid) {
+                    return valid;
+                }
+            }
+            for (const auto& key : clears) {
+                if (key.empty() || containsControlCharacter(key)) {
+                    return Result<void>::fail(stateError("Download resume batch contains an invalid clear key"));
+                }
+            }
+
+            auto state = lockAndLoadDownloadResumes(true);
             if (!state) {
                 return Result<void>::fail(state.error());
             }
-            const auto downloadsIt = state.value().document.find("downloadResume");
-            if (downloadsIt != state.value().document.end()) {
-                auto downloads = downloadsIt->second.asObject();
-                downloads.erase(key);
-                state.value().document["downloadResume"] = util::Json(std::move(downloads));
+            for (auto it = state.value().entries.begin(); it != state.value().entries.end();) {
+                if (!downloadResumeIsFresh(it->second, scope)) {
+                    it = state.value().entries.erase(it);
+                } else {
+                    ++it;
+                }
             }
-            return saveLocked(state.value());
+            for (const auto& key : clears) {
+                state.value().entries.erase(downloadResumeStorageKey(key));
+            }
+
+            std::set<std::string> protectedKeys;
+            for (const auto& resume : upserts) {
+                const auto storageKey = downloadResumeStorageKey(resume.key);
+                StoredDownloadResume stored;
+                stored.offset = resume.offset;
+                stored.etag = resume.etag;
+                stored.lastModified = resume.lastModified;
+                stored.sha256 = resume.sha256;
+                stored.releaseKey = scope.releaseKey;
+                stored.updatedAtUnixSeconds = scope.nowUnixSeconds;
+                state.value().entries[storageKey] = std::move(stored);
+                protectedKeys.insert(storageKey);
+            }
+
+            const auto entryLimit = downloadResumeEntryLimit();
+            if (protectedKeys.size() > entryLimit) {
+                return Result<void>::fail(
+                    {ErrorCode::ResourceLimitExceeded, "Download resume batch exceeds the retained entry limit"});
+            }
+            while (state.value().entries.size() > entryLimit) {
+                if (!evictOldestDownloadResume(state.value().entries, protectedKeys)) {
+                    return Result<void>::fail(
+                        {ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
+                }
+            }
+            return saveDownloadResumesLocked(state.value(), protectedKeys);
         } catch (...) {
-            return Result<void>::fail(stateError("Unexpected download-resume clear failure"));
+            return Result<void>::fail(stateError("Unexpected download-resume batch apply failure"));
         }
     }
 
@@ -743,7 +1009,21 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
         util::Json::Object document;
     };
 
-    Result<LockedState> lockAndLoad() {
+    struct LockedDownloadResumeState {
+        LockedState storage;
+        StoredFile sidecar;
+        StoredDownloadResumes entries;
+    };
+
+    std::size_t downloadResumeEntryLimit() const noexcept {
+        return std::min(kDownloadResumeEntryLimit, limits_.json.maxContainerEntries);
+    }
+
+    std::uint64_t downloadResumeByteLimit() const noexcept {
+        return std::min(kDownloadResumeByteLimit, limits_.maxStateBytes);
+    }
+
+    Result<LockedState> lockOnly() {
         if (configurationError_) {
             return Result<LockedState>::fail(*configurationError_);
         }
@@ -779,32 +1059,199 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
             return Result<LockedState>::fail(lockFailure);
         }
 
+        return Result<LockedState>::ok(std::move(state));
+    }
+
+    Result<void> loadStateLocked(LockedState& state) {
         auto primary = readStoredFile(*state.root, fileName_, limits_.maxStateBytes, "state file");
         if (!primary) {
-            return Result<LockedState>::fail(primary.error());
+            return Result<void>::fail(primary.error());
         }
         state.primary = std::move(primary.value());
         if (!state.primary.exists) {
             auto backup = readStoredFile(*state.root, backupName_, limits_.maxStateBytes, "last-known-good state file");
             if (!backup) {
-                return Result<LockedState>::fail(backup.error());
+                return Result<void>::fail(backup.error());
             }
             if (backup.value().exists) {
-                return Result<LockedState>::fail(
+                return Result<void>::fail(
                     stateError("Primary state file is missing while a last-known-good snapshot exists"));
             }
-            return Result<LockedState>::ok(std::move(state));
+            return Result<void>::ok();
         }
 
         auto parsed = parseRoot(state.primary.contents, limits_);
         if (!parsed) {
-            return Result<LockedState>::fail(parsed.error());
+            return Result<void>::fail(parsed.error());
         }
         state.document = std::move(parsed.value());
-        return Result<LockedState>::ok(std::move(state));
+        return Result<void>::ok();
     }
 
-    Result<void> saveLocked(LockedState& state) {
+    Result<LockedState> lockAndLoad() {
+        auto state = lockOnly();
+        if (!state) {
+            return state;
+        }
+        auto loaded = loadStateLocked(state.value());
+        if (!loaded) {
+            return Result<LockedState>::fail(loaded.error());
+        }
+        return Result<LockedState>::ok(std::move(state.value()));
+    }
+
+    Result<void> scrubEmbeddedDownloadResumesLocked(LockedState& state) {
+        if (!state.primary.exists) {
+            return Result<void>::ok();
+        }
+
+        if (state.document.erase("downloadResume") != 0) {
+            // The previous primary is valid except for advisory resume data.
+            // Publishing the sanitized document as both LKG and primary keeps
+            // credential-bearing legacy keys out of every durable snapshot.
+            return saveLocked(state, true);
+        }
+
+        auto backup = readStoredFile(*state.root, backupName_, limits_.maxStateBytes, "last-known-good state file");
+        if (!backup) {
+            return Result<void>::fail(backup.error());
+        }
+        if (!backup.value().exists) {
+            return Result<void>::ok();
+        }
+        auto parsedBackup = parseRoot(backup.value().contents, limits_);
+        if (parsedBackup && parsedBackup.value().find("downloadResume") == parsedBackup.value().end()) {
+            return Result<void>::ok();
+        }
+
+        // A corrupt LKG or one containing legacy resume URLs is replaced with
+        // the already-validated, resume-free current primary. LKG is diagnostic
+        // rollback evidence only; this does not change authoritative state.
+        auto saved = writeAtomic(*state.root, backupName_, state.primary.contents, backup.value().expectation,
+                                 limits_.maxStateBytes, "last-known-good state file");
+        if (saved) {
+            checkpoint(detail::JsonStateStoreCheckpoint::BackupCommitted);
+        }
+        return saved;
+    }
+
+    Result<LockedDownloadResumeState> lockAndLoadDownloadResumes(bool scrubEmbedded) {
+        auto storage = lockOnly();
+        if (!storage) {
+            return Result<LockedDownloadResumeState>::fail(storage.error());
+        }
+
+        auto sidecar =
+            readStoredFile(*storage.value().root, resumeName_, downloadResumeByteLimit(), "download resume state file");
+        if (!sidecar) {
+            return Result<LockedDownloadResumeState>::fail(sidecar.error());
+        }
+
+        LockedDownloadResumeState result;
+        result.storage = std::move(storage.value());
+        result.sidecar = std::move(sidecar.value());
+        if (result.sidecar.exists) {
+            auto parsed = parseDownloadResumeDocument(result.sidecar.contents, limits_, downloadResumeEntryLimit());
+            if (!parsed) {
+                return Result<LockedDownloadResumeState>::fail(parsed.error());
+            }
+            result.entries = std::move(parsed.value());
+        }
+
+        if (scrubEmbedded) {
+            auto loaded = loadStateLocked(result.storage);
+            if (!loaded) {
+                return Result<LockedDownloadResumeState>::fail(loaded.error());
+            }
+            auto scrubbed = scrubEmbeddedDownloadResumesLocked(result.storage);
+            if (!scrubbed) {
+                return Result<LockedDownloadResumeState>::fail(scrubbed.error());
+            }
+        }
+        return Result<LockedDownloadResumeState>::ok(std::move(result));
+    }
+
+    Result<std::optional<DownloadResumeState>> loadEmbeddedDownloadResume(const std::string& key) {
+        auto state = lockAndLoad();
+        if (!state) {
+            return Result<std::optional<DownloadResumeState>>::fail(state.error());
+        }
+        const auto downloads = state.value().document.find("downloadResume");
+        if (downloads == state.value().document.end()) {
+            return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+        }
+        const auto record = downloads->second.asObject().find(key);
+        if (record == downloads->second.asObject().end()) {
+            return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+        }
+        DownloadResumeState resume;
+        resume.key = key;
+        auto offset = parseOffset(*record->second.get("offset"));
+        if (!offset) {
+            return Result<std::optional<DownloadResumeState>>::fail(offset.error());
+        }
+        resume.offset = offset.value();
+        resume.etag = record->second.get("etag")->asString();
+        resume.lastModified = record->second.get("lastModified")->asString();
+        resume.sha256 = record->second.get("sha256")->asString();
+        return Result<std::optional<DownloadResumeState>>::ok(std::move(resume));
+    }
+
+    bool evictOldestDownloadResume(StoredDownloadResumes& entries, const std::set<std::string>& protectedKeys) const {
+        auto oldest = entries.end();
+        for (auto it = entries.begin(); it != entries.end(); ++it) {
+            if (protectedKeys.find(it->first) != protectedKeys.end()) {
+                continue;
+            }
+            if (oldest == entries.end() || it->second.updatedAtUnixSeconds < oldest->second.updatedAtUnixSeconds ||
+                (it->second.updatedAtUnixSeconds == oldest->second.updatedAtUnixSeconds && it->first < oldest->first)) {
+                oldest = it;
+            }
+        }
+        if (oldest == entries.end()) {
+            return false;
+        }
+        entries.erase(oldest);
+        return true;
+    }
+
+    Result<std::string> serializeDownloadResumes(const StoredDownloadResumes& entries) const {
+        if (entries.size() > downloadResumeEntryLimit()) {
+            return Result<std::string>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Download resume entry limit exceeded"});
+        }
+        auto json = downloadResumeDocument(entries);
+        auto usage = util::Json::validateResourceUsage(json, limits_.json);
+        if (!usage) {
+            return Result<std::string>::fail(usage.error());
+        }
+        auto contents = json.stringify(2);
+        if (contents.size() > downloadResumeByteLimit()) {
+            return Result<std::string>::fail(
+                {ErrorCode::ResourceLimitExceeded, "Download resume state file exceeds its byte limit"});
+        }
+        return Result<std::string>::ok(std::move(contents));
+    }
+
+    Result<void> saveDownloadResumesLocked(LockedDownloadResumeState& state,
+                                           const std::set<std::string>& protectedKeys) {
+        Result<std::string> serialized = serializeDownloadResumes(state.entries);
+        while (!serialized && serialized.error().code == ErrorCode::ResourceLimitExceeded &&
+               evictOldestDownloadResume(state.entries, protectedKeys)) {
+            serialized = serializeDownloadResumes(state.entries);
+        }
+        if (!serialized) {
+            return Result<void>::fail(serialized.error());
+        }
+        if ((state.sidecar.exists && state.sidecar.contents == serialized.value()) ||
+            (!state.sidecar.exists && state.entries.empty())) {
+            return Result<void>::ok();
+        }
+        return writeAtomic(*state.storage.root, resumeName_, serialized.value(), state.sidecar.expectation,
+                           downloadResumeByteLimit(), "download resume state file");
+    }
+
+    Result<void> saveLocked(LockedState& state, bool sanitizeBackup = false) {
         const auto pending = state.document.find("pendingUpdate");
         bool preserveLegacySchema = false;
         if (state.document.find("schemaVersion") == state.document.end() && pending != state.document.end() &&
@@ -834,7 +1281,8 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
             if (!backup) {
                 return Result<void>::fail(backup.error());
             }
-            auto savedBackup = writeAtomic(*state.root, backupName_, state.primary.contents, backup.value().expectation,
+            const auto& backupContents = sanitizeBackup ? contents : state.primary.contents;
+            auto savedBackup = writeAtomic(*state.root, backupName_, backupContents, backup.value().expectation,
                                            limits_.maxStateBytes, "last-known-good state file");
             if (!savedBackup) {
                 return savedBackup;
@@ -870,8 +1318,7 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
 
     Result<util::Json> pendingToJson(const PendingUpdate& pending, bool allowLegacyDigest = false) const {
         if (pending.backupDir.empty() || pending.applyPlanPath.empty() ||
-            (pending.applyPlanDigest.empty() ? !allowLegacyDigest
-                                             : !util::isLowerHexSha256(pending.applyPlanDigest))) {
+            (pending.applyPlanDigest.empty() ? !allowLegacyDigest : !util::isLowerHexSha256(pending.applyPlanDigest))) {
             return Result<util::Json>::fail(stateError("Pending update metadata is incomplete or invalid"));
         }
         util::Json::Object object;
@@ -909,6 +1356,7 @@ class JsonStateStore final : public IStateStore, public IPendingUpdateCompareAnd
     std::string fileName_;
     std::string backupName_;
     std::string lockName_;
+    std::string resumeName_;
     std::optional<Error> configurationError_;
 };
 

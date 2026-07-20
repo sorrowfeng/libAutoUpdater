@@ -1,9 +1,11 @@
 #include "TestCommon.h"
 
+#include "DownloadResumeStore.h"
 #include "default/JsonStateStoreInternal.h"
 #include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -560,9 +562,15 @@ void testStateStoreDownloadResume() {
     TemporaryDirectory temporary("round-trip");
     const auto statePath = temporary.path() / "state.json";
     auto store = autoupdater::createJsonStateStore(statePath);
-    auto state = resumeState("https://example.com/file.bin", 42, 'a');
+    auto state = resumeState("https://example.com/file.bin?token=resume-secret", 42, 'a');
 
     LAU_REQUIRE(store->saveDownloadResume(state));
+    const auto resumeSidecarPath = std::filesystem::path(statePath.string() + ".resume");
+    const auto resumeSidecar = readFile(resumeSidecarPath);
+    LAU_REQUIRE(resumeSidecar.find("resume-secret") == std::string::npos);
+    LAU_REQUIRE(resumeSidecar.find("https://") == std::string::npos);
+    LAU_REQUIRE(resumeSidecar.find("\"releaseKey\"") != std::string::npos);
+    LAU_REQUIRE(resumeSidecar.find("\"updatedAt\"") != std::string::npos);
     auto loaded = store->loadDownloadResume(state.key);
     LAU_REQUIRE(loaded);
     LAU_REQUIRE(loaded.value().has_value());
@@ -574,6 +582,133 @@ void testStateStoreDownloadResume() {
     auto afterClear = store->loadDownloadResume(state.key);
     LAU_REQUIRE(afterClear);
     LAU_REQUIRE(!afterClear.value().has_value());
+
+    auto batch = std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(store);
+    LAU_REQUIRE(batch);
+    autoupdater::detail::DownloadResumeScope releaseA{std::string(64, '1'), 100, 10};
+    const std::string restoredLegacyState =
+        std::string(
+            R"({"schemaVersion":1,"downloadResume":{"https://example.com/file.bin?token=restored-secret":{"offset":1,"etag":"","lastModified":"","sha256":")") +
+        std::string(64, 'a') + R"("}}})";
+    writeFile(statePath, restoredLegacyState);
+    writeFile(statePath.string() + ".lkg", restoredLegacyState);
+    LAU_REQUIRE(batch->applyDownloadResumeBatch(releaseA, {}, {}));
+    LAU_REQUIRE(readFile(statePath).find("restored-secret") == std::string::npos);
+    LAU_REQUIRE(readFile(statePath.string() + ".lkg").find("restored-secret") == std::string::npos);
+
+    auto releaseAState = resumeState("stable-resource-a", 11, 'b');
+    LAU_REQUIRE(batch->applyDownloadResumeBatch(releaseA, {releaseAState}, {}));
+    auto fresh = batch->loadDownloadResumeBatch(
+        autoupdater::detail::DownloadResumeScope{releaseA.releaseKey, 110, releaseA.maxAgeSeconds},
+        {releaseAState.key});
+    LAU_REQUIRE(fresh);
+    LAU_REQUIRE(fresh.value().size() == 1);
+    LAU_REQUIRE(fresh.value().front().offset == releaseAState.offset);
+    auto futureBoundary = batch->loadDownloadResumeBatch(
+        autoupdater::detail::DownloadResumeScope{releaseA.releaseKey, 90, releaseA.maxAgeSeconds}, {releaseAState.key});
+    LAU_REQUIRE(futureBoundary);
+    LAU_REQUIRE(futureBoundary.value().size() == 1);
+    auto implausibleFuture = batch->loadDownloadResumeBatch(
+        autoupdater::detail::DownloadResumeScope{releaseA.releaseKey, 89, releaseA.maxAgeSeconds}, {releaseAState.key});
+    LAU_REQUIRE(implausibleFuture);
+    LAU_REQUIRE(implausibleFuture.value().empty());
+
+    auto noOpFault = std::make_shared<FaultState>();
+    noOpFault->fault = PersistenceFault::ShortWrite;
+    noOpFault->target = "state.json.resume";
+    auto noOpFileSystem = std::make_shared<FaultingFileSystem>(autoupdater::createDefaultFileSystem(), noOpFault);
+    auto noOpStore =
+        autoupdater::detail::createJsonStateStoreForTesting(statePath, autoupdater::ResourceLimits{}, noOpFileSystem);
+    auto noOpBatch = std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(noOpStore);
+    LAU_REQUIRE(noOpBatch);
+    LAU_REQUIRE(noOpBatch->applyDownloadResumeBatch(releaseA, {}, {}));
+    LAU_REQUIRE(!noOpFault->consumed.load(std::memory_order_acquire));
+
+    const auto resumeFaultPath = temporary.path() / "resume-fault-state.json";
+    auto resumeFaultSeed = autoupdater::createJsonStateStore(resumeFaultPath);
+    auto resumeFaultSeedBatch =
+        std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(resumeFaultSeed);
+    LAU_REQUIRE(resumeFaultSeedBatch);
+    const autoupdater::detail::DownloadResumeScope resumeFaultScope{std::string(64, '4'), 500, 100};
+    auto resumeBeforeFault = resumeState("resume-fault-resource", 17, 'e');
+    LAU_REQUIRE(resumeFaultSeedBatch->applyDownloadResumeBatch(resumeFaultScope, {resumeBeforeFault}, {}));
+    const auto resumeFaultSidecar = std::filesystem::path(resumeFaultPath.string() + ".resume");
+    const auto resumeBeforeFaultContents = readFile(resumeFaultSidecar);
+
+    auto resumeWriteFault = std::make_shared<FaultState>();
+    resumeWriteFault->fault = PersistenceFault::ShortWrite;
+    resumeWriteFault->target = "resume-fault-state.json.resume";
+    auto resumeFaultFileSystem =
+        std::make_shared<FaultingFileSystem>(autoupdater::createDefaultFileSystem(), resumeWriteFault);
+    auto resumeFaultStore = autoupdater::detail::createJsonStateStoreForTesting(
+        resumeFaultPath, autoupdater::ResourceLimits{}, resumeFaultFileSystem);
+    auto resumeFaultBatch = std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(resumeFaultStore);
+    LAU_REQUIRE(resumeFaultBatch);
+    auto resumeAfterFault = resumeState(resumeBeforeFault.key, 29, 'e');
+    const auto failedResumeWrite = resumeFaultBatch->applyDownloadResumeBatch(resumeFaultScope, {resumeAfterFault}, {});
+    LAU_REQUIRE(!failedResumeWrite);
+    LAU_REQUIRE(resumeWriteFault->consumed.load(std::memory_order_acquire));
+    LAU_REQUIRE(readFile(resumeFaultSidecar) == resumeBeforeFaultContents);
+    auto resumeFaultReopened = autoupdater::createJsonStateStore(resumeFaultPath);
+    auto resumeFaultReopenedBatch =
+        std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(resumeFaultReopened);
+    LAU_REQUIRE(resumeFaultReopenedBatch);
+    auto resumeAfterReopen =
+        resumeFaultReopenedBatch->loadDownloadResumeBatch(resumeFaultScope, {resumeBeforeFault.key});
+    LAU_REQUIRE(resumeAfterReopen);
+    LAU_REQUIRE(resumeAfterReopen.value().size() == 1);
+    LAU_REQUIRE(resumeAfterReopen.value().front().offset == resumeBeforeFault.offset);
+
+    const autoupdater::detail::DownloadResumeScope expiredReleaseA{releaseA.releaseKey, 111, releaseA.maxAgeSeconds};
+    auto expired = batch->loadDownloadResumeBatch(expiredReleaseA, {releaseAState.key});
+    LAU_REQUIRE(expired);
+    LAU_REQUIRE(expired.value().empty());
+    LAU_REQUIRE(batch->applyDownloadResumeBatch(expiredReleaseA, {}, {}));
+
+    autoupdater::detail::DownloadResumeScope releaseB{std::string(64, '2'), 200, 10};
+    LAU_REQUIRE(batch->applyDownloadResumeBatch(releaseA, {releaseAState}, {}));
+    auto wrongRelease = batch->loadDownloadResumeBatch(releaseB, {releaseAState.key});
+    LAU_REQUIRE(wrongRelease);
+    LAU_REQUIRE(wrongRelease.value().empty());
+    LAU_REQUIRE(batch->applyDownloadResumeBatch(releaseB, {}, {}));
+    auto prunedRelease = batch->loadDownloadResumeBatch(releaseA, {releaseAState.key});
+    LAU_REQUIRE(prunedRelease);
+    LAU_REQUIRE(prunedRelease.value().empty());
+
+    const auto boundedPath = temporary.path() / "bounded-state.json";
+    auto boundedStore = autoupdater::createJsonStateStore(boundedPath);
+    auto boundedBatch = std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(boundedStore);
+    LAU_REQUIRE(boundedBatch);
+    const autoupdater::detail::DownloadResumeScope boundedScope{std::string(64, '3'), 1000, 1000};
+    std::vector<autoupdater::DownloadResumeState> boundedEntries;
+    std::vector<std::string> boundedKeys;
+    for (std::size_t index = 0; index < 256; ++index) {
+        const auto key = "bounded-resource-" + std::to_string(index);
+        boundedEntries.push_back(resumeState(key, index + 1, 'c'));
+        boundedKeys.push_back(key);
+    }
+    LAU_REQUIRE(boundedBatch->applyDownloadResumeBatch(boundedScope, boundedEntries, {}));
+    auto newest = resumeState("bounded-resource-newest", 999, 'd');
+    const autoupdater::detail::DownloadResumeScope laterBoundedScope{boundedScope.releaseKey, 1001, 1000};
+    LAU_REQUIRE(boundedBatch->applyDownloadResumeBatch(laterBoundedScope, {newest}, {}));
+    boundedKeys.push_back(newest.key);
+    auto boundedLoaded = boundedBatch->loadDownloadResumeBatch(laterBoundedScope, boundedKeys);
+    LAU_REQUIRE(boundedLoaded);
+    LAU_REQUIRE(boundedLoaded.value().size() == 256);
+    LAU_REQUIRE(
+        std::any_of(boundedLoaded.value().begin(), boundedLoaded.value().end(),
+                    [&](const autoupdater::DownloadResumeState& candidate) { return candidate.key == newest.key; }));
+
+    const auto byteLimitedPath = temporary.path() / "byte-limited-state.json";
+    autoupdater::ResourceLimits byteLimits;
+    byteLimits.maxStateBytes = 128;
+    auto byteLimitedStore = autoupdater::createJsonStateStore(byteLimitedPath, byteLimits);
+    auto byteLimitedBatch = std::dynamic_pointer_cast<autoupdater::detail::IDownloadResumeBatchStore>(byteLimitedStore);
+    LAU_REQUIRE(byteLimitedBatch);
+    auto byteLimitedSave = byteLimitedBatch->applyDownloadResumeBatch(releaseA, {releaseAState}, {});
+    LAU_REQUIRE(!byteLimitedSave);
+    LAU_REQUIRE(byteLimitedSave.error().code == autoupdater::ErrorCode::ResourceLimitExceeded);
+    LAU_REQUIRE(!std::filesystem::exists(byteLimitedPath.string() + ".resume"));
 
     auto pending = pendingUpdate(temporary.path(), "2.0.0", 'b');
     LAU_REQUIRE(store->savePendingUpdate(pending));
@@ -692,8 +827,12 @@ void testStateStoreDistinguishesMissingAndCorruptState() {
     LAU_REQUIRE(legacyResume.value()->sha256 == legacySha256);
 
     LAU_REQUIRE(legacyStore->saveDownloadResume(resumeState("migrated-artifact", 23, 'e')));
-    LAU_REQUIRE(readFile(legacyPath.string() + ".lkg") == legacy);
+    const auto sanitizedLegacyBackup = readFile(legacyPath.string() + ".lkg");
+    LAU_REQUIRE(sanitizedLegacyBackup.find("downloadResume") == std::string::npos);
+    LAU_REQUIRE(sanitizedLegacyBackup.find("legacy-artifact") == std::string::npos);
     const auto legacyWithResume = readFile(legacyPath);
+    LAU_REQUIRE(legacyWithResume.find("downloadResume") == std::string::npos);
+    LAU_REQUIRE(legacyWithResume.find("legacy-artifact") == std::string::npos);
     LAU_REQUIRE(legacyWithResume.find("\"schemaVersion\"") == std::string::npos);
 
     auto reopenedLegacyStore = autoupdater::createJsonStateStore(legacyPath);
@@ -714,8 +853,7 @@ void testStateStoreDistinguishesMissingAndCorruptState() {
     LAU_REQUIRE(!rejectedLegacyPendingWrite);
     LAU_REQUIRE(rejectedLegacyPendingWrite.error().code == autoupdater::ErrorCode::StateStoreError);
 
-    auto legacyCompareAndSet =
-        std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(reopenedLegacyStore);
+    auto legacyCompareAndSet = std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(reopenedLegacyStore);
     LAU_REQUIRE(legacyCompareAndSet);
     const auto legacyBeforeRejectedClear = readFile(legacyPath);
     auto mismatchedLegacyPending = *reopenedPending.value();
@@ -803,8 +941,7 @@ void testStateStoreHealthyCommitUsesCompareAndSet() {
 
     const auto pendingStatePath = temporary.path() / "pending-state.json";
     auto pendingStore = autoupdater::createJsonStateStore(pendingStatePath);
-    auto pendingCompareAndSet =
-        std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(pendingStore);
+    auto pendingCompareAndSet = std::dynamic_pointer_cast<autoupdater::IPendingUpdateCompareAndSet>(pendingStore);
     LAU_REQUIRE(pendingCompareAndSet);
     LAU_REQUIRE(pendingStore->saveLastAcceptedVersion(version("1.0.0"), "release-1"));
     LAU_REQUIRE(pendingStore->saveLastAcceptedVersion(version("1.1.0"), "release-1.1"));

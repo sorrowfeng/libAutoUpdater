@@ -271,7 +271,7 @@ likelihood of affecting production update flows.
   - Replace linear path lookup with a normalized path-to-record map and add a
     large-manifest performance regression test.
 
-- [ ] **AU-020 — Bound and batch download-resume state**
+- [x] **AU-020 — Bound and batch download-resume state**
   - Key code: `src/default/JsonStateStore.cpp:113-131,185-221`.
   - Use a credential-free stable resource identifier, prune entries by age and
     release, and avoid rewriting the complete state for every small update.

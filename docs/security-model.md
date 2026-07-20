@@ -105,6 +105,25 @@ Downgrades are accepted only when all of the following are true:
 An index-manifest signature does not authorize a downgrade of the selected
 release manifest. The selected release manifest must be verified separately.
 
+## Download Resume State
+
+The core never uses the request URL itself as a persistence key. It derives an
+opaque SHA-256 resource identity from release and signed artifact context while
+excluding URL query parameters. The query string is therefore never serialized
+as the resource key, and rotating signed-URL credentials do not invalidate a
+matching partial download. The bundled JSON store keeps resume metadata in a
+separate atomic sidecar, under the same inter-process lock as authoritative
+state. It retains only the active release, rejects timestamps more than seven
+days from the current wall clock in either direction, and enforces both
+entry-count and byte limits. Legacy URL-keyed resume maps are advisory: they
+are read for compatibility and scrubbed from the primary and last-known-good
+state on the next successful resume mutation after the authoritative primary
+state validates. A missing or corrupt primary continues to fail closed instead
+of trusting or rewriting its last-known-good snapshot in isolation.
+
+Resume metadata never authorizes content. A resumed or restarted artifact must
+still match the signed size and SHA-256 before it can enter an apply plan.
+
 ## Apply and Rollback
 
 Replacement is performed by `autoupdater_apply`:

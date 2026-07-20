@@ -10,6 +10,9 @@
   retaining manifest-scoped rollback backups for operator-managed cleanup.
 - Update planning now indexes normalized local snapshot paths, avoiding
   quadratic lookup work for large manifests.
+- Download resume persistence now uses credential-free resource identities and
+  one bounded atomic sidecar batch per task, with release, age, count, and byte
+  pruning.
 
 ## v0.1.5 - 2026-06-05
 

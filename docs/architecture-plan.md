@@ -219,10 +219,11 @@ Responsibilities:
 
 Resume metadata includes:
 
+- A credential-free opaque resource identity
 - ETag
 - Last-Modified
-- Content-Length
 - Downloaded byte count
+- Expected SHA-256
 
 Resume requests use:
 
@@ -232,6 +233,13 @@ If-Range: "<etag>"
 ```
 
 If ETag or Last-Modified no longer match, the partial file is discarded and the download restarts.
+
+The resource identity hashes the release scope, parsed origin and path, and
+signed artifact identity. URL query parameters are deliberately excluded, so
+the request query is never serialized as the resource key and rotating
+signed-URL credentials do not invalidate a matching partial download. The
+bundled state store loads resume data once and publishes at most one atomic
+batch after a download task, including failure paths.
 
 ### 4.6 ApplyPlan
 
@@ -277,7 +285,18 @@ The default implementation stores JSON under:
 
 ```text
 install/.autoupdater/state.json
+install/.autoupdater/state.json.resume
 ```
+
+`state.json` remains authoritative for accepted and pending update state. The
+`.resume` sidecar is advisory and independently replaceable: it retains only
+the current release, ignores timestamps more than seven days from the current
+wall clock in either direction, keeps at most 256 entries, and is bounded by
+the smaller of `maxStateBytes` and 1 MiB. A batch mutation prunes stale records
+and atomically replaces the sidecar only when its contents change. Legacy
+embedded `downloadResume` maps are accepted for read compatibility, then
+removed from both the primary state and last-known-good snapshot on the next
+successful resume mutation after the authoritative primary state validates.
 
 ## 5. Manifest Design
 

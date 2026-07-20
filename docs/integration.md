@@ -45,6 +45,11 @@ Default selection order:
 - Network backends periodically observe the cancellation token.
 - Interrupted downloads may leave temporary files and resume metadata.
 - A later retry can resume the download if the server supports Range requests.
+- The bundled store identifies a resource without persisting URL query
+  credentials, batches changes once per download task, and retains only
+  current-release records no older than seven days within fixed count and byte
+  limits. Resume state is advisory; losing it restarts the download rather than
+  weakening artifact hash verification.
 
 ## Mandatory Updates
 

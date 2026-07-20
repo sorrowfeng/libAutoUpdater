@@ -91,6 +91,15 @@ reconcile a completed rollback must implement that atomic capability; it is
 kept outside `IStateStore` so existing implementations retain their interface
 and virtual-table contract.
 
+Download resume keys passed by `Updater` through `IStateStore` are opaque
+lowercase hashes, not request URLs; custom stores must not reconstruct or
+persist a credential-bearing URL in their place. The bundled JSON store
+additionally uses an internal batch capability, persists advisory records in a
+separate atomic `.resume` sidecar, and bounds them by release, age, entry count,
+and bytes. Custom stores keep the existing per-record virtual interface and are
+responsible for equivalent expiry, capacity, synchronization, and durability
+policies if they persist resume metadata.
+
 `IProcessLauncher::launch()` reports success only after the operating system has
 created the requested executable image. Arguments are UTF-8 values passed
 without shell interpretation; child setup, working-directory, and executable

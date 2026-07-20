@@ -1,5 +1,6 @@
 #include "ApplyExecutor.h"
 #include "DownloadExecutor.h"
+#include "DownloadResumeStore.h"
 #include "LocalSnapshotBuilder.h"
 #include "TestCommon.h"
 
@@ -8,6 +9,7 @@
 #include "libAutoUpdater/interfaces/INetworkClient.h"
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -384,8 +386,7 @@ class SwappingDownloadClient final : public autoupdater::INetworkClient {
     std::string contents_;
 };
 
-class RecordingStateStore final : public autoupdater::IStateStore,
-                                  public autoupdater::IPendingUpdateCompareAndSet {
+class RecordingStateStore : public autoupdater::IStateStore, public autoupdater::IPendingUpdateCompareAndSet {
   public:
     autoupdater::Result<void> saveLastAcceptedVersion(const autoupdater::Version&,
                                                       const std::string&) noexcept override {
@@ -417,8 +418,7 @@ class RecordingStateStore final : public autoupdater::IStateStore,
         return autoupdater::Result<void>::ok();
     }
 
-    autoupdater::Result<void>
-    clearPendingUpdateIfMatches(const autoupdater::PendingUpdate&) noexcept override {
+    autoupdater::Result<void> clearPendingUpdateIfMatches(const autoupdater::PendingUpdate&) noexcept override {
         return autoupdater::Result<void>::ok();
     }
 
@@ -458,6 +458,48 @@ class RecordingStateStore final : public autoupdater::IStateStore,
     bool failSave = false;
     bool failLoad = false;
     bool failClear = false;
+};
+
+class BatchRecordingStateStore final : public RecordingStateStore,
+                                       public autoupdater::detail::IDownloadResumeBatchStore {
+  public:
+    autoupdater::Result<std::vector<autoupdater::DownloadResumeState>>
+    loadDownloadResumeBatch(const autoupdater::detail::DownloadResumeScope& scope,
+                            const std::vector<std::string>& keys) noexcept override {
+        ++batchLoadCalls;
+        loadedScope = scope;
+        requestedKeys = keys;
+        if (failBatchLoad) {
+            return autoupdater::Result<std::vector<autoupdater::DownloadResumeState>>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "Injected resume batch load failure"});
+        }
+        return autoupdater::Result<std::vector<autoupdater::DownloadResumeState>>::ok(batchLoaded);
+    }
+
+    autoupdater::Result<void> applyDownloadResumeBatch(const autoupdater::detail::DownloadResumeScope& scope,
+                                                       const std::vector<autoupdater::DownloadResumeState>& upserts,
+                                                       const std::vector<std::string>& clears) noexcept override {
+        ++batchApplyCalls;
+        appliedScope = scope;
+        appliedUpserts = upserts;
+        appliedClears = clears;
+        if (failBatchApply) {
+            return autoupdater::Result<void>::fail(
+                {autoupdater::ErrorCode::StateStoreError, "Injected resume batch apply failure"});
+        }
+        return autoupdater::Result<void>::ok();
+    }
+
+    int batchLoadCalls = 0;
+    int batchApplyCalls = 0;
+    bool failBatchLoad = false;
+    bool failBatchApply = false;
+    autoupdater::detail::DownloadResumeScope loadedScope;
+    autoupdater::detail::DownloadResumeScope appliedScope;
+    std::vector<std::string> requestedKeys;
+    std::vector<autoupdater::DownloadResumeState> batchLoaded;
+    std::vector<autoupdater::DownloadResumeState> appliedUpserts;
+    std::vector<std::string> appliedClears;
 };
 
 class RedirectingValidatorDownloadClient final : public autoupdater::INetworkClient {
@@ -737,6 +779,17 @@ autoupdater::UpdateDecision oneFileDecision(const std::string& contents) {
     download.url = "https://updates.example.test/artifact";
     decision.downloads.push_back(std::move(download));
     return decision;
+}
+
+std::string resumeKeyFor(const autoupdater::Config& config, const autoupdater::UpdateDecision& decision,
+                         std::size_t downloadIndex = 0) {
+    auto releaseKey = autoupdater::detail::downloadResumeReleaseKey(config, decision);
+    LAU_REQUIRE(releaseKey);
+    LAU_REQUIRE(downloadIndex < decision.downloads.size());
+    auto resourceKey =
+        autoupdater::detail::downloadResumeResourceKey(releaseKey.value(), decision.downloads[downloadIndex]);
+    LAU_REQUIRE(resourceKey);
+    return resourceKey.value();
 }
 
 } // namespace
@@ -1306,6 +1359,7 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         config.security.allowedBaseUrls = {"https://updates.example.test/", "https://cdn.example.test/"};
         auto decision = oneFileDecision(contents);
         decision.downloads[0].url = initialUrl;
+        const auto resumeKey = resumeKeyFor(config, decision);
         RedirectingValidatorDownloadClient network(initialUrl, finalUrl, contents);
         RecordingStateStore stateStore;
         autoupdater::CancellationToken cancel;
@@ -1318,7 +1372,7 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         LAU_REQUIRE(!network.resumes[0]);
         LAU_REQUIRE(!network.resumes[1]);
         LAU_REQUIRE(stateStore.saved.empty());
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({initialUrl}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey}));
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
@@ -1334,8 +1388,9 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         config.security.allowedBaseUrls = {"https://updates.example.test/"};
         auto decision = oneFileDecision("complete-payload");
         decision.downloads[0].url = initialUrl;
+        const auto resumeKey = resumeKeyFor(config, decision);
         RecordingStateStore stateStore;
-        stateStore.loaded = autoupdater::DownloadResumeState{initialUrl, 7, "old-etag", "Tue, 30 Jun 2026 12:00:00 GMT",
+        stateStore.loaded = autoupdater::DownloadResumeState{resumeKey, 7, "old-etag", "Tue, 30 Jun 2026 12:00:00 GMT",
                                                              decision.downloads[0].file.sha256};
         FailingPartialDownloadClient network("-tail");
         autoupdater::CancellationToken cancel;
@@ -1349,7 +1404,7 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
         LAU_REQUIRE(network.resumes[0]->etag == "old-etag");
         LAU_REQUIRE(network.resumes[0]->lastModified == "Tue, 30 Jun 2026 12:00:00 GMT");
         LAU_REQUIRE(stateStore.saved.size() == 1);
-        LAU_REQUIRE(stateStore.saved[0].key == initialUrl);
+        LAU_REQUIRE(stateStore.saved[0].key == resumeKey);
         LAU_REQUIRE(stateStore.saved[0].offset == 12);
         LAU_REQUIRE(stateStore.saved[0].etag.empty());
         LAU_REQUIRE(stateStore.saved[0].lastModified.empty());
@@ -1358,10 +1413,167 @@ void testDownloadExecutorKeepsValidatorsBoundToTheirResource() {
     }
 }
 
+void testDownloadResumeUsesOpaqueStableResourceKeys() {
+    autoupdater::Config config;
+    config.appId = "resume-key-test";
+    config.channel = "stable";
+    config.platform = "windows";
+    config.arch = "x64";
+
+    auto decision = oneFileDecision("complete-payload");
+    decision.checkResult.remoteVersion = autoupdater::Version(2, 1, 0);
+    decision.checkResult.releaseId = "release-21";
+    decision.downloads[0].url = "https://cdn.example.test/releases/file.bin?token=secret-a&expires=1";
+    const auto first = resumeKeyFor(config, decision);
+
+    auto rotatedCredentials = decision;
+    rotatedCredentials.downloads[0].url = "https://cdn.example.test/releases/file.bin?token=secret-b&expires=2";
+    const auto rotated = resumeKeyFor(config, rotatedCredentials);
+    LAU_REQUIRE(first == rotated);
+    LAU_REQUIRE(first.size() == 64);
+    LAU_REQUIRE(first.find_first_not_of("0123456789abcdef") == std::string::npos);
+    LAU_REQUIRE(first.find("secret") == std::string::npos);
+    LAU_REQUIRE(first.find("https") == std::string::npos);
+
+    auto differentPath = decision;
+    differentPath.downloads[0].url = "https://cdn.example.test/releases/other.bin?token=secret-a";
+    LAU_REQUIRE(resumeKeyFor(config, differentPath) != first);
+
+    auto differentContent = oneFileDecision("different-payload");
+    differentContent.checkResult = decision.checkResult;
+    differentContent.downloads[0].url = decision.downloads[0].url;
+    LAU_REQUIRE(resumeKeyFor(config, differentContent) != first);
+
+    auto differentRelease = decision;
+    differentRelease.checkResult.releaseId = "release-22";
+    LAU_REQUIRE(resumeKeyFor(config, differentRelease) != first);
+}
+
+void testDownloadExecutorBatchesResumePersistence() {
+    auto fileSystem = autoupdater::createDefaultFileSystem();
+    auto hash = autoupdater::createDefaultHashProvider();
+    const auto configFor = [](const std::filesystem::path& staging) {
+        autoupdater::Config config;
+        config.appId = "resume-batch-test";
+        config.platform = "windows";
+        config.arch = "x64";
+        config.manifestUrl = "https://updates.example.test/manifest.json";
+        config.tempDir = staging;
+        config.retry.maxRetries = 0;
+        config.security.allowedBaseUrls = {"https://updates.example.test/"};
+        return config;
+    };
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-batch-success");
+        auto config = configFor(root / "staging");
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        decision.checkResult.remoteVersion = autoupdater::Version(3, 0, 0);
+        decision.checkResult.releaseId = "release-30";
+        auto second = decision.downloads.front();
+        second.file.path = "managed/second.bin";
+        second.url = "https://updates.example.test/second";
+        decision.downloads.push_back(std::move(second));
+        std::vector<std::string> expectedKeys = {resumeKeyFor(config, decision, 0), resumeKeyFor(config, decision, 1)};
+
+        BatchRecordingStateStore stateStore;
+        StaticDownloadClient network(contents);
+        autoupdater::CancellationToken cancel;
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(result);
+        LAU_REQUIRE(network.calls == 2);
+        LAU_REQUIRE(stateStore.batchLoadCalls == 1);
+        LAU_REQUIRE(stateStore.batchApplyCalls == 1);
+        LAU_REQUIRE(stateStore.requestedKeys == expectedKeys);
+        LAU_REQUIRE(stateStore.appliedUpserts.empty());
+        std::sort(expectedKeys.begin(), expectedKeys.end());
+        LAU_REQUIRE(stateStore.appliedClears == expectedKeys);
+        LAU_REQUIRE(stateStore.saved.empty());
+        LAU_REQUIRE(stateStore.cleared.empty());
+        LAU_REQUIRE(stateStore.loadedScope.releaseKey == stateStore.appliedScope.releaseKey);
+        LAU_REQUIRE(stateStore.loadedScope.nowUnixSeconds > 0);
+        LAU_REQUIRE(stateStore.loadedScope.maxAgeSeconds == 7 * 24 * 60 * 60);
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-batch-failure");
+        auto config = configFor(root / "staging");
+        auto decision = oneFileDecision("complete-payload");
+        decision.checkResult.remoteVersion = autoupdater::Version(3, 0, 1);
+        decision.checkResult.releaseId = "release-301";
+        const auto expectedKey = resumeKeyFor(config, decision);
+
+        BatchRecordingStateStore stateStore;
+        FailingPartialDownloadClient network("partial");
+        autoupdater::CancellationToken cancel;
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::NetworkError);
+        LAU_REQUIRE(stateStore.batchLoadCalls == 1);
+        LAU_REQUIRE(stateStore.batchApplyCalls == 1);
+        LAU_REQUIRE(stateStore.appliedClears.empty());
+        LAU_REQUIRE(stateStore.appliedUpserts.size() == 1);
+        LAU_REQUIRE(stateStore.appliedUpserts[0].key == expectedKey);
+        LAU_REQUIRE(stateStore.appliedUpserts[0].offset == 7);
+        LAU_REQUIRE(stateStore.appliedUpserts[0].sha256 == decision.downloads[0].file.sha256);
+        LAU_REQUIRE(stateStore.saved.empty());
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-batch-apply-failure");
+        auto config = configFor(root / "staging");
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        BatchRecordingStateStore stateStore;
+        stateStore.failBatchApply = true;
+        StaticDownloadClient network(contents);
+        autoupdater::CancellationToken cancel;
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::StateStoreError);
+        LAU_REQUIRE(stateStore.batchLoadCalls == 1);
+        LAU_REQUIRE(stateStore.batchApplyCalls == 1);
+        LAU_REQUIRE(readFile(config.tempDir / "managed/file.bin") == contents);
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    {
+        const auto root = makeTestRoot("libAutoUpdater-download-resume-batch-load-failure");
+        auto config = configFor(root / "staging");
+        const std::string contents = "complete-payload";
+        auto decision = oneFileDecision(contents);
+        BatchRecordingStateStore stateStore;
+        stateStore.failBatchLoad = true;
+        StaticDownloadClient network(contents);
+        autoupdater::CancellationToken cancel;
+        const auto result =
+            autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, &stateStore, {}, cancel);
+
+        LAU_REQUIRE(!result);
+        LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::StateStoreError);
+        LAU_REQUIRE(stateStore.batchLoadCalls == 1);
+        LAU_REQUIRE(stateStore.batchApplyCalls == 0);
+        LAU_REQUIRE(!network.called);
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+}
+
 void testDownloadExecutorPropagatesResumePersistenceFailures() {
     auto fileSystem = autoupdater::createDefaultFileSystem();
     auto hash = autoupdater::createDefaultHashProvider();
-    const std::string url = "https://updates.example.test/artifact";
 
     const auto configFor = [](const std::filesystem::path& staging) {
         autoupdater::Config config;
@@ -1420,6 +1632,7 @@ void testDownloadExecutorPropagatesResumePersistenceFailures() {
         const std::string contents = "complete-payload";
         auto config = configFor(staging);
         auto decision = oneFileDecision(contents);
+        const auto resumeKey = resumeKeyFor(config, decision);
         RecordingStateStore stateStore;
         stateStore.failClear = true;
         StaticDownloadClient network(contents);
@@ -1439,14 +1652,13 @@ void testDownloadExecutorPropagatesResumePersistenceFailures() {
             autoupdater::executeDownloads(config, decision, mustNotRun, *fileSystem, *hash, &stateStore, {}, cancel);
         LAU_REQUIRE(reconciled);
         LAU_REQUIRE(!mustNotRun.called);
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey}));
         std::error_code error;
         std::filesystem::remove_all(root, error);
     }
 }
 
 void testDownloadExecutorReportsHashAndPublicationFailures() {
-    const std::string url = "https://updates.example.test/artifact";
     const auto configFor = [](const std::filesystem::path& staging, int retries = 0) {
         autoupdater::Config config;
         config.manifestUrl = "https://updates.example.test/manifest.json";
@@ -1462,6 +1674,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         auto config = configFor(staging, 2);
         const std::string contents = "complete-payload";
         auto decision = oneFileDecision(contents);
+        const auto resumeKey = resumeKeyFor(config, decision);
         auto fileSystem = autoupdater::createDefaultFileSystem();
         FailingStreamHashProvider hash;
         StaticDownloadClient network(contents);
@@ -1478,7 +1691,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         LAU_REQUIRE(network.calls == 1);
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin"));
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey}));
         std::error_code error;
         std::filesystem::remove_all(root, error);
     }
@@ -1488,6 +1701,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         const auto staging = root / "staging";
         auto config = configFor(staging, 1);
         auto decision = oneFileDecision("expected-longer-payload");
+        const auto resumeKey = resumeKeyFor(config, decision);
         auto fileSystem = autoupdater::createDefaultFileSystem();
         auto hash = autoupdater::createDefaultHashProvider();
         StaticDownloadClient network("short");
@@ -1502,7 +1716,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         LAU_REQUIRE(network.calls == 2);
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin"));
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url, url}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey, resumeKey}));
         std::error_code error;
         std::filesystem::remove_all(root, error);
     }
@@ -1513,6 +1727,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         auto config = configFor(staging, 2);
         const std::string contents = "complete-payload";
         auto decision = oneFileDecision(contents);
+        const auto resumeKey = resumeKeyFor(config, decision);
         auto hash = autoupdater::createDefaultHashProvider();
         auto fault = std::make_shared<PostPublishFaultState>();
         PostPublishFaultFileSystem fileSystem(autoupdater::createDefaultFileSystem(), fault);
@@ -1528,7 +1743,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         LAU_REQUIRE(fault->replaceCalls == 2);
         LAU_REQUIRE(readFile(staging / "managed/file.bin") == contents);
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey}));
         std::error_code error;
         std::filesystem::remove_all(root, error);
     }
@@ -1539,6 +1754,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         auto config = configFor(staging, 2);
         const std::string contents = "complete-payload";
         auto decision = oneFileDecision(contents);
+        const auto resumeKey = resumeKeyFor(config, decision);
         auto hash = autoupdater::createDefaultHashProvider();
         auto fault = std::make_shared<PostPublishFaultState>();
         fault->failReconciliation = true;
@@ -1559,7 +1775,7 @@ void testDownloadExecutorReportsHashAndPublicationFailures() {
         LAU_REQUIRE(fault->replaceCalls == 2);
         LAU_REQUIRE(readFile(staging / "managed/file.bin") == contents);
         LAU_REQUIRE(!std::filesystem::exists(staging / "managed/file.bin.download"));
-        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({url}));
+        LAU_REQUIRE(stateStore.cleared == std::vector<std::string>({resumeKey}));
         std::error_code error;
         std::filesystem::remove_all(root, error);
     }

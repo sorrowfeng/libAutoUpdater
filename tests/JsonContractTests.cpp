@@ -454,6 +454,28 @@ void testStateAndJournalSchemasFailClosed() {
     writeFile(invalidValidatorPath, validatorRecord);
     LAU_REQUIRE(!autoupdater::createJsonStateStore(invalidValidatorPath, limits)->loadDownloadResume("artifact"));
 
+    const std::string validSidecarRecord =
+        std::string(R"json({"offset":1,"etag":"","lastModified":"","sha256":")json") + sha('a') +
+        R"json(","releaseKey":")json" + sha('b') + R"json(","updatedAt":1})json";
+    const std::vector<std::string> invalidResumeSidecars = {
+        R"json({"schemaVersion":2,"entries":{}})json",
+        R"json({"schemaVersion":1,"entries":{},"unknown":true})json",
+        std::string(R"json({"schemaVersion":1,"entries":{"https://updates.example.test/?token=secret":)json") +
+            validSidecarRecord + "}}",
+        std::string(R"json({"schemaVersion":1,"entries":{")json") + sha('c') +
+            R"json(":{"offset":1,"etag":"","lastModified":"","sha256":")json" + sha('a') +
+            R"json(","releaseKey":")json" + sha('b') + R"json("}}})json",
+        std::string(R"json({"schemaVersion":1,"entries":{")json") + sha('c') +
+            R"json(":{"offset":1,"etag":"","lastModified":"","sha256":")json" + sha('a') +
+            R"json(","releaseKey":")json" + sha('b') + R"json(","updatedAt":1.5}}})json",
+    };
+    for (std::size_t index = 0; index < invalidResumeSidecars.size(); ++index) {
+        const auto invalidSidecarState =
+            temporary.path() / ("invalid-resume-sidecar-" + std::to_string(index) + ".json");
+        writeFile(std::filesystem::path(invalidSidecarState.string() + ".resume"), invalidResumeSidecars[index]);
+        LAU_REQUIRE(!autoupdater::createJsonStateStore(invalidSidecarState, limits)->loadDownloadResume("artifact"));
+    }
+
     for (std::size_t index = 0; index < 3; ++index) {
         const auto invalidPath = temporary.path() / ("invalid-" + std::to_string(index) + ".json");
         const std::vector<std::string> invalidStates = {

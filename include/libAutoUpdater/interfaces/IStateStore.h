@@ -24,6 +24,9 @@ struct PendingUpdate {
 
 /// Resume metadata for one partially downloaded file.
 struct DownloadResumeState {
+    /// When supplied by Updater, this is an opaque credential-free resource
+    /// identity. Custom stores must treat it as an uninterpreted key and must
+    /// not substitute the request URL.
     std::string key;
     std::uint64_t offset = 0;
     std::string etag;
@@ -55,6 +58,9 @@ class IStateStore {
     /// Unconditionally clears any pending update.
     virtual Result<void> clearPendingUpdate() noexcept = 0;
 
+    /// Custom stores receive opaque resource keys from Updater but remain
+    /// responsible for bounding, expiring, synchronizing, and protecting their
+    /// own resume records.
     virtual Result<void> saveDownloadResume(const DownloadResumeState& state) noexcept = 0;
     virtual Result<std::optional<DownloadResumeState>> loadDownloadResume(const std::string& key) noexcept = 0;
     virtual Result<void> clearDownloadResume(const std::string& key) noexcept = 0;

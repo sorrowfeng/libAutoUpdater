@@ -77,6 +77,8 @@ void testRootedFileSystemPinsHandlesAndRejectsSwaps();
 void testLocalSnapshotUsesOneOpenedFileHandle();
 void testDownloadExecutorContainsSwapsAndHardLinks();
 void testDownloadExecutorKeepsValidatorsBoundToTheirResource();
+void testDownloadResumeUsesOpaqueStableResourceKeys();
+void testDownloadExecutorBatchesResumePersistence();
 void testDownloadExecutorPropagatesResumePersistenceFailures();
 void testDownloadExecutorReportsHashAndPublicationFailures();
 void testApplyExecutorUsesSafePosixPermissions();
@@ -223,6 +225,8 @@ int main(int argc, char* argv[]) {
         {"DownloadExecutorContainsSwapsAndHardLinks", testDownloadExecutorContainsSwapsAndHardLinks},
         {"DownloadExecutorKeepsValidatorsBoundToTheirResource",
          testDownloadExecutorKeepsValidatorsBoundToTheirResource},
+        {"DownloadResumeUsesOpaqueStableResourceKeys", testDownloadResumeUsesOpaqueStableResourceKeys},
+        {"DownloadExecutorBatchesResumePersistence", testDownloadExecutorBatchesResumePersistence},
         {"DownloadExecutorPropagatesResumePersistenceFailures",
          testDownloadExecutorPropagatesResumePersistenceFailures},
         {"DownloadExecutorReportsHashAndPublicationFailures", testDownloadExecutorReportsHashAndPublicationFailures},
