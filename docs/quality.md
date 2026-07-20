@@ -21,7 +21,9 @@ GitHub Actions covers:
 - No-optional-dependency build.
 - ASan / UBSan.
 - Coverage summary.
-- Install tree and `find_package` consumer probe.
+- Static install tree and clean `find_package` consumer probes.
+- Shared installed-package probes on Windows, macOS, and Linux, including the
+  exported updater executable and its runtime library lookup.
 - Real GitHub Raw update demo on libcurl, WinHTTP, and CFNetwork.
 - CodeQL C++ analysis.
 

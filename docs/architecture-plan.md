@@ -847,13 +847,16 @@ Exported targets:
 
 ```cmake
 libAutoUpdater::libAutoUpdater
-libAutoUpdater::autoupdater_apply
 ```
+
+When `LIBAUTOUPDATER_BUILD_UPDATER=ON`, the installed package additionally
+exports `libAutoUpdater::autoupdater_apply` as an imported executable target.
 
 Build options:
 
 ```cmake
 LIBAUTOUPDATER_BUILD_UPDATER=ON
+BUILD_SHARED_LIBS=OFF
 LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON

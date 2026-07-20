@@ -287,7 +287,7 @@ likelihood of affecting production update flows.
     persistence failure, and restart failure.
   - Never log signatures, private material, or credential-bearing URLs.
 
-- [ ] **AU-023 — Complete installed-package and shared-library contracts**
+- [x] **AU-023 — Complete installed-package and shared-library contracts**
   - Key code: `updater/CMakeLists.txt:21-24` and package export configuration.
   - Export the documented updater target, verify `find_package()` from a clean
     consumer project, and add Windows shared-library export support or document

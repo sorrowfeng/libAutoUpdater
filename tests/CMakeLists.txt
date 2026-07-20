@@ -63,6 +63,42 @@ endif()
 
 add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
 
+if(TARGET autoupdater_apply)
+    set(libautoupdater_install_package_test_args
+        -DPROJECT_BINARY_DIR=${libAutoUpdater_BINARY_DIR}
+        -DCONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/consumer
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/install-package-$<CONFIG>
+        -DINSTALL_CONFIG=$<CONFIG>
+        -DINSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}
+        -DINSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}
+        -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+        -DGENERATOR=${CMAKE_GENERATOR})
+
+    if(CMAKE_GENERATOR_PLATFORM)
+        list(APPEND libautoupdater_install_package_test_args
+            -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM})
+    endif()
+    if(CMAKE_GENERATOR_TOOLSET)
+        list(APPEND libautoupdater_install_package_test_args
+            -DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET})
+    endif()
+    if(CMAKE_GENERATOR_INSTANCE)
+        list(APPEND libautoupdater_install_package_test_args
+            -DGENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE})
+    endif()
+    if(CMAKE_TOOLCHAIN_FILE)
+        list(APPEND libautoupdater_install_package_test_args
+            -DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+    endif()
+
+    add_test(
+        NAME libAutoUpdater_install_package_validation
+        COMMAND
+            ${CMAKE_COMMAND}
+            ${libautoupdater_install_package_test_args}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/install_package_test.cmake)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(

@@ -147,6 +147,7 @@ Signature verification is optional. The default verifier uses OpenSSL when avail
 Common options:
 
 ```text
+BUILD_SHARED_LIBS=OFF
 LIBAUTOUPDATER_BUILD_UPDATER=ON
 LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON

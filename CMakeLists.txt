@@ -134,6 +134,12 @@ endif()
 add_library(libAutoUpdater ${LIBAUTOUPDATER_PUBLIC_HEADERS} ${LIBAUTOUPDATER_SOURCES})
 add_library(libAutoUpdater::libAutoUpdater ALIAS libAutoUpdater)
 
+if(WIN32 AND BUILD_SHARED_LIBS)
+    # Keep the public headers free of platform-specific import/export annotations
+    # while still producing an import library for supported Windows toolchains.
+    set_target_properties(libAutoUpdater PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
 libautoupdater_apply_project_warnings(libAutoUpdater)
 
 target_compile_features(libAutoUpdater PUBLIC cxx_std_17)

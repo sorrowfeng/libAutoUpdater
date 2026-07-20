@@ -16,6 +16,28 @@ find_package(libAutoUpdater CONFIG REQUIRED)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
+When `LIBAUTOUPDATER_BUILD_UPDATER=ON`, the installed package also exports
+`libAutoUpdater::autoupdater_apply` as an imported executable target. Use
+`$<TARGET_FILE:libAutoUpdater::autoupdater_apply>` when a packaging step needs
+the helper's installed location; do not pass the executable target to
+`target_link_libraries()`.
+
+## Static and Shared Libraries
+
+The default build is static. Set the standard CMake option
+`BUILD_SHARED_LIBS=ON` to build and install a shared library, including a DLL
+and import library on Windows. A shared deployment must keep the runtime
+library available to both the application and `autoupdater_apply`:
+
+- On Windows, install `libAutoUpdater.dll` beside the executables or add its
+  directory to the process `PATH`.
+- On Linux and macOS, preserve the installed `bin` and `lib` layout. The
+  installed updater helper uses a relative runtime search path to locate the
+  library under `lib`.
+
+Applications remain responsible for deploying runtime libraries required by
+optional backends, such as libcurl or OpenSSL.
+
 ## Network Backends
 
 Default selection order:

@@ -19,6 +19,10 @@
 - Errors now carry an operation phase for apply, rollback, recovery, state
   persistence, and restart failures. Bundled diagnostics and transaction
   journal rewrites omit arbitrary messages and credential-bearing URLs.
+- Installed packages now export the updater executable when it is built, and
+  static and shared consumers are validated from a clean `find_package()`
+  project. Windows shared builds produce an import library, while installed
+  Unix updater helpers use a relative runtime search path.
 
 ## v0.1.5 - 2026-06-05
 

@@ -253,6 +253,40 @@ jobs:
       - name: Install Probe
         run: cmake --install build --config Release --prefix install-probe
 
+  shared-package-contract:
+    name: Shared installed-package contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DBUILD_SHARED_LIBS=ON
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=OFF
+          -DLIBAUTOUPDATER_WITH_QT=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Validate Installed Package
+        run: >
+          ctest --test-dir build -C Debug
+          -R '^libAutoUpdater_install_package_validation$'
+          --output-on-failure
+
   sanitizers:
     name: ASan/UBSan
     runs-on: ubuntu-latest

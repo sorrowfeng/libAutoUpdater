@@ -21,5 +21,20 @@ endif()
 
 add_executable(libAutoUpdater::autoupdater_apply ALIAS autoupdater_apply)
 
+if(APPLE)
+    file(RELATIVE_PATH LIBAUTOUPDATER_UPDATER_TO_LIBDIR
+        "${CMAKE_INSTALL_FULL_BINDIR}"
+        "${CMAKE_INSTALL_FULL_LIBDIR}")
+    set_target_properties(autoupdater_apply PROPERTIES
+        INSTALL_RPATH "@loader_path/${LIBAUTOUPDATER_UPDATER_TO_LIBDIR}")
+elseif(UNIX)
+    file(RELATIVE_PATH LIBAUTOUPDATER_UPDATER_TO_LIBDIR
+        "${CMAKE_INSTALL_FULL_BINDIR}"
+        "${CMAKE_INSTALL_FULL_LIBDIR}")
+    set_target_properties(autoupdater_apply PROPERTIES
+        INSTALL_RPATH "\$ORIGIN/${LIBAUTOUPDATER_UPDATER_TO_LIBDIR}")
+endif()
+
 install(TARGETS autoupdater_apply
+    EXPORT libAutoUpdaterTargets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
