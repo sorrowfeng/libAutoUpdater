@@ -314,7 +314,7 @@ likelihood of affecting production update flows.
     symlink/junction containment, duplicate operations, reserved paths, and
     unsigned downgrade.
 
-- [ ] **TEST-002 — Add transaction and filesystem fault injection**
+- [x] **TEST-002 — Add transaction and filesystem fault injection**
   - Cover short writes, read failures, permission changes, disk full, failed
     flush/rename/remove, rollback failure, process termination, and recovery.
 
