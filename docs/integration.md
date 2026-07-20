@@ -38,6 +38,26 @@ library available to both the application and `autoupdater_apply`:
 Applications remain responsible for deploying runtime libraries required by
 optional backends, such as libcurl or OpenSSL.
 
+## Dependency Policy
+
+These are source/API compatibility floors, not recommendations to deploy an
+unsupported dependency release:
+
+| Dependency | Minimum | Scope and production guidance |
+| --- | --- | --- |
+| libcurl | 7.19.4 | Optional HTTP backend. Use a currently supported build with a maintained TLS backend. |
+| OpenSSL | 1.1.1 | Bundled signature verifier and Ed25519 floor. Prefer OpenSSL 3.x or a vendor-maintained build. |
+| Qt | 6.0.0 | Optional example/adapter only; Qt 6.3+ also exposes the connection signal used when available. |
+
+`LIBAUTOUPDATER_WITH_CURL=ON` and `LIBAUTOUPDATER_WITH_OPENSSL=ON` probe for
+compatible dependencies. Add `LIBAUTOUPDATER_REQUIRE_CURL=ON` or
+`LIBAUTOUPDATER_REQUIRE_OPENSSL=ON` to fail configuration when the requested
+backend is missing or too old. Production builds that rely on the bundled
+signature verifier should require OpenSSL explicitly; applications injecting a
+custom verifier may keep it disabled. This build-time requirement does not
+enable runtime verification by itself; production configuration must also set
+`SecurityOptions::requireManifestSignature=true` and provide the trusted key.
+
 ## Network Backends
 
 Default selection order:

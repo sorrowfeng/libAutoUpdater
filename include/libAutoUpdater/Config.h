@@ -32,6 +32,9 @@ struct NetworkOptions {
 struct SecurityOptions {
     bool requireManifestSignature = false;
     std::string manifestSignatureUrl;
+    /// Single trusted public key. The bundled OpenSSL verifier accepts
+    /// Ed25519 or RSA PKCS#1 v1.5/SHA-256 with RSA keys of at least 2048 bits.
+    /// Injected signature verifiers may define a different policy.
     std::string publicKeyPem;
     /// Trusted HTTP(S) URL roots. Network updates fail closed when this is empty.
     std::vector<std::string> allowedBaseUrls;

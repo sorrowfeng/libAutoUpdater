@@ -117,6 +117,7 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/metadata_tool_tests.py
             --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
             --make-index ${libAutoUpdater_SOURCE_DIR}/tools/make_index.py
+            --sign-manifest ${libAutoUpdater_SOURCE_DIR}/tools/sign_manifest.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/metadata-tools-validation)
     add_test(
         NAME libAutoUpdater_sbom_tool_validation

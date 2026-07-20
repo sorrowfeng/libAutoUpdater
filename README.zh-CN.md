@@ -138,7 +138,7 @@ target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork 使用系统 framework |
 | Linux | GCC, Clang | libcurl | package-manager-owned 安装通常应交给包管理器 |
 
-签名校验是可选能力。默认 verifier 在可用时使用 OpenSSL，应用也可以注入自己的 `ISignatureVerifier`。
+签名校验是可选能力。默认 verifier 使用 OpenSSL 1.1.1 或更高版本，仅接受 Ed25519，或 RSA PKCS#1 v1.5/SHA-256 且 RSA 密钥不少于 2048 位。应用也可以注入自己的 `ISignatureVerifier`；算法和密钥轮换策略见 [docs/security-model.md](docs/security-model.md)。
 
 ## CMake 选项
 
@@ -154,6 +154,7 @@ LIBAUTOUPDATER_REQUIRE_CURL=OFF
 LIBAUTOUPDATER_WITH_WINHTTP=ON
 LIBAUTOUPDATER_WITH_CFNETWORK=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
+LIBAUTOUPDATER_REQUIRE_OPENSSL=OFF
 LIBAUTOUPDATER_WITH_QT=OFF
 LIBAUTOUPDATER_ENABLE_WARNINGS=ON
 LIBAUTOUPDATER_WARNINGS_AS_ERRORS=OFF

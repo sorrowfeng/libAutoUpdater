@@ -140,7 +140,11 @@ See [docs/ecosystem.md](docs/ecosystem.md).
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork uses system frameworks |
 | Linux | GCC, Clang | libcurl | Package-manager-owned installs should usually use the package manager |
 
-Signature verification is optional. The default verifier uses OpenSSL when available, and applications can inject their own `ISignatureVerifier`.
+Signature verification is optional. The default verifier uses OpenSSL 1.1.1 or
+newer when available and accepts Ed25519 or RSA PKCS#1 v1.5/SHA-256 with RSA
+keys of at least 2048 bits. Applications can inject their own
+`ISignatureVerifier`; see [docs/security-model.md](docs/security-model.md) for
+the algorithm and key-rotation policy.
 
 ## CMake Options
 
@@ -156,6 +160,7 @@ LIBAUTOUPDATER_REQUIRE_CURL=OFF
 LIBAUTOUPDATER_WITH_WINHTTP=ON
 LIBAUTOUPDATER_WITH_CFNETWORK=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
+LIBAUTOUPDATER_REQUIRE_OPENSSL=OFF
 LIBAUTOUPDATER_WITH_QT=OFF
 LIBAUTOUPDATER_ENABLE_WARNINGS=ON
 LIBAUTOUPDATER_WARNINGS_AS_ERRORS=OFF

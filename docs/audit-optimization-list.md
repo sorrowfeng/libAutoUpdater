@@ -301,7 +301,7 @@ likelihood of affecting production update flows.
   - Produce an SBOM containing dependency components and relationships, not
     only installed files.
 
-- [ ] **AU-025 — Define supported dependency and crypto policy**
+- [x] **AU-025 — Define supported dependency and crypto policy**
   - Document minimum supported OpenSSL/CURL/Qt versions, accepted signature
     algorithms, minimum key strength, and key rotation behavior.
   - Add a CI job where OpenSSL is mandatory and configuration fails if it is

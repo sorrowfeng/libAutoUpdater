@@ -703,6 +703,14 @@ parse manifest only after signature passes
 
 The signature file may be raw binary or base64 text. The release side can use `tools/sign_manifest.py`.
 
+The bundled OpenSSL verifier deliberately accepts only Ed25519 or RSA PKCS#1
+v1.5 with SHA-256. RSA keys below 2048 bits and all other key types, including
+RSA-PSS, ECDSA, DSA, and Ed448, are rejected. New RSA release keys should use
+3072 bits. The built-in configuration trusts one embedded public key at a time;
+planned rotation therefore requires an old-key-signed transition client before
+the feed switches to the new key. A compromised signing key requires recovery
+through an independent trusted distribution channel.
+
 Benefits:
 
 - Avoids JSON canonicalization problems.
@@ -860,9 +868,15 @@ BUILD_SHARED_LIBS=OFF
 LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
+LIBAUTOUPDATER_REQUIRE_CURL=OFF
 LIBAUTOUPDATER_WITH_OPENSSL=ON
+LIBAUTOUPDATER_REQUIRE_OPENSSL=OFF
 LIBAUTOUPDATER_WITH_QT=OFF
 ```
+
+Compatibility floors are libcurl 7.19.4, OpenSSL 1.1.1, and Qt 6.0. Production
+builds should use dependency versions that still receive upstream or vendor
+security maintenance.
 
 Use after installation:
 

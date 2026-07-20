@@ -3,11 +3,11 @@
 include(CMakeFindDependencyMacro)
 
 if(@LIBAUTOUPDATER_CONFIG_REQUIRES_CURL@)
-    find_dependency(CURL)
+    find_dependency(CURL 7.19.4)
 endif()
 
 if(@LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL@)
-    find_dependency(OpenSSL)
+    find_dependency(OpenSSL 1.1.1 COMPONENTS Crypto)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/libAutoUpdaterTargets.cmake")

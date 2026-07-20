@@ -32,8 +32,46 @@ Guidance:
 
 - Keep the private key only in an offline or protected release environment.
 - Embed the public key in the client, or distribute it through another trusted application channel.
-- Perform key rotation by shipping a new client version.
 - Sign the original `manifest.json` bytes. Do not reformat JSON between signing and verification.
+
+### Bundled Verifier Policy
+
+The OpenSSL-backed verifier accepts exactly these public-key and signature
+combinations:
+
+- Ed25519, which provides approximately 128 bits of security.
+- RSA PKCS#1 v1.5 with SHA-256. RSA keys must be at least 2048 bits; use 3072
+  bits for newly generated long-lived release keys.
+
+ECDSA, DSA, Ed448, RSA-PSS keys, RSA keys below 2048 bits, and other algorithms
+are rejected even if the linked OpenSSL version could verify them. Detached
+signatures may be raw bytes or base64 text. `tools/sign_manifest.py` exposes
+the matching `ed25519` and `rsa-sha256` signing modes.
+
+Applications that inject a custom `ISignatureVerifier` define their own
+algorithm policy and must document and test it separately.
+
+### Key Rotation and Recovery
+
+`SecurityOptions` is deliberately a single-key trust model. One
+`publicKeyPem` verifies both index and release manifests; there is no key ID,
+keyring, dual-signature window, remotely supplied trust root, or revocation
+mechanism.
+
+For a planned rotation:
+
+1. While the old key is still trusted, publish an old-key-signed client update
+   that embeds the new public key.
+2. Keep signing the feed with the old key for the full client migration
+   window.
+3. After the supported client population has migrated, switch the feed to the
+   new private key. Clients that missed the transition require a new installer
+   or another trusted distribution channel.
+
+If the old private key is compromised, an update authorized by that same key
+cannot establish a trustworthy replacement key. Recover through an independent
+trusted channel such as a signed installer, managed software distribution, or
+an application store.
 
 ## HTTPS and TLS
 

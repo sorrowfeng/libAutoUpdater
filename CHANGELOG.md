@@ -28,6 +28,11 @@
   access, and workflow Actions are pinned to immutable revisions. SPDX SBOMs
   now describe selected HTTP/crypto components, relationships, and unique
   build provenance.
+- Dependency compatibility floors are now explicit for libcurl, OpenSSL, and
+  Qt, and builds can require the bundled OpenSSL verifier. That verifier now
+  accepts only Ed25519 or RSA PKCS#1 v1.5/SHA-256 with RSA keys of at least
+  2048 bits; CI exercises both the required-crypto and failure contracts, and
+  the single-key rotation and compromise-recovery model is documented.
 
 ## v0.1.5 - 2026-06-05
 

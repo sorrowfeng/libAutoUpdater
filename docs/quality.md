@@ -26,6 +26,8 @@ GitHub Actions covers:
   exported updater executable and its runtime library lookup.
 - Real GitHub Raw update demo on libcurl, WinHTTP, and CFNetwork.
 - CodeQL C++ analysis.
+- A mandatory-OpenSSL contract that proves missing crypto fails configuration
+  and exercises the real signature verifier when OpenSSL is present.
 - Release configurations rerun tests before packaging, and the publishing job
   accepts only tags whose exact `main` commit already passed CI.
 

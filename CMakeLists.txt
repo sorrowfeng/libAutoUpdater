@@ -16,6 +16,7 @@ option(LIBAUTOUPDATER_REQUIRE_CURL "Fail configure if libcurl network adapter ca
 option(LIBAUTOUPDATER_WITH_WINHTTP "Build native WinHTTP network adapter on Windows when libcurl is unavailable" ON)
 option(LIBAUTOUPDATER_WITH_CFNETWORK "Build native CFNetwork adapter on Apple platforms when libcurl is unavailable" ON)
 option(LIBAUTOUPDATER_WITH_OPENSSL "Build OpenSSL signature verifier when available" ON)
+option(LIBAUTOUPDATER_REQUIRE_OPENSSL "Fail configure if OpenSSL signature verifier cannot be built" OFF)
 option(LIBAUTOUPDATER_WITH_QT "Build optional Qt example when Qt6 is available" OFF)
 option(LIBAUTOUPDATER_ENABLE_WARNINGS "Enable common compiler warnings for project targets" ON)
 option(LIBAUTOUPDATER_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
@@ -66,6 +67,10 @@ endfunction()
 
 if(LIBAUTOUPDATER_REQUIRE_CURL AND NOT LIBAUTOUPDATER_WITH_CURL)
     message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON requires LIBAUTOUPDATER_WITH_CURL=ON")
+endif()
+
+if(LIBAUTOUPDATER_REQUIRE_OPENSSL AND NOT LIBAUTOUPDATER_WITH_OPENSSL)
+    message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_OPENSSL=ON requires LIBAUTOUPDATER_WITH_OPENSSL=ON")
 endif()
 
 if(LIBAUTOUPDATER_ENABLE_SANITIZERS)
@@ -194,7 +199,7 @@ if(WIN32)
 endif()
 
 if(LIBAUTOUPDATER_WITH_CURL)
-    find_package(CURL QUIET)
+    find_package(CURL 7.19.4 QUIET)
     if(CURL_FOUND)
         target_sources(libAutoUpdater PRIVATE src/default/CurlNetworkClient.cpp)
         target_link_libraries(libAutoUpdater PRIVATE CURL::libcurl)
@@ -216,7 +221,7 @@ if(LIBAUTOUPDATER_WITH_CURL)
             "curl"
             "Organization: curl")
     elseif(LIBAUTOUPDATER_REQUIRE_CURL)
-        message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON but CMake could not find CURL")
+        message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON but CMake could not find CURL 7.19.4 or newer")
     endif()
 endif()
 
@@ -250,7 +255,7 @@ if(APPLE AND LIBAUTOUPDATER_WITH_CFNETWORK AND NOT LIBAUTOUPDATER_HAS_HTTP_BACKE
 endif()
 
 if(LIBAUTOUPDATER_WITH_OPENSSL)
-    find_package(OpenSSL QUIET)
+    find_package(OpenSSL 1.1.1 COMPONENTS Crypto QUIET)
     if(OpenSSL_FOUND)
         target_sources(libAutoUpdater PRIVATE src/default/OpenSslSignatureVerifier.cpp)
         target_link_libraries(libAutoUpdater PRIVATE OpenSSL::Crypto)
@@ -270,6 +275,9 @@ if(LIBAUTOUPDATER_WITH_OPENSSL)
             "https://www.openssl.org/"
             "NOASSERTION"
             "Organization: OpenSSL Software Foundation")
+    elseif(LIBAUTOUPDATER_REQUIRE_OPENSSL)
+        message(FATAL_ERROR
+            "LIBAUTOUPDATER_REQUIRE_OPENSSL=ON but CMake could not find the OpenSSL Crypto component at version 1.1.1 or newer")
     endif()
 endif()
 

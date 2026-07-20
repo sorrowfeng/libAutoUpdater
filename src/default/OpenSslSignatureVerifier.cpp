@@ -4,6 +4,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 
 #include <algorithm>
 #include <array>
@@ -91,20 +92,34 @@ std::optional<std::string> base64Decode(std::string_view input) {
 }
 
 Result<void> verifyWithKey(EVP_PKEY* key, std::string_view payload, std::string_view signatureBytes) noexcept {
-    std::unique_ptr<EVP_MD_CTX, CtxDeleter> ctx(EVP_MD_CTX_new());
-    if (!ctx) {
-        return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "Failed to create OpenSSL context"});
-    }
-
-    const int keyType = EVP_PKEY_base_id(key);
+    const int keyType = EVP_PKEY_id(key);
 #ifdef EVP_PKEY_ED25519
     const bool isEd25519 = keyType == EVP_PKEY_ED25519;
 #else
     const bool isEd25519 = false;
 #endif
+    const bool isRsa = keyType == EVP_PKEY_RSA;
+
+    if (!isRsa && !isEd25519) {
+        return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "Public key algorithm is not supported"});
+    }
+    if (isRsa && EVP_PKEY_bits(key) < 2048) {
+        return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "RSA public key must be at least 2048 bits"});
+    }
+
+    std::unique_ptr<EVP_MD_CTX, CtxDeleter> ctx(EVP_MD_CTX_new());
+    if (!ctx) {
+        return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "Failed to create OpenSSL context"});
+    }
+
     const EVP_MD* digest = isEd25519 ? nullptr : EVP_sha256();
-    if (EVP_DigestVerifyInit(ctx.get(), nullptr, digest, nullptr, key) != 1) {
+    EVP_PKEY_CTX* pkeyCtx = nullptr;
+    if (EVP_DigestVerifyInit(ctx.get(), &pkeyCtx, digest, nullptr, key) != 1) {
         return Result<void>::fail({ErrorCode::ManifestSignatureInvalid, "EVP_DigestVerifyInit failed"});
+    }
+    if (isRsa && (pkeyCtx == nullptr || EVP_PKEY_CTX_set_rsa_padding(pkeyCtx, RSA_PKCS1_PADDING) <= 0)) {
+        return Result<void>::fail(
+            {ErrorCode::ManifestSignatureInvalid, "Failed to configure RSA PKCS#1 v1.5 verification"});
     }
 
     int ok = 0;

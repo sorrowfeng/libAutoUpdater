@@ -1,4 +1,4 @@
-find_package(Qt6 COMPONENTS Core Network QUIET)
+find_package(Qt6 6.0 COMPONENTS Core Network QUIET)
 
 if(NOT Qt6_FOUND)
     message(STATUS "Qt6 Core/Network not found; skipping Qt example")

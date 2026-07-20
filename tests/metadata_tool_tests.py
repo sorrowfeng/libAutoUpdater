@@ -14,10 +14,12 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MAKE_MANIFEST = Path()
 MAKE_INDEX = Path()
+SIGN_MANIFEST = Path()
 WORK_DIR = Path()
 
 
@@ -45,6 +47,14 @@ class MetadataToolTests(unittest.TestCase):
             spec.loader.exec_module(module)
         finally:
             sys.path.pop(0)
+        return module
+
+    def load_sign_manifest_module(self):
+        spec = importlib.util.spec_from_file_location("sign_manifest_under_test", SIGN_MANIFEST)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
         return module
 
     def manifest_command(self, output: Path, timestamp: str) -> list[str]:
@@ -266,17 +276,41 @@ class MetadataToolTests(unittest.TestCase):
         self.assertNotEqual(invalid_time.returncode, 0)
         self.assertFalse(invalid_time_output.exists())
 
+    def test_sign_manifest_pins_rsa_pkcs1_padding(self) -> None:
+        module = self.load_sign_manifest_module()
+        manifest = self.root / "manifest.json"
+        private_key = self.root / "private.pem"
+
+        with mock.patch.object(module.subprocess, "check_output", return_value=b"signature") as run:
+            signature = module.sign_rsa_sha256(manifest, private_key)
+
+        self.assertEqual(signature, b"signature")
+        run.assert_called_once_with(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-sigopt",
+                "rsa_padding_mode:pkcs1",
+                "-sign",
+                str(private_key),
+                str(manifest),
+            ]
+        )
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--make-manifest", required=True, type=Path)
     parser.add_argument("--make-index", required=True, type=Path)
+    parser.add_argument("--sign-manifest", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
 
-    global MAKE_MANIFEST, MAKE_INDEX, WORK_DIR
+    global MAKE_MANIFEST, MAKE_INDEX, SIGN_MANIFEST, WORK_DIR
     MAKE_MANIFEST = args.make_manifest.resolve()
     MAKE_INDEX = args.make_index.resolve()
+    SIGN_MANIFEST = args.sign_manifest.resolve()
     WORK_DIR = args.work_dir.resolve()
     shutil.rmtree(WORK_DIR, ignore_errors=True)
     WORK_DIR.mkdir(parents=True)

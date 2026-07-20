@@ -263,6 +263,73 @@ jobs:
       - name: Install Probe
         run: cmake --install build --config Release --prefix install-probe
 
+  required-openssl:
+    name: Required OpenSSL crypto contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Reject disabled required OpenSSL
+        shell: bash
+        run: |
+          if cmake -S . -B disabled-openssl-build \
+            -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF \
+            -DLIBAUTOUPDATER_BUILD_TESTS=OFF \
+            -DLIBAUTOUPDATER_BUILD_UPDATER=OFF \
+            -DLIBAUTOUPDATER_WITH_CURL=OFF \
+            -DLIBAUTOUPDATER_WITH_OPENSSL=OFF \
+            -DLIBAUTOUPDATER_REQUIRE_OPENSSL=ON; then
+            echo "Configuration unexpectedly accepted disabled required OpenSSL" >&2
+            exit 1
+          fi
+
+      - name: Reject unavailable OpenSSL
+        shell: bash
+        run: |
+          if cmake -S . -B missing-openssl-build \
+            -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF \
+            -DLIBAUTOUPDATER_BUILD_TESTS=OFF \
+            -DLIBAUTOUPDATER_BUILD_UPDATER=OFF \
+            -DLIBAUTOUPDATER_WITH_CURL=OFF \
+            -DLIBAUTOUPDATER_WITH_OPENSSL=ON \
+            -DLIBAUTOUPDATER_REQUIRE_OPENSSL=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE; then
+            echo "Configuration unexpectedly succeeded without required OpenSSL" >&2
+            exit 1
+          fi
+
+      - name: Install OpenSSL development package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
+
+      - name: Configure required OpenSSL build
+        run: >
+          cmake -S . -B build
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
+          -DLIBAUTOUPDATER_BUILD_UPDATER=ON
+          -DLIBAUTOUPDATER_WITH_CURL=OFF
+          -DLIBAUTOUPDATER_WITH_OPENSSL=ON
+          -DLIBAUTOUPDATER_REQUIRE_OPENSSL=ON
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Verify and test real OpenSSL implementation
+        shell: bash
+        run: |
+          grep -F 'LIBAUTOUPDATER_TEST_HAS_OPENSSL=1' build/compile_commands.json
+          ctest --test-dir build -C Debug \
+            -R '^libAutoUpdater_tests$' \
+            --output-on-failure
+
   shared-package-contract:
     name: Shared installed-package contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

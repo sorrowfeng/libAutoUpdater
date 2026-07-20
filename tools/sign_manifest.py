@@ -2,7 +2,9 @@
 """Sign a manifest with the OpenSSL CLI and write a detached .sig file.
 
 The default output is base64 text, which libAutoUpdater's OpenSSL verifier
-accepts in addition to raw binary signatures.
+accepts in addition to raw binary signatures. The rsa-sha256 mode uses RSA
+PKCS#1 v1.5 with SHA-256; clients reject RSA keys smaller than 2048 bits and
+new release keys should use at least 3072 bits.
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ def sign_rsa_sha256(manifest: Path, private_key: Path) -> bytes:
             "openssl",
             "dgst",
             "-sha256",
+            "-sigopt",
+            "rsa_padding_mode:pkcs1",
             "-sign",
             str(private_key),
             str(manifest),
