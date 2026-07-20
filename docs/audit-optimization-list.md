@@ -318,7 +318,7 @@ likelihood of affecting production update flows.
   - Cover short writes, read failures, permission changes, disk full, failed
     flush/rename/remove, rollback failure, process termination, and recovery.
 
-- [ ] **TEST-003 — Add state-machine and concurrency tests**
+- [x] **TEST-003 — Add state-machine and concurrency tests**
   - Cover callback re-entry and exceptions, overlapping API calls, generation
     mismatch, cancellation, destructor behavior, multiple instances, and
     cross-process state/lock contention.

@@ -136,6 +136,9 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
                 while (!cancel.isCancelled() && !releaseBlocked_) {
                     releaseCv_.wait_for(lock, std::chrono::milliseconds(2));
                 }
+                if (cancel.isCancelled()) {
+                    observedCancellations_.fetch_add(1, std::memory_order_release);
+                }
                 return autoupdater::Result<autoupdater::TextResponse>::fail(
                     {autoupdater::ErrorCode::Cancelled, "scripted manifest request cancelled"});
             }
@@ -176,6 +179,10 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
         return calls_;
     }
 
+    std::size_t observedCancellations() const noexcept {
+        return observedCancellations_.load(std::memory_order_acquire);
+    }
+
     void releaseBlockedRequests() noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -191,6 +198,7 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
     std::condition_variable releaseCv_;
     std::size_t calls_ = 0;
     bool releaseBlocked_ = false;
+    std::atomic<std::size_t> observedCancellations_{0};
 };
 
 std::filesystem::path uniqueTempDir();
@@ -903,6 +911,82 @@ void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated() {
     LAU_REQUIRE(network->waitForCalls(2, std::chrono::seconds(2)));
     LAU_REQUIRE(waitUntil([&] { return updater.state() == autoupdater::State::UpToDate; }));
     LAU_REQUIRE(network->calls() == 2);
+
+    // Two Updater instances may share one installed application's persistent
+    // state. Distinct generations racing to publish readiness must serialize
+    // through JsonStateStore: exactly one pending update wins and the loser
+    // fails without corrupting the winner's plan contract.
+    ScopedTempDir multipleInstancesTemp;
+    auto leftConfig = updaterConfig(multipleInstancesTemp.path());
+    auto rightConfig = leftConfig;
+    leftConfig.tempDir = multipleInstancesTemp.path() / "left-staging";
+    rightConfig.tempDir = multipleInstancesTemp.path() / "right-staging";
+    const auto sharedStatePath = leftConfig.installDir / ".autoupdater" / "state.json";
+    auto leftNetwork = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+    auto rightNetwork = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3"))});
+    autoupdater::Updater leftUpdater(leftConfig);
+    autoupdater::Updater rightUpdater(rightConfig);
+    leftUpdater.setNetworkClient(leftNetwork);
+    rightUpdater.setNetworkClient(rightNetwork);
+    leftUpdater.setStateStore(autoupdater::createJsonStateStore(sharedStatePath));
+    rightUpdater.setStateStore(autoupdater::createJsonStateStore(sharedStatePath));
+
+    std::atomic<int> readyCallbacks{0};
+    std::atomic<int> persistenceErrors{0};
+    autoupdater::Callbacks leftCallbacks;
+    leftCallbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_release); };
+    leftCallbacks.onError = [&](const autoupdater::Error& error) {
+        if (error.code == autoupdater::ErrorCode::StateStoreError) {
+            persistenceErrors.fetch_add(1, std::memory_order_release);
+        }
+    };
+    autoupdater::Callbacks rightCallbacks;
+    rightCallbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_release); };
+    rightCallbacks.onError = [&](const autoupdater::Error& error) {
+        if (error.code == autoupdater::ErrorCode::StateStoreError) {
+            persistenceErrors.fetch_add(1, std::memory_order_release);
+        }
+    };
+    leftUpdater.setCallbacks(std::move(leftCallbacks));
+    rightUpdater.setCallbacks(std::move(rightCallbacks));
+
+    leftUpdater.checkAndDownloadAsync();
+    rightUpdater.checkAndDownloadAsync();
+    LAU_REQUIRE(waitUntil([&] {
+        const auto leftState = leftUpdater.state();
+        const auto rightState = rightUpdater.state();
+        const bool leftDone = leftState == autoupdater::State::ReadyToApply || leftState == autoupdater::State::Failed;
+        const bool rightDone =
+            rightState == autoupdater::State::ReadyToApply || rightState == autoupdater::State::Failed;
+        return leftDone && rightDone;
+    }));
+    const bool leftWon = leftUpdater.state() == autoupdater::State::ReadyToApply;
+    const bool rightWon = rightUpdater.state() == autoupdater::State::ReadyToApply;
+    LAU_REQUIRE(leftWon != rightWon);
+    LAU_REQUIRE(readyCallbacks.load(std::memory_order_acquire) == 1);
+    LAU_REQUIRE(persistenceErrors.load(std::memory_order_acquire) == 1);
+
+    auto reopenedStore = autoupdater::createJsonStateStore(sharedStatePath);
+    const auto persisted = reopenedStore->loadPendingUpdate();
+    LAU_REQUIRE(persisted);
+    LAU_REQUIRE(persisted.value().has_value());
+    const auto& winningPending = *persisted.value();
+    const auto& winningConfig = leftWon ? leftConfig : rightConfig;
+    LAU_REQUIRE(winningPending.version.toString() == (leftWon ? "2.0.0" : "3.0.0"));
+    LAU_REQUIRE(winningPending.releaseId == (leftWon ? "release-2" : "release-3"));
+    LAU_REQUIRE(winningPending.applyPlanPath.parent_path().parent_path().parent_path().lexically_normal() ==
+                winningConfig.tempDir.lexically_normal());
+    LAU_REQUIRE(std::filesystem::is_regular_file(winningPending.applyPlanPath));
+    const auto parsedPlan = autoupdater::ApplyPlan::parse(readFileContents(winningPending.applyPlanPath));
+    LAU_REQUIRE(parsedPlan);
+    LAU_REQUIRE(parsedPlan.value().releaseId == winningPending.releaseId);
+    LAU_REQUIRE(parsedPlan.value().stagingDir.lexically_normal() ==
+                winningPending.applyPlanPath.parent_path().lexically_normal());
+    const auto planDigest = autoupdater::createDefaultHashProvider()->sha256File(winningPending.applyPlanPath);
+    LAU_REQUIRE(planDigest);
+    LAU_REQUIRE(planDigest.value() == winningPending.applyPlanDigest);
 }
 
 void testUpdaterCanBeDestroyedFromDirectCallback() {
@@ -928,6 +1012,41 @@ void testUpdaterCanBeDestroyedFromDirectCallback() {
     LAU_REQUIRE(!*owner);
     std::error_code error;
     std::filesystem::remove_all(root, error);
+
+    // Destruction on a non-worker thread must cancel and join an operation
+    // which is still blocked in a cooperative transport call. Shutdown must
+    // also suppress the resulting cancellation callback.
+    ScopedTempDir blockingTemp;
+    auto blockingNetwork = std::make_shared<ScriptedManifestNetwork>(
+        std::vector<ScriptedManifestNetwork::Step>{ScriptedManifestNetwork::Step::waitForCancellation()});
+    auto blockingUpdater = std::make_unique<autoupdater::Updater>(updaterConfig(blockingTemp.path()));
+    blockingUpdater->setNetworkClient(blockingNetwork);
+    std::atomic<int> shutdownErrors{0};
+    autoupdater::Callbacks blockingCallbacks;
+    blockingCallbacks.onError = [&](const autoupdater::Error&) {
+        shutdownErrors.fetch_add(1, std::memory_order_relaxed);
+    };
+    blockingUpdater->setCallbacks(std::move(blockingCallbacks));
+    blockingUpdater->checkAsync();
+    LAU_REQUIRE(blockingNetwork->waitForCalls(1, std::chrono::seconds(2)));
+
+    std::atomic_bool destructionFinished{false};
+    std::thread destructionThread([updater = std::move(blockingUpdater), &destructionFinished]() mutable {
+        updater.reset();
+        destructionFinished.store(true, std::memory_order_release);
+    });
+    const bool destructionCompleted =
+        waitUntil([&] { return destructionFinished.load(std::memory_order_acquire); }, std::chrono::seconds(1));
+    if (!destructionCompleted) {
+        // Keep a regression from hanging the entire suite while preserving a
+        // deterministic failure below.
+        blockingNetwork->releaseBlockedRequests();
+    }
+    destructionThread.join();
+
+    LAU_REQUIRE(destructionCompleted);
+    LAU_REQUIRE(blockingNetwork->observedCancellations() == 1);
+    LAU_REQUIRE(shutdownErrors.load(std::memory_order_relaxed) == 0);
 }
 
 void testUpdaterNewGenerationInvalidatesReadyPlan() {
