@@ -3,17 +3,26 @@
 #include "NetworkLimits.h"
 #include "default/LocalNetworkFile.h"
 
+#include <QAbstractEventDispatcher>
 #include <QEventLoop>
+#include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSslError>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <condition_variable>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace {
@@ -150,9 +159,170 @@ qint64 nextReadSize(std::uint64_t remainingBytes) {
     return readBufferLimit(remainingBytes);
 }
 
+class ReplyCleanup final {
+  public:
+    explicit ReplyCleanup(QNetworkReply* reply) : reply_(reply) {}
+
+    ~ReplyCleanup() {
+        if (reply_ != nullptr) {
+            reply_->deleteLater();
+        }
+    }
+
+    ReplyCleanup(const ReplyCleanup&) = delete;
+    ReplyCleanup& operator=(const ReplyCleanup&) = delete;
+
+  private:
+    QNetworkReply* reply_ = nullptr;
+};
+
+class ActiveRequestGuard final {
+  public:
+    explicit ActiveRequestGuard(std::atomic_bool& active) noexcept : active_(active) {
+        bool expected = false;
+        acquired_ =
+            active_.compare_exchange_strong(expected, true, std::memory_order_acquire, std::memory_order_relaxed);
+    }
+
+    ~ActiveRequestGuard() {
+        if (acquired_) {
+            active_.store(false, std::memory_order_release);
+        }
+    }
+
+    ActiveRequestGuard(const ActiveRequestGuard&) = delete;
+    ActiveRequestGuard& operator=(const ActiveRequestGuard&) = delete;
+
+    bool acquired() const noexcept {
+        return acquired_;
+    }
+
+  private:
+    std::atomic_bool& active_;
+    bool acquired_ = false;
+};
+
+enum class DispatchPhase { Pending, Running, Completed, Abandoned };
+
+template <typename Value, typename Operation> struct DispatchState {
+    explicit DispatchState(Operation&& operationValue) : operation(std::move(operationValue)) {}
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    DispatchPhase phase = DispatchPhase::Pending;
+    std::optional<Operation> operation;
+    std::optional<autoupdater::Result<Value>> result;
+};
+
+template <typename Value, typename Operation>
+autoupdater::Result<Value>
+invokeOnOwnerThread(QObject& context, std::atomic_bool& shuttingDown, autoupdater::CancellationToken& cancel,
+                    autoupdater::ErrorCode dispatchErrorCode, Operation&& operation) noexcept {
+    const auto dispatchFailure = [dispatchErrorCode](std::string message) {
+        return autoupdater::Result<Value>::fail({dispatchErrorCode, std::move(message)});
+    };
+
+    try {
+        if (shuttingDown.load(std::memory_order_acquire)) {
+            return dispatchFailure("Qt network client is shutting down");
+        }
+
+        auto* ownerThread = context.thread();
+        if (ownerThread == nullptr) {
+            return dispatchFailure("Qt network client has no owner thread");
+        }
+        if (QThread::currentThread() == ownerThread) {
+            if (QAbstractEventDispatcher::instance(ownerThread) == nullptr) {
+                return dispatchFailure("Qt network client owner thread has no event dispatcher");
+            }
+            return operation();
+        }
+        if (!ownerThread->isRunning() || QAbstractEventDispatcher::instance(ownerThread) == nullptr) {
+            return dispatchFailure("Qt network client owner thread is not running an event dispatcher");
+        }
+
+        using State = DispatchState<Value, std::decay_t<Operation>>;
+        auto state = std::make_shared<State>(std::forward<Operation>(operation));
+        const bool queued = QMetaObject::invokeMethod(
+            &context,
+            [state, dispatchErrorCode]() mutable {
+                std::optional<std::decay_t<Operation>> queuedOperation;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->phase == DispatchPhase::Abandoned) {
+                        state->operation.reset();
+                        return;
+                    }
+                    state->phase = DispatchPhase::Running;
+                    queuedOperation.emplace(std::move(*state->operation));
+                    state->operation.reset();
+                }
+
+                autoupdater::Result<Value> result = autoupdater::Result<Value>::fail(
+                    {dispatchErrorCode, "Unexpected Qt owner-thread invocation failure"});
+                try {
+                    result = (*queuedOperation)();
+                } catch (...) {
+                    result = autoupdater::Result<Value>::fail(
+                        {dispatchErrorCode, "Unexpected Qt owner-thread invocation failure"});
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->result.emplace(std::move(result));
+                    state->phase = DispatchPhase::Completed;
+                }
+                state->changed.notify_all();
+            },
+            Qt::QueuedConnection);
+        if (!queued) {
+            return dispatchFailure("Failed to queue request on the Qt network client owner thread");
+        }
+
+        constexpr auto dispatchTimeout = std::chrono::seconds(5);
+        const auto dispatchDeadline = std::chrono::steady_clock::now() + dispatchTimeout;
+        std::unique_lock<std::mutex> lock(state->mutex);
+        while (state->phase == DispatchPhase::Pending) {
+            if (cancel.isCancelled()) {
+                state->phase = DispatchPhase::Abandoned;
+                state->operation.reset();
+                lock.unlock();
+                return autoupdater::Result<Value>::fail({autoupdater::ErrorCode::Cancelled, "Operation cancelled"});
+            }
+            if (shuttingDown.load(std::memory_order_acquire)) {
+                state->phase = DispatchPhase::Abandoned;
+                state->operation.reset();
+                lock.unlock();
+                return dispatchFailure("Qt network client is shutting down");
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= dispatchDeadline) {
+                state->phase = DispatchPhase::Abandoned;
+                state->operation.reset();
+                lock.unlock();
+                return dispatchFailure("Qt network client owner thread did not accept the queued request");
+            }
+            state->changed.wait_until(lock, std::min(dispatchDeadline, now + std::chrono::milliseconds(25)));
+        }
+        while (state->phase == DispatchPhase::Running) {
+            state->changed.wait(lock);
+        }
+        if (state->phase != DispatchPhase::Completed || !state->result) {
+            return dispatchFailure("Qt network client owner-thread request was abandoned");
+        }
+        return std::move(*state->result);
+    } catch (...) {
+        return dispatchFailure("Unexpected Qt request dispatch failure");
+    }
+}
+
 } // namespace
 
-QtNetworkClient::QtNetworkClient(QObject* parent) : QObject(parent) {}
+QtNetworkClient::QtNetworkClient(QObject* parent) : QObject(parent), manager_(new QNetworkAccessManager(this)) {}
+
+QtNetworkClient::~QtNetworkClient() {
+    shuttingDown_.store(true, std::memory_order_release);
+}
 
 autoupdater::Result<autoupdater::TextResponse>
 QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptions& options,
@@ -164,20 +334,47 @@ QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptio
         return autoupdater::Result<autoupdater::TextResponse>::fail(
             {autoupdater::ErrorCode::Cancelled, "Operation cancelled"});
     }
+    ActiveRequestGuard requestGuard(requestActive_);
+    if (!requestGuard.acquired()) {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
+            {autoupdater::ErrorCode::NetworkError, "Qt network client is already processing another request"});
+    }
 
+    try {
+        return invokeOnOwnerThread<autoupdater::TextResponse>(
+            *this, shuttingDown_, cancel, autoupdater::ErrorCode::NetworkError,
+            [this, requestUrl = url, options, maxResponseBytes, &cancel]() {
+                return getTextOnOwnerThread(requestUrl, options, maxResponseBytes, cancel);
+            });
+    } catch (...) {
+        return autoupdater::Result<autoupdater::TextResponse>::fail(
+            {autoupdater::ErrorCode::NetworkError, "Unexpected Qt request dispatch failure"});
+    }
+}
+
+autoupdater::Result<autoupdater::TextResponse>
+QtNetworkClient::getTextOnOwnerThread(const std::string& url, const autoupdater::NetworkOptions& options,
+                                      std::uint64_t maxResponseBytes, autoupdater::CancellationToken& cancel) noexcept {
     try {
         QNetworkRequest request(QUrl(QString::fromStdString(url)));
         configureRequest(request);
 
-        QNetworkAccessManager manager;
         QEventLoop loop;
+        QTimer connectTimer;
         QTimer transferTimer;
         QTimer cancellationTimer;
+        bool connectTimedOut = false;
         bool timedOut = false;
+        connectTimer.setSingleShot(true);
         transferTimer.setSingleShot(true);
         cancellationTimer.setInterval(25);
 
-        auto* reply = manager.get(request);
+        auto* reply = manager_->get(request);
+        ReplyCleanup replyCleanup(reply);
+        if (!options.verifyTls) {
+            QObject::connect(reply, &QNetworkReply::sslErrors, reply,
+                             [reply](const QList<QSslError>&) { reply->ignoreSslErrors(); });
+        }
         reply->setReadBufferSize(readBufferLimit(maxResponseBytes));
         std::array<char, kReadChunkSize> buffer{};
         std::string body;
@@ -200,6 +397,7 @@ QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptio
                 if (response.value().statusCode == 0) {
                     return;
                 }
+                connectTimer.stop();
                 if (response.value().statusCode != 200) {
                     discardedResponseBody = true;
                     reply->abort();
@@ -253,7 +451,21 @@ QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptio
         };
         QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, validateMetadata);
         QObject::connect(reply, &QNetworkReply::readyRead, &loop, consumeAvailable);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::encrypted, &connectTimer, &QTimer::stop);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+        QObject::connect(reply, &QNetworkReply::requestSent, &connectTimer, &QTimer::stop);
+#endif
+        QObject::connect(reply, &QNetworkReply::finished, &loop, [&] {
+            connectTimer.stop();
+            transferTimer.stop();
+            cancellationTimer.stop();
+            loop.quit();
+        });
+        QObject::connect(&connectTimer, &QTimer::timeout, [&] {
+            connectTimedOut = true;
+            reply->abort();
+            loop.quit();
+        });
         QObject::connect(&transferTimer, &QTimer::timeout, [&] {
             timedOut = true;
             reply->abort();
@@ -265,12 +477,15 @@ QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptio
                 loop.quit();
             }
         });
+        if (options.connectTimeout.count() > 0) {
+            connectTimer.start(timerInterval(options.connectTimeout));
+        }
         if (options.transferTimeout.count() > 0) {
             transferTimer.start(timerInterval(options.transferTimeout));
         }
         cancellationTimer.start();
         loop.exec();
-        if (!cancel.isCancelled() && !timedOut && bodyError.ok() && !discardedResponseBody) {
+        if (!cancel.isCancelled() && !connectTimedOut && !timedOut && bodyError.ok() && !discardedResponseBody) {
             validateMetadata();
             consumeAvailable();
         }
@@ -281,6 +496,10 @@ QtNetworkClient::getText(const std::string& url, const autoupdater::NetworkOptio
         }
         if (!bodyError.ok()) {
             return autoupdater::Result<autoupdater::TextResponse>::fail(bodyError);
+        }
+        if (connectTimedOut) {
+            return autoupdater::Result<autoupdater::TextResponse>::fail(
+                {autoupdater::ErrorCode::NetworkError, "Qt network connection timed out"});
         }
         if (timedOut) {
             return autoupdater::Result<autoupdater::TextResponse>::fail(
@@ -331,7 +550,30 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         return autoupdater::Result<autoupdater::DownloadResult>::fail(
             {autoupdater::ErrorCode::Cancelled, "Operation cancelled"});
     }
+    ActiveRequestGuard requestGuard(requestActive_);
+    if (!requestGuard.acquired()) {
+        return autoupdater::Result<autoupdater::DownloadResult>::fail(
+            {autoupdater::ErrorCode::DownloadFailed, "Qt network client is already processing another request"});
+    }
 
+    try {
+        return invokeOnOwnerThread<autoupdater::DownloadResult>(
+            *this, shuttingDown_, cancel, autoupdater::ErrorCode::DownloadFailed,
+            [this, requestUrl = url, &target, options, maxTotalBytes, resume, progress = std::move(progress),
+             &cancel]() mutable {
+                return downloadToFileOnOwnerThread(requestUrl, target, options, maxTotalBytes, resume,
+                                                   std::move(progress), cancel);
+            });
+    } catch (...) {
+        return autoupdater::Result<autoupdater::DownloadResult>::fail(
+            {autoupdater::ErrorCode::DownloadFailed, "Unexpected Qt request dispatch failure"});
+    }
+}
+
+autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFileOnOwnerThread(
+    const std::string& url, autoupdater::IRootedFile& target, const autoupdater::NetworkOptions& options,
+    std::uint64_t maxTotalBytes, const std::optional<autoupdater::DownloadResumeInfo>& resume,
+    autoupdater::ProgressCallback progress, autoupdater::CancellationToken& cancel) noexcept {
     try {
         const bool appending = options.enableResume && resume && resume->offset > 0;
         const std::uint64_t initialBytes = appending ? resume->offset : 0;
@@ -353,15 +595,22 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
             }
         }
 
-        QNetworkAccessManager manager;
         QEventLoop loop;
+        QTimer connectTimer;
         QTimer transferTimer;
         QTimer cancellationTimer;
+        bool connectTimedOut = false;
         bool timedOut = false;
+        connectTimer.setSingleShot(true);
         transferTimer.setSingleShot(true);
         cancellationTimer.setInterval(25);
 
-        auto* reply = manager.get(request);
+        auto* reply = manager_->get(request);
+        ReplyCleanup replyCleanup(reply);
+        if (!options.verifyTls) {
+            QObject::connect(reply, &QNetworkReply::sslErrors, reply,
+                             [reply](const QList<QSslError>&) { reply->ignoreSslErrors(); });
+        }
         reply->setReadBufferSize(readBufferLimit(transferBudget));
         std::array<char, kReadChunkSize> buffer{};
         std::uint64_t written = initialBytes;
@@ -383,6 +632,7 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
                 if (!status.isValid()) {
                     return;
                 }
+                connectTimer.stop();
                 if (status.toInt() != writableStatus) {
                     discardedResponseBody = true;
                     reply->abort();
@@ -461,7 +711,21 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         };
         QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, validateMetadata);
         QObject::connect(reply, &QNetworkReply::readyRead, &loop, consumeAvailable);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::encrypted, &connectTimer, &QTimer::stop);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+        QObject::connect(reply, &QNetworkReply::requestSent, &connectTimer, &QTimer::stop);
+#endif
+        QObject::connect(reply, &QNetworkReply::finished, &loop, [&] {
+            connectTimer.stop();
+            transferTimer.stop();
+            cancellationTimer.stop();
+            loop.quit();
+        });
+        QObject::connect(&connectTimer, &QTimer::timeout, [&] {
+            connectTimedOut = true;
+            reply->abort();
+            loop.quit();
+        });
         QObject::connect(&transferTimer, &QTimer::timeout, [&] {
             timedOut = true;
             reply->abort();
@@ -473,12 +737,15 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
                 loop.quit();
             }
         });
+        if (options.connectTimeout.count() > 0) {
+            connectTimer.start(timerInterval(options.connectTimeout));
+        }
         if (options.transferTimeout.count() > 0) {
             transferTimer.start(timerInterval(options.transferTimeout));
         }
         cancellationTimer.start();
         loop.exec();
-        if (!cancel.isCancelled() && !timedOut && writeError.ok() && !discardedResponseBody) {
+        if (!cancel.isCancelled() && !connectTimedOut && !timedOut && writeError.ok() && !discardedResponseBody) {
             validateMetadata();
             consumeAvailable();
         }
@@ -489,6 +756,10 @@ autoupdater::Result<autoupdater::DownloadResult> QtNetworkClient::downloadToFile
         }
         if (!writeError.ok()) {
             return autoupdater::Result<autoupdater::DownloadResult>::fail(writeError);
+        }
+        if (connectTimedOut) {
+            return autoupdater::Result<autoupdater::DownloadResult>::fail(
+                {autoupdater::ErrorCode::DownloadFailed, "Qt download connection timed out"});
         }
         if (timedOut) {
             return autoupdater::Result<autoupdater::DownloadResult>::fail(

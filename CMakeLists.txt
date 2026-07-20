@@ -22,6 +22,10 @@ option(LIBAUTOUPDATER_WARNINGS_AS_ERRORS "Treat project compiler warnings as err
 option(LIBAUTOUPDATER_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer on supported compilers" OFF)
 option(LIBAUTOUPDATER_ENABLE_COVERAGE "Enable coverage instrumentation on GCC/Clang-style compilers" OFF)
 
+if(LIBAUTOUPDATER_BUILD_TESTS)
+    enable_testing()
+endif()
+
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL FALSE)
 set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL FALSE)
 set(LIBAUTOUPDATER_HAS_HTTP_BACKEND FALSE)
@@ -199,7 +203,6 @@ if(LIBAUTOUPDATER_BUILD_EXAMPLES)
 endif()
 
 if(LIBAUTOUPDATER_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 

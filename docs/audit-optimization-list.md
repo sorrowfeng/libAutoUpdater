@@ -233,7 +233,7 @@ likelihood of affecting production update flows.
     - Atomic replacement never deletes the old target before the new file is
       ready.
 
-- [ ] **AU-016 — Put the Qt network adapter on a valid Qt thread model**
+- [x] **AU-016 — Put the Qt network adapter on a valid Qt thread model**
   - Classification: Verified medium-impact example/integration defect.
   - Key code: `examples/qt/QtNetworkClient.cpp:12-105`.
   - Completion criteria:
