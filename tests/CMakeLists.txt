@@ -75,6 +75,10 @@ if(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL)
     target_compile_definitions(libAutoUpdater_tests PRIVATE LIBAUTOUPDATER_TEST_HAS_OPENSSL=1)
 endif()
 
+if(LIBAUTOUPDATER_HAS_HTTP_BACKEND)
+    target_compile_definitions(libAutoUpdater_tests PRIVATE LIBAUTOUPDATER_TEST_HAS_HTTP_BACKEND=1)
+endif()
+
 add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)

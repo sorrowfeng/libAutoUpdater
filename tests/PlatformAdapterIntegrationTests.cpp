@@ -53,6 +53,9 @@
 namespace {
 
 using namespace std::chrono_literals;
+constexpr auto kTestSafetyTimeout = 10s;
+
+#ifdef LIBAUTOUPDATER_TEST_HAS_HTTP_BACKEND
 
 #ifdef _WIN32
 using NativeSocket = SOCKET;
@@ -61,8 +64,6 @@ constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
 using NativeSocket = int;
 constexpr NativeSocket kInvalidSocket = -1;
 #endif
-
-constexpr auto kTestSafetyTimeout = 10s;
 
 void closeSocket(NativeSocket socket) noexcept {
     if (socket == kInvalidSocket) {
@@ -448,6 +449,8 @@ std::string responseHeader(const autoupdater::NetworkResponseInfo& response, con
     return {};
 }
 
+#endif
+
 std::uint64_t currentProcessId() noexcept {
 #ifdef _WIN32
     return static_cast<std::uint64_t>(GetCurrentProcessId());
@@ -567,6 +570,9 @@ std::uint64_t waitForPublishedProcessId(const std::filesystem::path& marker) {
 } // namespace
 
 void testDefaultNetworkAdapterUsesLoopbackTransportContract() {
+#ifndef LIBAUTOUPDATER_TEST_HAS_HTTP_BACKEND
+    LAU_SKIP("No HTTP transport backend is configured");
+#else
     SocketRuntime socketRuntime;
     LoopbackHttpServer server;
     auto network = autoupdater::createDefaultNetworkClient();
@@ -619,9 +625,13 @@ void testDefaultNetworkAdapterUsesLoopbackTransportContract() {
     LAU_REQUIRE(!progress.empty());
     LAU_REQUIRE(progress.back().downloadedBytes == expectedDownload.size());
     LAU_REQUIRE(progress.back().totalBytes == expectedDownload.size());
+#endif
 }
 
 void testDefaultNetworkAdapterHonorsTimeoutAndCancellation() {
+#ifndef LIBAUTOUPDATER_TEST_HAS_HTTP_BACKEND
+    LAU_SKIP("No HTTP transport backend is configured");
+#else
     SocketRuntime socketRuntime;
     LoopbackHttpServer server;
     auto network = autoupdater::createDefaultNetworkClient();
@@ -650,6 +660,7 @@ void testDefaultNetworkAdapterHonorsTimeoutAndCancellation() {
     LAU_REQUIRE(!timedOut);
     LAU_REQUIRE(timedOut.error().code == autoupdater::ErrorCode::NetworkError);
     LAU_REQUIRE(elapsed < 6s);
+#endif
 }
 
 void testPlatformProcessAdapterLaunchesAndWaitsNatively() {
