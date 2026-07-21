@@ -41,6 +41,7 @@ jobs:
           tools/make_sbom.py
           tools/evidence_contract.py
           tools/check_privilege_boundary.py
+          tools/check_feed_retention.py
           examples/github_update_demo.py
           tests/e2e_flow.py
           tests/gc_objects_tests.py

@@ -42,3 +42,38 @@ single-use nonce, verify ownership/ACLs, bind intent and digest, independently
 authorize signed release content, publish the plan into a broker-only root,
 and bound restart behavior. A caller-supplied digest is integrity evidence, not
 authorization.
+
+## RISK-002: expiry and old-release replay
+
+Status: **OPEN — the production retention policy and hosting inventory have not
+been supplied.**
+
+Start with `deployment-evidence/risk-002-policy.example.json` and
+`deployment-evidence/risk-002-snapshot.example.json`. The snapshot must contain
+an opaque identifier rather than a URL for each resource, must cover both the
+manifest and its detached signature, and must be a complete point-in-time
+inventory of the real static host or CDN. Bind it to the exact policy bytes by
+placing the policy file's lowercase SHA-256 in `policySha256`, then run:
+
+```text
+python tools/check_feed_retention.py --policy <policy.json> --snapshot <snapshot.json> \
+  --evaluated-at <trusted-current-rfc3339-time>
+```
+
+The validator uses the same nanosecond-capable RFC 3339 profile as the runtime.
+`expiresAt` is exclusive, so metadata available at the exact expiry instant is
+a blocker. It also rejects manifest/signature availability mismatches, policy
+lifetime overruns, future publication times, and complete inventories that
+retain too few usable releases. `unknown` observations and incomplete
+inventories remain `OPEN`. The snapshot also binds the effective client
+configuration, including `rejectExpiredManifest` and whether it uses an index.
+When index routing is active, exactly one fresh current `index.json`/signature
+pair must be available and every obsolete signed index must be unavailable.
+Snapshots older than `maxSnapshotAgeSeconds` become `OPEN`; future captures are
+rejected as deployment blockers. A policy approved after capture, or an expiry
+or maximum-age boundary crossed between capture and `--evaluated-at`, also
+returns `OPEN` and requires a fresh hosting snapshot.
+
+This is a hosting snapshot, not a total anti-replay proof. Local clock rollback,
+cache behavior between the collector and clients, a stronger freshness service,
+and changes after capture still require deployment review.

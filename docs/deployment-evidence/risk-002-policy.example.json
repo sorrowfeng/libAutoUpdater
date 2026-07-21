@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "policyId": "replace-with-approved-policy-id",
+  "canonicalTimestampProfile": "libAutoUpdater-rfc3339-nanoseconds-v1",
+  "maxManifestLifetimeSeconds": 604800,
+  "maxDownloadableAgeSeconds": 2592000,
+  "maxIndexAgeSeconds": 86400,
+  "maxSnapshotAgeSeconds": 86400,
+  "minimumDownloadableReleaseCount": 1,
+  "expiredMetadataMustBeUnavailable": true,
+  "obsoleteIndexesMustBeUnavailable": true,
+  "approvedBy": null,
+  "approvedAt": null
+}

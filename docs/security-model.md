@@ -200,6 +200,11 @@ release above the client's baseline. Production publishers must use bounded
 release expiry, control old-metadata availability, protect local state, and
 document any stronger freshness service they require.
 
+The offline
+[feed-retention investigation](deployment-investigations.md#risk-002-expiry-and-old-release-replay)
+checks a policy-bound hosting inventory without treating repository fixtures as
+production evidence.
+
 Downgrades are accepted only when all of the following are true:
 
 - The exact release manifest has a valid detached signature.

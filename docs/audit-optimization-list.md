@@ -376,7 +376,8 @@ risk. Each item records its separate production status; see
     helper, bind plans to trusted roots, ownership, a one-time nonce, and an
     authenticated invocation channel.
 
-- [ ] **RISK-002 — Verify expiry and old-release replay conditions**
+- [x] **RISK-002 — Verify expiry and old-release replay conditions**
+  - Production status: **OPEN**; policy approval and hosting inventory are absent.
   - Confirm the canonical timestamp profile, release retention policy, and
     whether old signed manifests remain downloadable.
 

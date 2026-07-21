@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "deployment": "replace-with-production-feed-id",
+  "capturedAt": "2026-07-21T00:00:00Z",
+  "policyId": "replace-with-approved-policy-id",
+  "policySha256": null,
+  "inventoryComplete": false,
+  "collector": {
+    "name": "replace-with-hosting-inventory-method",
+    "version": "replace-with-collector-version"
+  },
+  "client": {
+    "configurationSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "rejectExpiredManifest": null,
+    "routingMode": "unknown"
+  },
+  "releases": [
+    {
+      "resourceId": "replace-with-opaque-resource-id",
+      "version": "replace-with-version",
+      "releaseId": "replace-with-release-id",
+      "publishedAt": "2026-07-20T00:00:00Z",
+      "expiresAt": "2026-07-27T00:00:00Z",
+      "manifestStatus": "unknown",
+      "signatureStatus": "unknown"
+    }
+  ],
+  "indexes": [],
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}

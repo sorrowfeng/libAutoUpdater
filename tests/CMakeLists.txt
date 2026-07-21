@@ -156,6 +156,7 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/deployment_investigation_tests.py
             --privilege-boundary ${libAutoUpdater_SOURCE_DIR}/tools/check_privilege_boundary.py
+            --feed-retention ${libAutoUpdater_SOURCE_DIR}/tools/check_feed_retention.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/deployment-investigation-validation)
 
     find_program(LIBAUTOUPDATER_OPENSSL_EXECUTABLE NAMES openssl)
