@@ -77,3 +77,53 @@ returns `OPEN` and requires a fresh hosting snapshot.
 This is a hosting snapshot, not a total anti-replay proof. Local clock rollback,
 cache behavior between the collector and clients, a stronger freshness service,
 and changes after capture still require deployment review.
+
+## RISK-003: state URL credentials and permissions
+
+Status: **OPEN — production state files, ACL evidence, and URL samples have not
+been supplied.**
+
+Use `deployment-evidence/risk-003.example.json` for each deployed platform and
+profile. Capture the state directory plus the fixed `state.json`,
+`state.json.lkg`, and `state.json.resume` children; bind every existing file
+with its SHA-256. The inspector rejects substitute paths outside this exact
+contract. Put raw owner, mode, DACL, and ancestor output in a protected capture.
+Normalize its effective-access conclusions with
+`deployment-evidence/risk-003-permissions.example.json`. The main snapshot
+binds that structured bundle, and the structured bundle binds the raw capture.
+
+Supply raw URL samples only on standard input so credentials never enter the
+process command line:
+
+```text
+python tools/inspect_state_security.py <evidence.json> \
+  --permission-evidence <structured-permission-evidence.json> \
+  --raw-permission-evidence <protected-raw-platform-output> \
+  --url-samples-stdin \
+  --evaluated-at <trusted-current-rfc3339-time> < <protected-url-samples>
+```
+
+The inspector parses JSON with duplicate-key rejection and scans both keys and
+values. This catches legacy URL-keyed resume maps as well as ordinary fields.
+It reports only verdicts: raw URLs, query values, paths, ACLs, ETags, and sample
+contents are never emitted. Userinfo and query names declared as credential
+keys are definite blockers when persisted. Unclassified query parameters or
+fragments stay `OPEN`, not `FAIL`. A complete network sample set must be
+non-empty, supplied on stdin, and bound by `sampleSetSha256`; a local-only empty
+set must still be supplied and hash-bound.
+
+For Windows, capture owner SIDs and numeric DACL rights with `Get-Acl`; for
+Linux, capture numeric `stat` plus `getfacl` when available; for macOS, include
+`stat` and `ls -ldeO@`. Determine read, write, delete, and replace access using
+the real application/helper and lower-trust identities, including ancestor and
+share ACLs. The tool verifies all byte, deployment, path, and decision-field
+bindings but deliberately does not reinterpret platform-specific ACL text; the
+named deployment reviewer remains responsible for that effective-access
+translation. A custom `IStateStore` uses `customInspection` instead of
+filesystem artifacts and must attest content scanning and access controls
+separately.
+
+A `PASS` is valid only through `deployment.validUntil`. URL credentials can
+also appear in network-library logs, proxies, crash dumps, and application
+telemetry; the evidence therefore records telemetry redaction and requires
+signed URL credentials to be short-lived and narrowly scoped.

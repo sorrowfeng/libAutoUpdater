@@ -254,6 +254,11 @@ may still observe a requested URL. Never use long-lived URL credentials. Use
 short-lived, least-privilege signed URLs only when required, and redact them in
 all surrounding systems.
 
+The offline
+[state-security investigation](deployment-investigations.md#risk-003-state-url-credentials-and-permissions)
+binds actual state bytes, platform permission evidence, and stdin-only URL
+samples without emitting credential-bearing values.
+
 ## Local Filesystem and Privilege Boundary
 
 The default state lives at `installDir/.autoupdater/state.json`; apply plans,

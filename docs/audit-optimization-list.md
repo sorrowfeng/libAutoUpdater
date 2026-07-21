@@ -381,7 +381,8 @@ risk. Each item records its separate production status; see
   - Confirm the canonical timestamp profile, release retention policy, and
     whether old signed manifests remain downloadable.
 
-- [ ] **RISK-003 — Verify state URL credential exposure**
+- [x] **RISK-003 — Verify state URL credential exposure**
+  - Production status: **OPEN**; state, ACL, and URL-sample evidence are absent.
   - Determine whether production URLs contain signed query parameters and
     inspect actual Windows, macOS, and Linux state-file permissions.
 

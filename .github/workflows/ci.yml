@@ -42,12 +42,14 @@ jobs:
           tools/evidence_contract.py
           tools/check_privilege_boundary.py
           tools/check_feed_retention.py
+          tools/inspect_state_security.py
           examples/github_update_demo.py
           tests/e2e_flow.py
           tests/gc_objects_tests.py
           tests/metadata_tool_tests.py
           tests/sbom_tool_tests.py
           tests/deployment_investigation_tests.py
+          tests/state_security_tool_tests.py
           tests/installed_update_rollback.py
           tests/signed_release_artifact_test.py
 

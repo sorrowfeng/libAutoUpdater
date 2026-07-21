@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "deployment": {
+    "id": "replace-with-deployment-id",
+    "platform": "windows",
+    "installDirSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "capturedAt": "2026-07-21T00:00:00Z",
+    "configurationSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "storageKind": "bundled-json"
+  },
+  "collector": {
+    "name": "replace-with-platform-collector",
+    "version": "replace-with-collector-version"
+  },
+  "complete": false,
+  "rawEvidenceSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "entries": [
+    {
+      "role": "root",
+      "pathSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedReadable": null,
+      "lessTrustedWritable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "primary",
+      "pathSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedReadable": null,
+      "lessTrustedWritable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "lastKnownGood",
+      "pathSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedReadable": null,
+      "lessTrustedWritable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "resume",
+      "pathSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedReadable": null,
+      "lessTrustedWritable": null,
+      "unexpectedLink": null
+    }
+  ],
+  "customStore": null
+}

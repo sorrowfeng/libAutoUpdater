@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "deployment": {
+    "id": "replace-with-deployment-id",
+    "environment": "test",
+    "platform": "windows",
+    "installDir": "C:/replace-with-observed-path/app",
+    "capturedAt": "2026-07-21T00:00:00Z",
+    "validUntil": "2026-07-22T00:00:00Z",
+    "configurationSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "storage": {
+    "kind": "bundled-json",
+    "permissionEvidenceSha256": null,
+    "permissionEvidenceComplete": false,
+    "root": {
+      "path": "C:/replace-with-observed-path/app/.autoupdater",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedReadable": null,
+      "lessTrustedWritable": null,
+      "unexpectedLink": null
+    },
+    "artifacts": [
+      {
+        "role": "primary",
+        "path": "C:/replace-with-observed-path/app/.autoupdater/state.json",
+        "exists": null,
+        "contentSha256": null,
+        "ownerTrusted": null,
+        "aclComplete": null,
+        "lessTrustedReadable": null,
+        "lessTrustedWritable": null,
+        "unexpectedLink": null
+      },
+      {
+        "role": "lastKnownGood",
+        "path": "C:/replace-with-observed-path/app/.autoupdater/state.json.lkg",
+        "exists": null,
+        "contentSha256": null,
+        "ownerTrusted": null,
+        "aclComplete": null,
+        "lessTrustedReadable": null,
+        "lessTrustedWritable": null,
+        "unexpectedLink": null
+      },
+      {
+        "role": "resume",
+        "path": "C:/replace-with-observed-path/app/.autoupdater/state.json.resume",
+        "exists": null,
+        "contentSha256": null,
+        "ownerTrusted": null,
+        "aclComplete": null,
+        "lessTrustedReadable": null,
+        "lessTrustedWritable": null,
+        "unexpectedLink": null
+      }
+    ],
+    "customInspection": {
+      "complete": null,
+      "credentialUrlsStored": null,
+      "accessControlVerified": null
+    }
+  },
+  "urlSampling": {
+    "credentialMode": "unknown",
+    "transportMode": "unknown",
+    "credentialQueryNames": [],
+    "complete": null,
+    "sampleCount": 0,
+    "sampleSetSha256": null,
+    "shortLivedAndScoped": null,
+    "telemetryRedactionVerified": null
+  },
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}

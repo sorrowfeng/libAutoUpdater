@@ -47,12 +47,19 @@ def reject_nonfinite(value: str) -> None:
     raise EvidenceError(f"non-finite JSON number is not allowed: {value}")
 
 
-def load_json(path: Path) -> Any:
+def read_limited_bytes(path: Path, maximum: int = MAX_EVIDENCE_BYTES) -> bytes:
     try:
         with path.open("rb") as handle:
-            contents = handle.read(MAX_EVIDENCE_BYTES + 1)
+            contents = handle.read(maximum + 1)
     except OSError as error:
         raise EvidenceError(f"cannot read evidence file: {error}") from error
+    if len(contents) > maximum:
+        raise EvidenceError(f"evidence file exceeds the {maximum}-byte limit")
+    return contents
+
+
+def load_json(path: Path) -> Any:
+    contents = read_limited_bytes(path)
     return parse_json_bytes(contents)
 
 
@@ -67,7 +74,7 @@ def parse_json_bytes(contents: bytes) -> Any:
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=reject_nonfinite,
         )
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise EvidenceError(f"cannot parse evidence JSON: {error}") from error
 
 
