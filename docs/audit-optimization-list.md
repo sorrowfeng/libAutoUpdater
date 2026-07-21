@@ -342,7 +342,7 @@ likelihood of affecting production update flows.
 
 ## Documentation backlog
 
-- [ ] **DOC-001 — Align recovery documentation with implemented guarantees**
+- [x] **DOC-001 — Align recovery documentation with implemented guarantees**
   - Update `docs/architecture-plan.md`, `docs/integration.md`, and
     `docs/troubleshooting.md` when journal recovery, external rollback, health
     confirmation, and backup retention behavior are finalized.

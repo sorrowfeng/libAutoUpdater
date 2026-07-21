@@ -93,6 +93,75 @@ Default selection order:
   limits. Resume state is advisory; losing it restarts the download rather than
   weakening artifact hash verification.
 
+## Apply, Recovery, and Rollback Lifecycle
+
+`applyAndRestartAsync()` launches `autoupdater_apply` as a detached process.
+The helper waits for the calling process to exit, acquires the installation
+lock, and performs all managed-file changes. After requesting apply, let the
+application terminate before `Config::applyWaitTimeout`; the library does not
+replace its own running files.
+
+The helper journals the immutable plan, operation state, rollback evidence, and
+restart state under `installDir/.autoupdater/journal`. On every helper
+invocation it recovers an active transaction before considering a new one.
+Recovery can roll back a partially applied transaction or finish a durably
+applied transaction; it launches restart only when the journal proves that no
+earlier restart attempt occurred. It deliberately does not repeat an ambiguous
+restart or roll back files after restart may have begun. Do not delete
+`active.json`, transaction records, or backups to clear an error: correct the
+reported storage or permission problem and invoke an authorized helper plan
+again. Starting the main application by itself does not run this recovery.
+
+After the updated application has completed its own startup checks, confirm the
+running version:
+
+```cpp
+auto confirmed = updater.markCurrentVersionHealthy();
+if (!confirmed) {
+    // Keep the pending state and surface a recovery or rollback action.
+}
+```
+
+`healthConfirmationTimeout` accepts zero through 24 hours. Zero disables the
+deadline. Otherwise, checks and health confirmation fail when the local wall
+clock reaches the terminal apply receipt's completion time plus the configured
+timeout. Expiry is evaluated lazily and never starts an automatic rollback. The
+pending record and backup remain available so the application can offer an
+explicit rollback.
+
+To request that rollback while the pending version is running:
+
+```cpp
+auto launched = updater.rollbackLastUpdate();
+if (launched) {
+    // Exit before applyWaitTimeout so the detached helper can proceed.
+}
+```
+
+When a matching pending update exists and a rollback request is created, success
+confirms helper launch, not rollback completion. If no pending update remains,
+the method succeeds as a no-op and launches no helper. The public method writes
+no managed install file and supplies no rollback operations or restart command;
+the helper derives both from the digest-bound terminal forward transaction
+while holding the lock. Pending state is cleared only when a later library call
+from the restored version reconciles a completed rollback. A custom
+`IStateStore` must implement `commitHealthyVersion()` with the documented
+compare-and-set semantics and must also implement
+`IPendingUpdateCompareAndSet` for completed-rollback reconciliation. Without
+the latter capability, reconciliation fails closed with `StateStoreError` and
+retains pending state.
+
+Forward backups are scoped by the complete manifest SHA-256, so a later update
+does not overwrite the only backup for an earlier transaction. Successful
+health confirmation clears the matching pending record but intentionally keeps
+that backup. Once confirmation clears pending state, `rollbackLastUpdate()` is a
+successful no-op and does not launch the helper; retained backups support only
+an explicit product/operator recovery policy after confirmation. The library
+performs no automatic backup or journal garbage collection. Define a
+product-specific retention policy, and remove evidence only when no pending
+update, active transaction, rollback request, or supported operator recovery
+can still reference it.
+
 ## Mandatory Updates
 
 When `mandatory=true` appears in the manifest, `CheckResult::mandatory` is true. The library does not directly disable a "later" UI action; callers should apply their own product policy.

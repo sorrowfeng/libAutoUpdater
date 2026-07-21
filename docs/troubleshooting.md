@@ -69,6 +69,73 @@ or process-start identity. Confirm that no old updater is running before
 manually moving or removing such a directory, then retry with the current
 updater.
 
+## An Apply or Rollback Was Interrupted
+
+The external updater checks
+`installDir/.autoupdater/journal/active.json` while holding the installation
+lock on every invocation. It uses the immutable plan snapshot, per-operation
+records, and durable backups to reconcile the interrupted transaction before
+considering the newly requested plan.
+
+Action:
+
+- Preserve `active.json`, the referenced transaction files, and its backup
+  directory.
+- Correct the reported disk-space, permission, or storage error.
+- Invoke the external updater again through the normal application API with an
+  authorized plan. Merely starting the application does not run recovery.
+- If diagnostics report that restart may already have begun or that journal
+  evidence is inconsistent, stop all application instances and investigate the
+  retained records. The updater intentionally fails closed instead of guessing.
+
+Do not delete journal files, backups, or the regular `update.lock` marker to
+force progress. That destroys the evidence required for safe recovery and can
+invalidate mutual exclusion.
+
+## Health Confirmation Deadline Expired
+
+Cause: the running version still matches a pending update, and the current local
+wall-clock time is at or beyond the terminal apply completion time plus
+`healthConfirmationTimeout`. A zero timeout disables this deadline; non-zero
+values are limited to 24 hours.
+
+The library does not automatically roll back. It rejects health confirmation
+and update checks while retaining pending state and rollback evidence. Decide
+whether to call `rollbackLastUpdate()` or recover the current version through a
+trusted operator workflow. Because the deadline uses the local wall clock,
+also check for an incorrect or recently adjusted system time.
+
+## rollbackLastUpdate Returned Success but Files Did Not Change
+
+When a matching pending update exists and a rollback request is created,
+success means the detached helper was launched, not that rollback completed.
+If no pending update remains, the method succeeds as a no-op and launches no
+helper. Otherwise, check that:
+
+- The application exited before `applyWaitTimeout`.
+- The pending state describes the currently running version.
+- The latest terminal transaction matches that pending update.
+- The manifest-scoped backup still exists and is readable.
+- No other updater holds the installation lock.
+
+The helper derives inverse operations and the restart command from the terminal
+forward transaction; the caller-supplied rollback request cannot override them.
+A later library operation clears pending state only after it verifies a
+completed terminal rollback. Custom state stores must implement
+`IPendingUpdateCompareAndSet` or this reconciliation fails closed and leaves the
+pending record intact.
+
+## Backup Directory Keeps Growing
+
+This is expected: health confirmation clears pending state but intentionally
+retains manifest-scoped rollback backups, and the library performs no automatic
+garbage collection. After confirmation, `rollbackLastUpdate()` no longer has a
+pending update to roll back and is a successful no-op; retained evidence is for
+an explicit product/operator recovery policy. Apply an application- or
+installer-owned retention policy only after confirming that no pending update,
+active journal, supported operator recovery, or rollback request references the
+candidate transaction.
+
 ## Python Command Fails on Windows
 
 On Windows, `python` may point to the Microsoft Store alias. Use:

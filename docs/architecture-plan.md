@@ -495,13 +495,35 @@ Example:
 }
 ```
 
-The updater executable executes the apply plan and writes a transaction journal:
+The updater executable executes the apply plan and writes a durable transaction
+journal beneath the installation root:
 
 ```text
+install/.autoupdater/journal/active.json
+install/.autoupdater/journal/terminal.json
+install/.autoupdater/journal/<transaction-id>.plan.json
 install/.autoupdater/journal/<transaction-id>.json
+install/.autoupdater/journal/<transaction-id>.ops/<operation-index>.json
 ```
 
-The journal records each completed step so interrupted operations can be inspected and future recovery logic can resume cleanup or rollback.
+The immutable plan snapshot, transaction summary, and per-operation records bind
+the transaction to its plan digest and record backup, apply, rollback, restart,
+and completion state. `active.json` publishes the one transaction that requires
+recovery; `terminal.json` publishes the latest durably completed transaction.
+All records are written atomically, and journal publication is mandatory before
+the corresponding file mutation proceeds.
+
+While holding the installation lock, every external-updater invocation checks
+`active.json` before considering the requested plan. An interrupted transaction
+is reconciled from its immutable snapshot and operation records. A partially
+applied transaction is rolled back; a fully applied file set is verified and
+completed. A restart is launched only when the journal proves no earlier
+restart attempt occurred. If restart may
+already have begun and the installed state cannot be proved safe, the updater
+fails closed, retains the active journal, and requires operator intervention
+instead of blindly replacing running files or launching the application twice.
+A failed recovery or rollback remains journaled and can be retried by a later
+external-updater invocation.
 
 Updater command-line PID and wait values use strict unsigned decimal syntax.
 The PID must fit the native platform type and the wait is bounded to 24 hours.
@@ -651,6 +673,30 @@ their own retention policy. Legacy schema-v2 terminal receipts contain no
 authoritative completion time and therefore remain exempt from the deadline.
 Because the policy uses the local wall clock, clock rollback can extend the
 window and clock jumps can shorten it.
+
+### 7.5 Explicit Rollback
+
+`Updater::rollbackLastUpdate()` does not modify managed installation files in
+the application process. It requires the running version to match the pending
+record, writes an operation-free request bound to the latest terminal
+transaction ID and plan digest, and launches `autoupdater_apply --rollback`.
+The external updater waits for the application process, acquires the same
+installation lock, proves that the referenced terminal transaction is the
+matching completed install, validates its backup evidence, derives inverse
+operations from the immutable forward transaction, and applies them through the
+normal journaled transaction engine.
+
+When a matching pending update exists and a rollback request is created, a
+successful return from `rollbackLastUpdate()` means only that the detached
+helper was launched. The application must exit before `applyWaitTimeout` so the
+helper can continue. The pending state is not cleared optimistically; a later
+library operation from the restored version reconciles it only after a
+digest-bound terminal rollback is present. Interrupted rollback and
+rollback-of-rollback failures therefore remain recoverable through the same
+active journal. The public API is available only while that pending record
+remains: after successful health confirmation clears it,
+`rollbackLastUpdate()` is a successful no-op and launches no helper even though
+the operator-managed backup is retained.
 
 ## 8. Security Strategy
 
@@ -1126,11 +1172,23 @@ Mitigation:
 
 The apply process may be interrupted.
 
-Mitigation:
+Implemented behavior:
 
-- Record each step in a transaction journal.
-- Detect incomplete transactions on the next start.
-- Support rollback or cleanup.
+- The external updater publishes an active transaction only after every
+  operation has a durable record and every required original-file backup has
+  been verified.
+- The next external-updater invocation, while holding the installation lock,
+  detects and reconciles the active transaction before executing another plan.
+- A partially applied transaction is rolled back, while a fully applied state
+  is verified and completed or handed off for restart.
+- Ambiguous post-restart state and unrecoverable journal inconsistencies fail
+  closed and retain evidence for operator intervention.
+
+Launching the main application alone does not execute journal recovery. If
+recovery of an active transaction fails because of a correctable storage or
+permission problem, preserve the evidence, correct the problem, and retry an
+authorized external-updater invocation. Do not delete journal or backup files
+to force a new transaction.
 
 ## 16. Acceptance Criteria
 
