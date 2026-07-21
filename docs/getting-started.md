@@ -28,6 +28,7 @@ config.appId = "com.example.myapp";
 config.platform = "windows";
 config.arch = "x64";
 config.manifestUrl = "https://example.com/updates/releases/1.2.3/manifest.json";
+config.security.allowedBaseUrls = {"https://example.com/updates/releases/"};
 config.currentVersion = autoupdater::Version::parse("1.0.0").value();
 config.installDir = "C:/Program Files/MyApp";
 config.updaterExecutable = "C:/Program Files/MyApp/autoupdater_apply.exe";
@@ -47,6 +48,17 @@ updater.setCallbacks({
 });
 updater.checkAndDownloadAsync();
 ```
+
+The allowlist is mandatory for HTTP(S), not optional. For a production network
+feed, keep `verifyTls=true`, set `requireManifestSignature=true`, and embed the
+trusted release public key. Both an index and its selected release manifest are
+verified when an index feed is used. Unsigned feeds should be confined to
+explicit development/test workflows, including local `file:` fixtures. Local
+fixtures require an absolute `file://` manifest URL and
+`security.allowLocalFileUrls=true`; raw filesystem paths are not valid manifest
+URLs. A production offline or shared-filesystem feed still needs signatures
+unless its filesystem trust boundary provides a documented equivalent
+authorization guarantee.
 
 ## 3. Generate a Manifest
 

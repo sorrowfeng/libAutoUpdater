@@ -18,8 +18,8 @@
 - 基于 SHA-256 的文件级增量更新。
 - 通过 `autoupdater_apply` 安全替换运行中的应用文件。
 - 替换或校验失败后可回滚。
-- 可选 detached manifest 签名。
-- 支持防降级、防重放和可信 base URL 限制。
+- 可配置 detached manifest 签名；生产网络策略要求启用。
+- 支持防降级、有界过期校验和强制网络 URL scope 限制。
 - Windows 和 macOS 有原生 HTTPS 后端，也可使用 libcurl。
 - 核心库不依赖 GUI，提供 CLI 和 Qt 示例。
 - 网络、哈希、文件系统、签名、进程、事件分发和状态存储都可注入，便于测试。
@@ -33,7 +33,7 @@
 | 检查 / 计划 / 下载 / apply 核心流程 | 已实现 |
 | 外部 updater 进程 | 已实现 |
 | 回滚和更新锁 | 已实现 |
-| Manifest 签名 | 可选，基于 OpenSSL |
+| Manifest 签名 | 可配置，基于 OpenSSL；生产 HTTP(S) 必须启用 |
 | Windows/macOS 原生 HTTPS | WinHTTP / CFNetwork |
 | Linux HTTPS | libcurl |
 | Qt 集成 | 可选示例适配器 |
@@ -69,6 +69,7 @@ python examples/github_update_demo.py
 autoupdater::Config config;
 config.appId = "com.example.myapp";
 config.manifestUrl = "https://example.com/updates/releases/1.4.0/windows-x64/manifest.json";
+config.security.allowedBaseUrls = {"https://example.com/updates/releases/"};
 config.currentVersion = autoupdater::Version::parse("1.3.0").value();
 config.installDir = "C:/Program Files/MyApp";
 config.updaterExecutable = "C:/Program Files/MyApp/autoupdater_apply.exe";
@@ -78,6 +79,19 @@ autoupdater::Updater updater(config);
 updater.setCallbacks(callbacks);
 updater.checkAndDownloadAsync();
 ```
+
+所有 HTTP(S) 配置都必须提供非空、无查询参数的 `allowedBaseUrls`；初始
+manifest、重定向、index 选中的目标、artifact base、文件和分离签名都必须留在
+这些范围内。生产网络渠道还必须保持 TLS 校验、要求分离签名，并嵌入受信发布
+公钥：
+
+```cpp
+config.network.verifyTls = true;
+config.security.requireManifestSignature = true;
+config.security.publicKeyPem = embeddedReleasePublicKeyPem;
+```
+
+未签名网络 feed 只适用于明确的开发或测试场景。
 
 当更新准备好后，由你的 UI 或命令流程调用 `applyAndRestartAsync()`。新版本成功启动后调用：
 
@@ -138,7 +152,7 @@ target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork 使用系统 framework |
 | Linux | GCC, Clang | libcurl | package-manager-owned 安装通常应交给包管理器 |
 
-签名校验是可选能力。默认 verifier 使用 OpenSSL 1.1.1 或更高版本，仅接受 Ed25519，或 RSA PKCS#1 v1.5/SHA-256 且 RSA 密钥不少于 2048 位。应用也可以注入自己的 `ISignatureVerifier`；算法和密钥轮换策略见 [docs/security-model.md](docs/security-model.md)。
+签名校验在本地或测试流程中仍可配置关闭，但生产 HTTP(S) 策略要求启用。默认 verifier 使用 OpenSSL 1.1.1 或更高版本，仅接受 Ed25519，或 RSA PKCS#1 v1.5/SHA-256 且 RSA 密钥不少于 2048 位。应用也可以注入自己的 `ISignatureVerifier`；算法和密钥轮换策略见 [docs/security-model.md](docs/security-model.md)。
 
 ## CMake 选项
 
@@ -265,8 +279,8 @@ CI 也会在 Ubuntu/libcurl、Windows/WinHTTP 和 macOS/CFNetwork 上运行这�
 | --- | --- | --- |
 | TLS 校验 | 默认开启 | 保持开启 |
 | 文件 SHA-256 | 每个受管文件必需 | 必需 |
-| Manifest 签名 | 可选 | 公开渠道强制开启 |
-| 可信 base URL | 可选 | 公开渠道建议开启 |
+| Manifest 签名 | 默认关闭 | 生产 HTTP(S) 渠道必须开启 |
+| 可信 base URL | HTTP(S) 强制要求 | 使用最小范围、无查询参数的 HTTPS scope |
 | 外部 apply 进程 | 必需 | 始终使用 |
 | 回滚 | 已实现 | 健康确认后仍保留备份 |
 | 路径穿越保护 | 强制校验 | 不要绕过 manifest 校验 |
@@ -278,7 +292,10 @@ CI 也会在 Ubuntu/libcurl、Windows/WinHTTP 和 macOS/CFNetwork 上运行这�
 
 ### 一定需要 libcurl 吗？
 
-不需要。本地路径和 `file://` URL 始终可用。Windows 可使用 WinHTTP，macOS 可使用 CFNetwork，Linux 通常使用 libcurl 处理 HTTP/HTTPS。
+不需要。内置 `file://` 传输不依赖 libcurl，但 `Updater` 要求使用绝对
+`file://` manifest URL，并显式设置 `security.allowLocalFileUrls=true`；原始本地
+路径不是合法的 `manifestUrl`。Windows 可使用 WinHTTP，macOS 可使用
+CFNetwork，Linux 通常使用 libcurl 处理 HTTP/HTTPS。
 
 ### 一定需要 Qt 吗？
 

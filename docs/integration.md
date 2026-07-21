@@ -62,7 +62,9 @@ enable runtime verification by itself; production configuration must also set
 
 Default selection order:
 
-- Local paths and `file://` are always available.
+- The built-in `file://` transport requires no optional backend, but `Updater`
+  accepts only an absolute file URL with `allowLocalFileUrls=true`; a raw local
+  path is not a valid manifest URL.
 - libcurl is used when CMake finds `CURL::libcurl`.
 - Windows uses WinHTTP when libcurl is unavailable and `LIBAUTOUPDATER_WITH_WINHTTP=ON`.
 - macOS uses CFNetwork when libcurl is unavailable and `LIBAUTOUPDATER_WITH_CFNETWORK=ON`.
@@ -71,6 +73,49 @@ Default selection order:
   transfer timeouts, as well as cancellation from another thread, are observed
   without leaving a blocked read or background worker behind.
 - Qt users can inject a `QNetworkAccessManager` adapter.
+
+## Production Security Checklist
+
+For every production HTTP(S) feed:
+
+- Use HTTPS-only, query-free `allowedBaseUrls` narrowed to the required release
+  paths. The list is mandatory for all HTTP(S) configurations.
+- Keep `verifyTls=true`; require detached manifest signatures and embed the
+  trusted release public key. An index and its selected release manifest are
+  verified independently.
+- Publish a bounded `expiresAt`, keep `rejectExpiredManifest=true` and
+  `rejectDowngrade=true`, and define server retention for old signed manifests.
+  Release `publishedAt`, index `generatedAt`, and `lastAcceptedReleaseId` do not
+  currently provide monotonic release ordering; an index has no client-enforced
+  expiry of its own.
+- Configure redirect-capable custom adapters for one-hop responses only. The
+  core re-authorizes each redirect and rejects TLS downgrade.
+- Do not put reusable or long-lived credentials in URLs. If short-lived signed
+  URLs are unavoidable, scope them narrowly and redact them outside the core as
+  well.
+
+Before installation, create and verify platform ownership and ACLs for
+`installDir`, `installDir/.autoupdater`, any custom `tempDir`, apply plans,
+state, journals, backups, `autoupdater_apply`, and the restart executable. New
+POSIX private entries use restrictive modes, but existing ancestors are not
+repaired. Windows entries inherit deployment ACLs; the library does not create
+or audit a private DACL.
+
+Custom `IStateStore` implementations need equivalent access control, bounded
+storage, inter-process synchronization, atomic replace/compare-and-set
+semantics, and crash durability.
+
+The default launcher has no built-in elevation and inherits the application's
+current credentials. Do not solve a permission error by exposing the helper's
+command line through an unrestricted administrator/root launcher:
+`--plan-sha256` detects plan changes but is not authorization. A
+privileged broker must authenticate callers, constrain trusted roots, validate
+owner/ACL, bind digest/intent/install root plus a one-time nonce to the session,
+control `restartCommand`, and define the privilege of the restarted process. It
+must independently verify signed release authorization and rebuild or validate
+the complete plan (or require a plan signed by a trusted release authority),
+then publish accepted plans into a broker-only writable root. Caller-supplied
+digests, nonces, and file ownership are not content authorization.
 
 ## Callback Threading
 

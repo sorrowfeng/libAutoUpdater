@@ -347,7 +347,7 @@ likelihood of affecting production update flows.
     `docs/troubleshooting.md` when journal recovery, external rollback, health
     confirmation, and backup retention behavior are finalized.
 
-- [ ] **DOC-002 — Document production security requirements**
+- [x] **DOC-002 — Document production security requirements**
   - State when signatures and URL allowlists are mandatory.
   - Document state/apply-plan ownership and ACL requirements.
   - Document redirect, TLS, expiry, anti-replay, and elevated-helper policies.

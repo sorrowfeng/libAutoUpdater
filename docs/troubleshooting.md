@@ -16,6 +16,34 @@ Cause: `SecurityOptions::allowedBaseUrls` does not include the manifest `baseUrl
 
 Fix: add the full trusted prefix to the allowlist and keep host-boundary matching in mind.
 
+## security.allowedBaseUrls Must Not Be Empty
+
+Cause: every HTTP(S) update requires at least one trusted, query-free scope; the
+allowlist is not optional, even for an unsigned development feed.
+
+Fix: add the narrow HTTPS directory roots that contain the initial manifest,
+any selected release manifest, detached signatures, and artifacts. Do not use a
+host-wide scope when a release path is sufficient.
+
+## ManifestSignatureInvalid: No Verifier Is Available
+
+Cause: `requireManifestSignature=true`, but the build has no OpenSSL-backed
+verifier and the application did not inject a working custom verifier.
+
+Fix: configure with `LIBAUTOUPDATER_WITH_OPENSSL=ON` and
+`LIBAUTOUPDATER_REQUIRE_OPENSSL=ON`, or inject and test an
+`ISignatureVerifier`. Do not disable signature requirements to make a
+production feed pass.
+
+## Redirect Was Rejected
+
+The core rejects destinations outside `allowedBaseUrls`, HTTPS-to-HTTP
+downgrades, loops, excessive hops, ambiguous `Location`, and adapters that
+report an effective URL different from the requested hop. Add a destination
+scope only after verifying
+that the redirect is an intended production path. Custom adapters must return a
+single-hop response with automatic redirect handling disabled.
+
 ## PathTraversalRejected
 
 The manifest contains an invalid path:
@@ -56,6 +84,21 @@ Check:
 - `apply-plan.json` was written.
 - The installation directory allows replacement.
 - No other updater process is actively operating on the same installation.
+
+The default launcher does not elevate; it inherits the caller's current
+credentials. Do not retry the helper manually as administrator or root against
+plans/state from a lower-privileged writable directory. Correct
+the installation ownership/ACL, or use a separately authenticated privileged
+broker that validates trusted roots, ownership, a one-time request, and the
+restart command. The broker must also independently verify signed release
+authorization and rebuild or validate the complete plan, or require a plan
+signed by a trusted release authority; a caller-supplied digest is not
+authorization.
+
+If a privileged deployment reports untrusted state or apply-plan ownership,
+stop rather than changing permissions ad hoc. Verify the actual ACLs for the
+install root, `.autoupdater`, custom `tempDir`, helper and restart executables,
+then recreate the request through the trusted application channel.
 
 An ordinary `.autoupdater/update.lock` file is expected to remain on disk. Its
 presence does not mean the lock is held, and its contents are not used as PID

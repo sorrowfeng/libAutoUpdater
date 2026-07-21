@@ -18,8 +18,8 @@ No custom update server is required. Release manifests and files can be hosted o
 - File-level incremental updates using SHA-256.
 - Safe self-replacement through `autoupdater_apply`.
 - Apply rollback after failed replacement or verification.
-- Optional detached manifest signatures.
-- Anti-downgrade, anti-replay, and trusted base URL checks.
+- Configurable detached manifest signatures, required by the production network policy.
+- Anti-downgrade, bounded-expiry, and mandatory network URL-scope checks.
 - Native HTTPS backends on Windows and macOS, with libcurl available everywhere.
 - GUI-independent core with Qt and CLI examples.
 - Testable interfaces for network, hashing, filesystem, signatures, process launch, dispatch, and state storage.
@@ -33,7 +33,7 @@ No custom update server is required. Release manifests and files can be hosted o
 | Core check / plan / download / apply flow | Implemented |
 | External updater process | Implemented |
 | Rollback and update lock | Implemented |
-| Manifest signatures | Optional, OpenSSL-backed |
+| Manifest signatures | Configurable, OpenSSL-backed; required for production HTTP(S) |
 | Native HTTPS on Windows/macOS | WinHTTP / CFNetwork |
 | Linux HTTPS | libcurl |
 | Qt integration | Optional example adapter |
@@ -69,6 +69,7 @@ The demo creates a local `1.0.0` install tree, fetches a `2.0.0` manifest from t
 autoupdater::Config config;
 config.appId = "com.example.myapp";
 config.manifestUrl = "https://example.com/updates/releases/1.4.0/windows-x64/manifest.json";
+config.security.allowedBaseUrls = {"https://example.com/updates/releases/"};
 config.currentVersion = autoupdater::Version::parse("1.3.0").value();
 config.installDir = "C:/Program Files/MyApp";
 config.updaterExecutable = "C:/Program Files/MyApp/autoupdater_apply.exe";
@@ -78,6 +79,20 @@ autoupdater::Updater updater(config);
 updater.setCallbacks(callbacks);
 updater.checkAndDownloadAsync();
 ```
+
+Every HTTP(S) configuration requires a non-empty, query-free
+`allowedBaseUrls`; the manifest, redirects, selected index target, artifact
+base, artifacts, and detached signatures must remain inside those scopes. For a
+production network channel, also keep TLS verification enabled, require
+detached signatures, and embed the trusted release public key:
+
+```cpp
+config.network.verifyTls = true;
+config.security.requireManifestSignature = true;
+config.security.publicKeyPem = embeddedReleasePublicKeyPem;
+```
+
+Unsigned network feeds are suitable only for explicit development/test use.
 
 When an update is ready, call `applyAndRestartAsync()` from your UI or command flow. When the new version starts successfully, call:
 
@@ -140,9 +155,10 @@ See [docs/ecosystem.md](docs/ecosystem.md).
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork uses system frameworks |
 | Linux | GCC, Clang | libcurl | Package-manager-owned installs should usually use the package manager |
 
-Signature verification is optional. The default verifier uses OpenSSL 1.1.1 or
-newer when available and accepts Ed25519 or RSA PKCS#1 v1.5/SHA-256 with RSA
-keys of at least 2048 bits. Applications can inject their own
+Signature verification remains runtime-configurable for local/test workflows,
+but the production HTTP(S) policy requires it. The default verifier uses
+OpenSSL 1.1.1 or newer when available and accepts Ed25519 or RSA PKCS#1
+v1.5/SHA-256 with RSA keys of at least 2048 bits. Applications can inject their own
 `ISignatureVerifier`; see [docs/security-model.md](docs/security-model.md) for
 the algorithm and key-rotation policy.
 
@@ -271,8 +287,8 @@ The same flow runs in CI on Ubuntu/libcurl, Windows/WinHTTP, and macOS/CFNetwork
 | --- | --- | --- |
 | TLS verification | Enabled by default | Keep enabled |
 | File SHA-256 | Required per managed file | Required |
-| Manifest signatures | Optional | Require for public channels |
-| Trusted base URLs | Optional | Use for public channels |
+| Manifest signatures | Disabled by default | Required for production HTTP(S) channels |
+| Trusted base URLs | Required for HTTP(S) | Use minimal query-free HTTPS scopes |
 | External apply process | Required | Always use it |
 | Rollback | Implemented | Backups remain retained after healthy confirmation |
 | Path traversal protection | Enforced | Do not bypass manifest validation |
@@ -284,7 +300,11 @@ See [SECURITY.md](SECURITY.md) and [docs/security-model.md](docs/security-model.
 
 ### Is libcurl required?
 
-No. Local paths and `file://` URLs always work. Windows can use WinHTTP, macOS can use CFNetwork, and Linux typically uses libcurl for HTTP/HTTPS.
+No. The built-in `file://` transport needs no libcurl, but `Updater` requires an
+absolute `file://` manifest URL and the explicit
+`security.allowLocalFileUrls=true` opt-in; a raw local path is not a valid
+`manifestUrl`. Windows can use WinHTTP, macOS can use CFNetwork, and Linux
+typically uses libcurl for HTTP/HTTPS.
 
 ### Does this require Qt?
 

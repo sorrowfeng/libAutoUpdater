@@ -18,9 +18,40 @@ Not directly solved:
 - The caller disables `verifyTls` or signature verification and still trusts an untrusted network.
 - A package-manager-owned install directory is replaced directly by the application.
 
+## Production Deployment Baseline
+
+The runtime keeps some controls configurable for tests and compatibility. A
+production deployment is secure only when the integration enforces all of the
+following:
+
+- Every HTTP(S) update uses HTTPS, keeps `NetworkOptions::verifyTls=true`, and
+  supplies a non-empty, query-free `allowedBaseUrls` narrowed to the release
+  paths the application actually needs.
+- Every production network feed sets `requireManifestSignature=true`, embeds a
+  trusted public key, and signs the exact bytes of both the index (when used)
+  and the selected release manifest. SHA-256 artifact hashes do not replace
+  manifest authentication.
+- Release manifests carry a bounded `expiresAt`, clients keep
+  `rejectExpiredManifest=true`, and the publisher removes or denies obsolete
+  release metadata according to a documented retention policy. Clients that
+  require resistance to local clock rollback need a trusted-time or
+  server-assisted policy outside this library.
+- The installation root, `.autoupdater` state, custom staging directory, apply
+  plans, journals, backups, updater executable, and restart executable are not
+  writable by a principal less trusted than the application/helper processes
+  that consume them.
+- The default launcher inherits the calling process's existing credentials and
+  performs no elevation. The helper is not an authorization boundary. A
+  privileged broker requires a separate authenticated protocol and the controls
+  described below.
+- Long-lived bearer tokens, passwords, and reusable credentials are never put
+  in update URLs. Short-lived signed URLs must use narrowly scoped credentials
+  and still be treated as secrets by surrounding telemetry and infrastructure.
+
 ## Manifest Signature
 
-Recommended for production:
+The runtime default is `false`. Detached signatures are mandatory for production
+HTTP(S) feeds:
 
 ```cpp
 config.security.requireManifestSignature = true;
@@ -75,7 +106,9 @@ an application store.
 
 ## HTTPS and TLS
 
-`NetworkOptions::verifyTls` defaults to `true`. Do not disable TLS verification in production.
+`NetworkOptions::verifyTls` defaults to `true`. The code permits an initial
+`http:` URL when it is explicitly allowlisted, but production scopes must use
+`https:` and must not disable certificate verification.
 
 Signatures and HTTPS are complementary:
 
@@ -90,6 +123,27 @@ boundaries to prevent bypasses such as
 `https://trusted.example.com.evil.com`. URL paths and queries are validated as
 separate URI components, repeated path separators are preserved, and fragments
 are rejected.
+
+For every HTTP(S) update the allowlist is mandatory and must contain only
+query-free absolute HTTP(S) URLs. Configuration fails before network access when
+it is empty, malformed, or does not contain the initial manifest URL. Keep each
+scope as narrow as practical. Local `file:` manifests use a different boundary
+and require the explicit `allowLocalFileUrls=true` opt-in.
+
+## Redirect Handling
+
+Redirects are coordinated by the core rather than delegated to a network
+backend. Only 301, 302, 303, 307, and 308 are followed, up to
+`NetworkOptions::maxRedirects` (five by default). Every hop is resolved and
+checked again against the allowlist. Cross-origin redirects work only when both
+origins are explicitly allowed; HTTPS-to-HTTP downgrade, file/network mode
+switches, loops, missing or duplicate `Location`, and an effective URL reported
+by the adapter as different from the requested hop fail closed.
+
+Bundled adapters disable automatic redirect following. A custom
+`INetworkClient` must do the same and must report the requested URL as its
+effective URL for a single hop. Range validators are not forwarded across a
+redirect boundary.
 
 ## Path Safety
 
@@ -134,6 +188,18 @@ syntax is rejected even when `rejectExpiredManifest` is disabled. Expiry still
 depends on the local wall clock and does not by itself prevent clock rollback or
 replay of a signed manifest that omits `expiresAt`.
 
+The implemented downgrade baseline is the greater of the running version and
+the persisted `lastAcceptedVersion`. Release `publishedAt` and index
+`generatedAt` are syntax-validated but are not compared monotonically, and the
+persisted `lastAcceptedReleaseId` is not a planner rejection condition. An index
+has no client-enforced expiry of its own. Therefore this is a version rollback
+barrier plus an optional release-manifest expiry check, not a total
+release-sequence anti-replay protocol. An old signed index or release manifest
+that remains downloadable can still be accepted when it selects an unexpired
+release above the client's baseline. Production publishers must use bounded
+release expiry, control old-metadata availability, protect local state, and
+document any stronger freshness service they require.
+
 Downgrades are accepted only when all of the following are true:
 
 - The exact release manifest has a valid detached signature.
@@ -175,6 +241,53 @@ bodies, signatures, public or private key material, environment secrets, or
 process arguments into error messages. Operational displays must omit URL
 userinfo, query strings, and fragments because signed URLs commonly carry
 credentials there.
+
+Excluding query parameters from the resume-state key prevents one persistence
+path from storing signed-URL credentials; it is not an end-to-end secrecy
+guarantee. Network libraries, proxies, crash dumps, and application telemetry
+may still observe a requested URL. Never use long-lived URL credentials. Use
+short-lived, least-privilege signed URLs only when required, and redact them in
+all surrounding systems.
+
+## Local Filesystem and Privilege Boundary
+
+The default state lives at `installDir/.autoupdater/state.json`; apply plans,
+staging files, journals, and backups are likewise security-sensitive inputs or
+evidence. Newly created POSIX private directories use `0700`, and ordinary
+private payload files start as `0600`, but rollback backups may deliberately
+preserve source permission bits. Their confidentiality therefore also depends
+on the private parent directory and deployment ACL. The library does not repair
+an already existing permissive ancestor. Windows private paths inherit the
+deployment's ACL; the library does not synthesize or audit a restrictive DACL.
+Installers must create and verify the production ownership and ACLs on every
+supported platform, including any custom `tempDir`.
+
+An injected `IStateStore` must provide equivalent access control, bounded
+storage, inter-process synchronization, atomic replace/compare-and-set
+semantics, and crash durability. Moving state to a database or service does not
+remove its role in downgrade, pending-update, and rollback decisions.
+
+The default launcher uses `CreateProcessW` or `execv` with the current process's
+credentials; it does not invoke UAC, `sudo`, a privileged service, or an
+authenticated broker. The helper's
+`--plan-sha256`, `--install-root`, and intent checks bind command-line values to
+one another and detect accidental/tampered plan changes, but the digest is not
+an authorization credential. A principal able to invoke a privileged helper
+could otherwise provide its own plan and matching digest.
+
+Do not expose the stock command line directly as an elevated entry point. A
+privileged integration must authenticate the caller, restrict install/staging/
+plan roots, verify owner and ACLs, bind digest, intent, install root, and a
+single-use nonce to one authorization session, and generate or allowlist the
+restart command on the trusted side. In addition, the privileged side must
+independently authorize update content: verify the signed release metadata and
+rebuild or validate every plan field, or require a plan signed by a trusted
+release authority. It must publish the accepted plan into a broker-only writable
+root and must not treat a caller-supplied digest, nonce, or file owner as content
+authorization. It must also define whether restart drops privileges. Without
+those controls, use a launcher that keeps the helper at the same privilege level
+as the application and fail with a permission error when the installation is
+not writable.
 
 ## Apply and Rollback
 

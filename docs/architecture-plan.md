@@ -18,7 +18,8 @@ Goals:
 - Recovery path when a newly applied version is not confirmed healthy.
 - Auditable structured artifacts: manifests, apply plans, state files, and transaction journals.
 - Static-file release hosting.
-- Security-first behavior: TLS verification, SHA-256 verification, manifest signatures, anti-downgrade, and anti-replay.
+- Security-first behavior: TLS verification, SHA-256 verification, manifest
+  signatures, anti-downgrade, and bounded-expiry replay mitigation.
 
 Non-goals for the first major implementation line:
 
@@ -731,7 +732,7 @@ sha256 downloaded file
 
 ### 8.3 Manifest Signature
 
-Production channels should require detached manifest signatures:
+Production HTTP(S) channels must require detached manifest signatures:
 
 ```text
 manifest.json
@@ -776,7 +777,7 @@ manifest has a valid signature, that manifest sets `allowDowngrade=true`, and
 the local application explicitly sets `rejectDowngrade=false`. A verified index
 manifest never substitutes for verification of the selected release manifest.
 
-### 8.5 Anti-Replay
+### 8.5 Replay Mitigations and Limits
 
 The manifest may include:
 
@@ -786,7 +787,15 @@ The manifest may include:
 The client parses timestamps as instants and rejects a manifest at and after its
 `expiresAt` boundary when `rejectExpiredManifest` is enabled. This check trusts
 the local wall clock; detecting clock rollback or establishing a trusted time
-source remains an integration concern.
+source remains an integration concern. `expiresAt` is optional. Release
+`publishedAt` and index `generatedAt` are syntax-validated but are not compared
+monotonically; an index has no client-enforced expiry of its own.
+`lastAcceptedReleaseId` is persisted without participating in planner rejection.
+The current guarantee is therefore a version rollback barrier plus an optional
+release-manifest expiry check, not a complete release-sequence anti-replay
+protocol. Production feeds should publish bounded release expiry times and
+remove or deny obsolete signed index and release metadata according to an
+explicit retention policy.
 
 ### 8.6 Download Source Restrictions
 
@@ -796,9 +805,11 @@ source remains an integration concern.
 std::vector<std::string> allowedBaseUrls;
 ```
 
-Even after a signature passes, files may only be downloaded from trusted base
-URLs. If an index manifest is used, the selected release manifest URL is also
-checked. URLs are parsed into scheme, authority, path, and query components.
+This list is mandatory and query-free for every HTTP(S) configuration, including
+unsigned development configurations. Even after a signature passes, files may
+only be downloaded from trusted base URLs. If an index manifest is used, the
+selected release manifest URL is also checked. URLs are parsed into scheme,
+authority, path, and query components.
 Relative references follow URI merge and dot-segment rules without collapsing
 meaningful repeated `/` path separators. Raw characters must be valid for their
 specific URI component, and artifact path bytes are percent-encoded per path
@@ -806,6 +817,35 @@ segment. Fragments are rejected for update requests. Query data is never
 treated as path data: a default detached-signature suffix is inserted before
 the query, while an artifact directory derived from a manifest URL does not
 inherit that manifest query.
+
+The core follows only 301/302/303/307/308, up to the configured hop limit, and
+re-authorizes every resolved destination. Cross-origin transitions require
+both origins to be explicitly allowed. HTTPS-to-HTTP downgrade, redirect loops,
+ambiguous `Location` headers, and an adapter-reported unexpected effective URL
+fail closed.
+Bundled adapters disable automatic redirects; custom adapters must honor the
+same one-hop contract.
+
+### 8.7 Local Privilege Boundary
+
+The default launcher inherits the application's current credentials and
+contains no UAC, `sudo`, privileged-service, or broker protocol. An already
+elevated application therefore launches an elevated helper. Apply-plan digests
+bind the bytes authorized by that caller but are not cross-privilege
+credentials.
+Production installers must protect the install root, `.autoupdater` state,
+custom staging roots, plans, journals, backups, helper binary, and restart
+binary from less-trusted writers.
+
+An integration that adds elevation must use an authenticated invocation channel
+with fixed trusted roots, owner/ACL checks, a one-time nonce, binding of plan
+digest/intent/install root to the authorization session, and a trusted policy
+for `restartCommand`. The privileged side must also independently verify signed
+release authorization and rebuild or fully validate the plan, or require a plan
+signed by a trusted release authority, then publish it into a broker-only
+writable root. A caller-supplied digest, nonce, and file owner are not content
+authorization. The stock helper command line must not be exposed directly as an
+elevated service interface.
 
 ## 9. Platform Strategy
 
@@ -1079,7 +1119,7 @@ Deliver:
 - OpenSSL verifier.
 - `allowedBaseUrls`.
 - Anti-downgrade.
-- Anti-replay.
+- Bounded-expiry replay mitigation with documented limitations.
 
 Acceptance:
 
@@ -1122,12 +1162,16 @@ Required:
 - Packaging script.
 - Unit tests.
 
-Recommended:
+Required for production HTTP(S) deployments:
 
 - Detached manifest signatures.
-- Anti-downgrade.
-- Anti-replay.
 - `allowedBaseUrls`.
+- TLS verification.
+- `rejectDowngrade=true`, `rejectExpiredManifest=true`, and bounded manifest
+  expiry.
+
+Recommended application integration:
+
 - Healthy confirmation.
 
 Deferred:
@@ -1141,13 +1185,18 @@ Deferred:
 
 ### 15.1 Insufficient Permissions
 
-System install directories may not allow replacement by a normal user.
+System install directories may not allow replacement by a normal user. The
+default launcher inherits the caller's existing credentials and does not
+request elevation.
 
 Mitigation:
 
-- Return explicit error codes.
-- Document permission requirements.
-- Add elevated helper support later if needed.
+- Return explicit error codes, attempt journaled rollback for partial changes,
+  and preserve recovery evidence if rollback cannot complete.
+- Have the installer establish and verify least-privilege ownership and ACLs
+  for every updater-controlled root.
+- If a product adds an elevated broker, use a separate authenticated protocol;
+  do not grant elevation to the stock helper command line.
 
 ### 15.2 Broken macOS Code Signature
 
