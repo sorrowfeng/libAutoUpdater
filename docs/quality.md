@@ -32,8 +32,8 @@ GitHub Actions covers:
 - A mandatory-OpenSSL contract that proves missing crypto fails configuration
   and exercises the real signature verifier when OpenSSL is present.
 - Offline deployment-evidence validator regression tests, including signing
-  workflow JSON-parser consistency. These test decision rules, not production
-  deployment state.
+  workflow JSON-parser consistency and exact dependency/advisory evidence.
+  These test decision rules, not production deployment state.
 - Release configurations rerun tests before packaging, and the publishing job
   accepts only tags whose exact `main` commit already passed CI.
 

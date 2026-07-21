@@ -180,3 +180,168 @@ production evidence. Set `validUntil` to the organization's approved short
 review interval, and invalidate the snapshot immediately when the workflow,
 parser executable, or behavior-affecting configuration changes; the validator
 does not choose that policy interval for the deployment owner.
+
+## RISK-005: exact dependencies and authoritative advisories
+
+Status: **OPEN — no exact production inventory, authoritative advisory export,
+or signed-off component review is committed to this repository.**
+
+The repository cannot establish production dependency safety from source
+constraints alone. CMake records selected CURL and OpenSSL versions when their
+package metadata exposes them, but may emit `NOASSERTION`; WinHTTP and CFNetwork
+depend on the deployed OS build; the optional Qt example is outside that CMake
+dependency list. Conan uses version ranges, Homebrew resolves rolling formulae,
+and a vcpkg baseline does not prove the installed triplet, features, or
+transitive versions. GitHub Actions are pinned to full commit SHAs, but runner
+images and installed system packages still require the exact build-run capture.
+The release SBOM contains selected build observations, not a complete dependency
+inventory or an advisory verdict.
+
+Copy `deployment-evidence/risk-005-inventory.example.json` outside the source
+tree. For every production platform and release profile, retain protected raw
+captures for:
+
+- the exact source commit and effective CMake/build configuration;
+- package-manager locks and installed direct plus transitive package lists;
+- runtime-linked libraries, OS build/revision, and vendor-backported packages;
+- optional CURL, OpenSSL, Qt, WinHTTP, and CFNetwork applicability;
+- every production-build GitHub Action at its full 40-character commit SHA;
+- compiler, linker, CMake, packaging tools, and runner image identity.
+
+List each protected capture in `captures`, bind its bytes with SHA-256, and pass
+it as `--evidence <id>=<path>`. Use `EXACT` only for a fully resolved deployed
+coordinate expressed as a matching package URL (purl) or CPE. The coordinate's
+canonical package name and version must match the separate component fields,
+and the purl package type must be valid for the declared dependency scope. Use
+a complete, simple CPE 2.3 name when a CPE is supplied. Platform and native HTTP
+components require a CPE whose part, vendor, and product are consistent with
+the inventory's Windows, macOS, or supported Linux distribution identity; this
+prevents Windows evidence from being relabeled as another platform. CPE product
+families use explicit allowlists rather than name prefixes. An explicit
+`target_sw` or `target_hw` must also match the deployment platform or normalized
+architecture; wildcard values defer to the bound profile fields. Exact version
+tokens use a conservative identifier syntax; whitespace, range
+operators, comma-separated sets, wildcards, and rolling aliases such as
+`latest`, `current`, or `vNext` cannot be promoted to `EXACT`. A package
+baseline without installed results and missing transitive dependencies are also
+`OPEN`. The validator evaluates only the parsed version segment, so an unrelated
+package name containing text such as `latest` is not rejected.
+
+Purl percent escapes must be valid UTF-8. Qualifiers use unique, sorted
+lowercase `key=value` pairs, and namespace/subpath segments cannot be empty,
+`.` or `..`. An `arch`/`architecture` qualifier must match the normalized
+deployment architecture and cannot contain wildcard syntax. Debian `all` and
+APK/RPM `noarch` are accepted as ecosystem-specific neutral values; Homebrew
+`universal`/`universal2` is accepted only for x64 or arm64 macOS profiles.
+The common `cpu`, `target_arch`, `target_cpu`, and `target_hw` aliases follow the
+same architecture rule. Explicit `os`, `platform`, `target_os`,
+`target_platform`, `target_sw`, `distro`, and `distro_name` values must use a
+known platform name with an optional numeric release suffix and match the
+deployment platform. A vcpkg `triplet` must bind the same architecture and
+platform. APK, Debian, and RPM coordinates are
+Linux-only, while Homebrew is limited to Linux and macOS. Simple CPE fields
+allow only conservative unescaped identifier characters; whitespace and escaped
+fields require a reviewed parser extension. Non-OS CPE component names must
+match the product exactly after normalization; OS display names use only the
+documented product aliases.
+An exact OpenSSL, CURL, Qt, native HTTP, package-manager, or OS scope must also
+contain at least one direct component whose canonical coordinate identifies the
+scope's primary component. This prevents an unrelated package such as zlib or
+CURL from occupying the OpenSSL scope while still allowing separately reviewed
+transitive components. Windows native HTTP accepts only an application CPE for
+WinHTTP, macOS accepts only CFNetwork, and the OS scope accepts OS products but
+not those native API identities. Linux native HTTP remains `NOT_APPLICABLE`
+unless a reviewed implementation and identity mapping are added.
+
+The accepted Linux CPE vendors cover AlmaLinux, Alpine Linux, Amazon Linux,
+Ubuntu/Canonical, CentOS, Debian, Fedora, the Linux kernel, openSUSE, Oracle
+Linux, Red Hat, Rocky Linux, and SUSE. Add a reviewed validator change and
+regression case before using a different vendor identity; do not relabel it as
+`generic`.
+
+The `build-configuration` capture is strict JSON containing `schemaVersion`,
+`deploymentId`, `platform`, `architecture`, the same nonzero `sourceCommit`,
+`complete`, and one `scopeApplicability` entry for each of the eight scopes. It
+is the mandatory proof for `NOT_APPLICABLE`, and `os-runtime` plus `build-tools`
+cannot be marked inapplicable. An `os-version` capture is also strict JSON with
+the same profile and commit fields plus `complete` and a `components` array of
+exact `{componentId, version, coordinate}` records. A complete OS capture is
+compared in both directions with the exact platform components that cite it.
+
+A `workflow-definition` capture is strict JSON with `schemaVersion`, `complete`,
+and an `actions` array of `{coordinate, version}` records. Its complete Action
+set is compared in both directions with the inventory. Coordinates may include
+an Action subpath, such as `github/codeql-action/init@<commit>`, but every
+version and coordinate must end in the same full nonzero 40-character commit;
+the inventory component name must equal the coordinate's repository/subpath,
+and empty, `.` and `..` path segments are rejected.
+Generate this normalized capture from the exact bound workflow tree, not from a
+hand-selected list.
+
+Every exact component and exact scope must cite a capture kind capable of
+establishing that scope: workflow definitions for Actions, OS/runtime evidence
+for platform components, toolchain/package evidence for build tools, and
+lock/package/runtime evidence for libraries. A build-configuration capture
+proves applicability but cannot by itself prove an exact component version.
+
+Next copy `deployment-evidence/risk-005-review.example.json`, hash the exact
+inventory bytes into `inventorySha256`, and obtain current exports from the
+authoritative upstream, platform vendor, distribution, or GitHub security
+source appropriate to each component. Every source record names its authority,
+binds the exact inventory digest, and explicitly lists the component IDs and
+exact `{version, coordinate}` pairs it covers; a broad `upstream-security`
+label alone is insufficient. `coveredComponents` entries contain
+`componentId`, `version`, and `coordinate`. Remediation targets additionally
+contain `advisoryId`, so changing a package ecosystem or revision invalidates
+both the authority and remediation bindings.
+Authority kind is derived from the exact coordinate, not only its broad scope:
+APK, Homebrew, Debian, and RPM package revisions require
+`distribution-security`; Windows and macOS platform CPEs require
+`platform-security`; Linux distribution CPEs require `distribution-security`;
+known distribution vendors in application CPEs also require
+`distribution-security`; and generic upstream coordinates require
+`upstream-security`. A distribution backport therefore cannot be cleared only
+by an upstream version advisory.
+Bind every source export as another `--evidence` item and cite it from the
+component review. Record exact deployed package revisions: the validator
+deliberately does not interpret OpenSSL letter releases, distribution backports,
+Qt revisions, or ecosystem version ranges. That applicability decision remains
+with the named reviewer.
+
+Run the fully local check with no registry or advisory-network access:
+
+```text
+python tools/dependency_review.py \
+  --inventory <protected-production-inventory.json> \
+  --review <protected-advisory-review.json> \
+  --evidence <capture-id>=<protected-capture> \
+  --evidence <source-id>=<protected-authoritative-export> \
+  --evaluated-at <trusted-current-rfc3339-time>
+```
+
+Repeat `--evidence` for every declared inventory capture, advisory source, and
+verified remediation artifact. A `PASS` requires all eight scopes, at least one
+exact component, complete byte-bound captures, current ecosystem-appropriate
+authority sources, an exact review for every resolved component, and separate
+production sign-off of the inventory and advisory review. Known affected
+components with no remediation, planned remediation, or accepted risk return
+`FAIL`. A verified mitigation requires a bound remediation-evidence source that
+names the same inventory, component, exact version, and advisory ID; evidence
+for another coordinate, component, or CVE cannot be reused. Unknown
+applicability remains `OPEN`. Inventory, review, and source validity windows are
+capped at seven days; raw captures more than seven days older than the inventory
+are rejected. An advisory source must not predate the inventory, and a review
+cannot outlive its inventory or earliest source. Profile, architecture,
+hash/version/source, unpinned or omitted Action, future snapshot, and internally
+contradictory completeness mismatches fail closed. Missing, incomplete, or
+expired evidence remains `OPEN`;
+malformed evidence returns exit code `3` and never emits raw component data,
+capture paths, versions, or advisory contents.
+
+The example files intentionally return `OPEN`. The validator does not download
+or certify advisory data, parse arbitrary lock/package-list formats, prove that
+a capture omitted no component, or authenticate a reviewer. Those content and
+identity claims remain part of the protected, named attestation; repository CI
+exercises only structural bindings and decision rules. Refresh both inventory
+and advisory evidence whenever the build, runner, dependency graph, OS image,
+or authority source changes, even before the seven-day limit.

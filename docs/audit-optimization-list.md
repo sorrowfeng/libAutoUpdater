@@ -392,7 +392,9 @@ risk. Each item records its separate production status; see
   - Determine whether any external approval or signing system parses the JSON
     before signing and compare duplicate-key and Unicode behavior.
 
-- [ ] **RISK-005 — Perform dependency advisory review**
+- [x] **RISK-005 — Perform dependency advisory review**
+  - Production status: **OPEN**; exact production inventories and authoritative
+    advisory snapshots have not been supplied.
   - Resolve the exact production versions of OpenSSL, CURL, Qt, build Actions,
     and package-manager dependencies, then check authoritative advisories.
 

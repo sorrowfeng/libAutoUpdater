@@ -124,6 +124,26 @@ Signatures and HTTPS are complementary:
 - HTTPS protects the transport path and privacy.
 - Manifest signatures protect update integrity if the static server is compromised.
 
+## Dependency and Build Supply Chain
+
+Compatibility minimums are not security endorsements. Production releases must
+resolve the actual CURL, OpenSSL, Qt, native platform, OS/runtime, package
+manager, transitive, build-tool, and CI Action versions used for each artifact,
+then compare those exact coordinates with current authoritative advisories.
+Distribution backports must be reviewed using their full package revision and
+vendor advisory source rather than only an upstream version string.
+
+Workflow Actions are pinned to immutable commit SHAs and updated through review,
+but a pinned Action does not freeze the hosted runner image or system packages.
+Likewise, an SPDX SBOM records the components it was given; it does not prove
+that the inventory is complete or that no advisory applies. The offline
+[dependency review investigation](deployment-investigations.md#risk-005-exact-dependencies-and-authoritative-advisories)
+binds protected build and OS captures to the deployment ID, platform,
+architecture, source commit, and exact component coordinates. It also binds
+current advisory exports to the same inventory while deliberately leaving
+production status `OPEN` when exact versions, transitive coverage, authority
+data, or sign-off are absent.
+
 ## Base URL Allowlist
 
 `SecurityOptions::allowedBaseUrls` restricts manifest URLs and release `baseUrl`

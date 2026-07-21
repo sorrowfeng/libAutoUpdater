@@ -173,6 +173,16 @@ if(Python3_Interpreter_FOUND)
             --validator ${libAutoUpdater_SOURCE_DIR}/tools/check_external_json_parser.py
             --corpus ${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/json-parser-consistency-validation)
+    add_test(
+        NAME libAutoUpdater_dependency_review_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/dependency_review_tool_tests.py
+            --validator ${libAutoUpdater_SOURCE_DIR}/tools/dependency_review.py
+            --inventory-example ${libAutoUpdater_SOURCE_DIR}/docs/deployment-evidence/risk-005-inventory.example.json
+            --review-example ${libAutoUpdater_SOURCE_DIR}/docs/deployment-evidence/risk-005-review.example.json
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/dependency-review-validation)
+    set_tests_properties(libAutoUpdater_dependency_review_validation PROPERTIES TIMEOUT 60)
 
     find_program(LIBAUTOUPDATER_OPENSSL_EXECUTABLE NAMES openssl)
     if(LIBAUTOUPDATER_OPENSSL_EXECUTABLE)

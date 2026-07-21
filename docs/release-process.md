@@ -69,6 +69,13 @@ The GitHub release workflow:
 7. Waits for approval through the `release` environment and publishes the
    GitHub Release from the only job with `contents: write`.
 
+The generated SBOM is not an advisory clearance. Before describing an
+application artifact as production-ready, capture its exact direct, transitive,
+system, build, and CI dependencies and run the protected offline review in
+[the dependency investigation](deployment-investigations.md#risk-005-exact-dependencies-and-authoritative-advisories).
+That review is intentionally not satisfied by repository fixtures or wired to
+the public release job without real production evidence.
+
 ## Release Artifacts
 
 Each platform should include:
@@ -106,5 +113,7 @@ After publishing, verify:
 - The Release page is not a draft.
 - All three platform ZIPs exist.
 - Each platform SBOM exists and contains the expected dependency components.
+- The separate exact dependency/advisory review is current for the released
+  platform profile, or its remaining status is explicitly recorded as `OPEN`.
 - The Release workflow passed. Its source gate independently verified exact
   `main` CI; the repository ruleset required CodeQL before that commit merged.

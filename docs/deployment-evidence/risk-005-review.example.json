@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "inventorySha256": null,
+  "capturedAt": "2026-07-21T00:00:00Z",
+  "validUntil": "2026-07-22T00:00:00Z",
+  "sources": [],
+  "componentReviews": [],
+  "reviewComplete": false,
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}

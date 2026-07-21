@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "deployment": {
+    "id": "replace-with-release-profile-id",
+    "environment": "test",
+    "platform": "windows",
+    "architecture": "x64",
+    "sourceCommit": "0000000000000000000000000000000000000000",
+    "capturedAt": "2026-07-21T00:00:00Z",
+    "validUntil": "2026-07-22T00:00:00Z",
+    "buildConfigurationCaptureId": null
+  },
+  "coverage": [
+    {
+      "scope": "openssl",
+      "status": "OPEN",
+      "reason": "replace with the exact deployed OpenSSL version or evidence that it is not applicable",
+      "captureIds": []
+    },
+    {
+      "scope": "curl",
+      "status": "OPEN",
+      "reason": "replace with the exact deployed CURL version or evidence that it is not applicable",
+      "captureIds": []
+    },
+    {
+      "scope": "qt",
+      "status": "OPEN",
+      "reason": "replace with the exact deployed Qt version or evidence that it is not applicable",
+      "captureIds": []
+    },
+    {
+      "scope": "native-http",
+      "status": "OPEN",
+      "reason": "resolve the WinHTTP or CFNetwork platform build when applicable",
+      "captureIds": []
+    },
+    {
+      "scope": "github-actions",
+      "status": "OPEN",
+      "reason": "capture every production build Action at its full commit SHA",
+      "captureIds": []
+    },
+    {
+      "scope": "package-manager",
+      "status": "OPEN",
+      "reason": "capture resolved direct and transitive package-manager versions",
+      "captureIds": []
+    },
+    {
+      "scope": "os-runtime",
+      "status": "OPEN",
+      "reason": "capture the exact production operating-system and runtime build",
+      "captureIds": []
+    },
+    {
+      "scope": "build-tools",
+      "status": "OPEN",
+      "reason": "capture exact compiler, linker, CMake, and packaging tool versions",
+      "captureIds": []
+    }
+  ],
+  "captures": [],
+  "components": [],
+  "inventoryComplete": false,
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}
