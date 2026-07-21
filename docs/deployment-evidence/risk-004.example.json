@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "deployment": {
+    "id": "replace-with-signing-workflow-id",
+    "environment": "test",
+    "capturedAt": "2026-07-21T00:00:00Z",
+    "validUntil": "2026-07-22T00:00:00Z",
+    "workflowSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "flow": {
+    "parserUsed": null,
+    "signsExactInputBytes": null,
+    "rejectsOnParseFailure": null,
+    "parser": null,
+    "resultsSha256": null
+  },
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}

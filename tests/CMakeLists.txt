@@ -165,6 +165,14 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/state_security_tool_tests.py
             --state-security ${libAutoUpdater_SOURCE_DIR}/tools/inspect_state_security.py
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/state-security-validation)
+    add_test(
+        NAME libAutoUpdater_json_parser_consistency_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/json_parser_consistency_tests.py
+            --validator ${libAutoUpdater_SOURCE_DIR}/tools/check_external_json_parser.py
+            --corpus ${CMAKE_CURRENT_SOURCE_DIR}/json_conformance_corpus.txt
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/json-parser-consistency-validation)
 
     find_program(LIBAUTOUPDATER_OPENSSL_EXECUTABLE NAMES openssl)
     if(LIBAUTOUPDATER_OPENSSL_EXECUTABLE)

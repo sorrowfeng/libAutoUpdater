@@ -74,7 +74,7 @@ def parse_json_bytes(contents: bytes) -> Any:
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=reject_nonfinite,
         )
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise EvidenceError(f"cannot parse evidence JSON: {error}") from error
 
 

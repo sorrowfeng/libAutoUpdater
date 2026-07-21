@@ -386,7 +386,9 @@ risk. Each item records its separate production status; see
   - Determine whether production URLs contain signed query parameters and
     inspect actual Windows, macOS, and Linux state-file permissions.
 
-- [ ] **RISK-004 — Verify JSON signing-service parser consistency**
+- [x] **RISK-004 — Verify JSON signing-service parser consistency**
+  - Production status: **OPEN**; no signed-off workflow or external parser
+    result snapshot is present.
   - Determine whether any external approval or signing system parses the JSON
     before signing and compare duplicate-key and Unicode behavior.
 

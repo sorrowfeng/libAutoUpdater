@@ -65,6 +65,15 @@ Guidance:
 - Embed the public key in the client, or distribute it through another trusted application channel.
 - Sign the original `manifest.json` bytes. Do not reformat JSON between signing and verification.
 
+An external approval or signing service that parses JSON is part of the trust
+boundary. It must reject the same ambiguous or invalid inputs as the client,
+make authorization decisions over the same decoded values, and still sign the
+exact bytes supplied to the client. The offline
+[parser-consistency investigation](deployment-investigations.md#risk-004-json-signing-service-parser-consistency)
+binds the deployed parser identity and configuration to the checked-in JSON
+conformance corpus. Repository tests do not attest the production signing
+service.
+
 ### Bundled Verifier Policy
 
 The OpenSSL-backed verifier accepts exactly these public-key and signature

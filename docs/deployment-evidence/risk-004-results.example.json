@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "corpusSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "capturedAt": "2026-07-21T00:00:00Z",
+  "validUntil": "2026-07-22T00:00:00Z",
+  "parser": {
+    "name": "replace-with-parser-name",
+    "version": "replace-with-parser-version",
+    "configurationSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "complete": false,
+  "cases": []
+}
