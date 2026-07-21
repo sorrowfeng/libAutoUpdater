@@ -74,11 +74,27 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/releases/1.2.3/windows-x64/
 ```
 
+The generator writes `dist/MyApp/manifest.json` by default; `--base-url` is the
+artifact base and does not determine the manifest's public URL. Once the JSON is
+final, sign its exact bytes for a production feed:
+
+```sh
+python tools/sign_manifest.py dist/MyApp/manifest.json \
+  --private-key release-private-key.pem \
+  --algorithm ed25519
+```
+
+The default detached-signature output is `manifest.json.sig`.
+
 For content-addressed storage, see [content-addressed-storage.md](content-addressed-storage.md).
 
 ## 4. Upload Server Files
 
-Upload `manifest.json` and every referenced file to any static HTTP/HTTPS server. The client only needs to access `Config::manifestUrl`.
+Upload `manifest.json`, `manifest.json.sig`, and every referenced file to the
+static HTTPS server. Set `Config::manifestUrl` to the published manifest URL;
+the default signature lookup appends `.sig` to that URL. Do not modify the
+manifest after signing. Development feeds that intentionally disable signatures
+may omit the `.sig` file, but production HTTP(S) feeds may not.
 
 ## 5. Apply an Update
 

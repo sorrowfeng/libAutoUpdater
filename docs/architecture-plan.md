@@ -945,6 +945,8 @@ libAutoUpdater::libAutoUpdater
 
 When `LIBAUTOUPDATER_BUILD_UPDATER=ON`, the installed package additionally
 exports `libAutoUpdater::autoupdater_apply` as an imported executable target.
+Packaging logic can locate it with
+`$<TARGET_FILE:libAutoUpdater::autoupdater_apply>`; it is not a link library.
 
 Build options:
 
@@ -955,10 +957,24 @@ LIBAUTOUPDATER_BUILD_EXAMPLES=ON
 LIBAUTOUPDATER_BUILD_TESTS=ON
 LIBAUTOUPDATER_WITH_CURL=ON
 LIBAUTOUPDATER_REQUIRE_CURL=OFF
+LIBAUTOUPDATER_WITH_WINHTTP=ON
+LIBAUTOUPDATER_WITH_CFNETWORK=ON
 LIBAUTOUPDATER_WITH_OPENSSL=ON
 LIBAUTOUPDATER_REQUIRE_OPENSSL=OFF
 LIBAUTOUPDATER_WITH_QT=OFF
 ```
+
+The default `BUILD_SHARED_LIBS=OFF` build is static; shared builds are supported
+on Windows, macOS, and Linux. Windows exports the DLL symbols and installs an
+import library. Installed Unix updater helpers use a relative runtime search
+path to the package `lib` directory.
+
+When `LIBAUTOUPDATER_WITH_CURL=ON` and CMake finds libcurl, the default core
+client selects it as the HTTP backend. WinHTTP and CFNetwork are fallbacks on
+Windows and macOS only when libcurl was not selected. Without an injected
+`INetworkClient`, the Linux default core client has no HTTP(S) backend when
+libcurl is absent. The Qt adapter can be injected from optional example source
+but is not installed or exported.
 
 Compatibility floors are libcurl 7.19.4, OpenSSL 1.1.1, and Qt 6.0. Production
 builds should use dependency versions that still receive upstream or vendor

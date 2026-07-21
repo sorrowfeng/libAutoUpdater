@@ -117,6 +117,19 @@ class MetadataToolTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, result.stdout + result.stderr)
 
+    def test_make_manifest_does_not_infer_manifest_url_from_artifact_base(self) -> None:
+        output = self.root / "published" / "metadata" / "release.json"
+        command = self.manifest_command(output, "2026-07-19T12:00:00Z")
+        base_url_index = command.index("--base-url") + 1
+        command[base_url_index] = "https://updates.example.test/objects/"
+
+        result = self.run_tool(MAKE_MANIFEST, *command)
+
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("Artifact base URL:", result.stdout)
+        self.assertIn("Configure Config::manifestUrl separately", result.stdout)
+        self.assertNotIn("https://updates.example.test/objects/manifest.json", result.stdout)
+
     def test_make_manifest_excludes_default_and_custom_generated_outputs(self) -> None:
         release = self.root / "release"
         release.mkdir()

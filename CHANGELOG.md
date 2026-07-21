@@ -37,6 +37,9 @@
   transaction fault injection, state-machine concurrency, real network and
   process adapters, explicit crypto skips, a persistent libFuzzer target, and
   installed-package apply/rollback plus signed-artifact validation.
+- Manifest tooling now reports the artifact base separately instead of
+  incorrectly deriving a client manifest URL from it; package and feed
+  documentation now matches installed targets and detached-signature names.
 
 ## v0.1.5 - 2026-06-05
 

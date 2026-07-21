@@ -112,6 +112,16 @@ find_package(libAutoUpdater CONFIG REQUIRED)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
+如果安装包以 `LIBAUTOUPDATER_BUILD_UPDATER=ON` 构建，还会导出 imported
+executable target `libAutoUpdater::autoupdater_apply`。打包逻辑可通过
+`$<TARGET_FILE:libAutoUpdater::autoupdater_apply>` 获取已安装 helper 的路径；
+它是可执行目标，不能传给 `target_link_libraries()`。
+
+默认 `BUILD_SHARED_LIBS=OFF` 构建静态库；Windows、macOS、Linux 都支持设为
+`ON` 的共享库构建。Windows 共享安装包含 DLL 和 import library；Unix 已安装
+helper 使用相对运行时搜索路径查找包内 `lib` 目录。部署布局详见
+[集成指南](docs/integration.md)。
+
 作为子目录引入：
 
 ```cmake
@@ -151,6 +161,12 @@ target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 | Windows | MSVC | WinHTTP, libcurl | WinHTTP 可避免分发 libcurl |
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork 使用系统 framework |
 | Linux | GCC, Clang | libcurl | package-manager-owned 安装通常应交给包管理器 |
+
+当 `LIBAUTOUPDATER_WITH_CURL=ON` 且 CMake 找到 libcurl 时，默认核心客户端会
+优先选择它；只有未选择 libcurl 时，Windows 和 macOS 才分别回退到 WinHTTP 或
+CFNetwork。没有注入其他 `INetworkClient` 时，Linux 默认核心客户端在缺少
+libcurl 的情况下只支持显式启用的 `file://` 传输。Qt 网络适配器可从
+`examples/qt` 示例源码显式注入，但不会安装或导出为包目标。
 
 签名校验在本地或测试流程中仍可配置关闭，但生产 HTTP(S) 策略要求启用。默认 verifier 使用 OpenSSL 1.1.1 或更高版本，仅接受 Ed25519，或 RSA PKCS#1 v1.5/SHA-256 且 RSA 密钥不少于 2048 位。应用也可以注入自己的 `ISignatureVerifier`；算法和密钥轮换策略见 [docs/security-model.md](docs/security-model.md)。
 
@@ -199,6 +215,18 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/releases/1.4.0/windows-x64/
 ```
 
+`make_manifest.py` 默认写入 `dist/MyApp/manifest.json`，但不会自动签名。字节
+最终确定后，为生产 feed 生成分离签名：
+
+```sh
+python tools/sign_manifest.py dist/MyApp/manifest.json \
+  --private-key release-private-key.pem \
+  --algorithm ed25519
+```
+
+默认输出名是 `manifest.json.sig`。必须同时上传 manifest、签名和所有引用的
+artifact；签名后不要重新格式化或重写 JSON。
+
 如果项目较大，可以用内容寻址存储避免多个版本重复上传相同文件：
 
 ```sh
@@ -214,6 +242,12 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/ \
   --output publish/updates/releases/1.4.0/windows-x64/manifest.json
 ```
+
+这里的 `baseUrl` 是 artifact 命名空间，不决定公开 manifest URL。应将
+`Config::manifestUrl` 配置为 `--output` 文件的实际发布 URL，并签名该文件的精确
+字节。使用 index feed 时，`make_index.py` 默认生成 `index.json`；将其签名为
+`index.json.sig`，并把每个被选中的 release manifest 分别签名为
+`manifest.json.sig`。
 
 详情见 [docs/server-layout.md](docs/server-layout.md) 和 [docs/content-addressed-storage.md](docs/content-addressed-storage.md)。
 
@@ -348,7 +382,10 @@ docs/                         设计与集成文档
 
 GitHub Actions 覆盖 source hygiene、clang-format、clang-tidy、GCC/Clang/AppleClang/MSVC 构建、无可选依赖构建、ASan/UBSan、coverage、安装树打包、`find_package` 消费者验证、CodeQL，以及真实 GitHub 更新演示。发布产物还包含记录安装文件哈希以及所选 HTTP/加密依赖关系的 SPDX SBOM。
 
-Release workflow 会发布 Windows、macOS、Linux 三个平台的安装树 ZIP、SPDX SBOM 文件，并从 `CHANGELOG.md` 提取 release notes。
+Release workflow 会发布 Windows、macOS、Linux 三个平台的安装树 ZIP、SPDX
+SBOM 文件，并从 `CHANGELOG.md` 提取 release notes。这些官方 ZIP 使用默认静态
+`libAutoUpdater` 配置；共享库可从源码/CMake 构建，但当前不会作为独立 GitHub
+Release 变体发布。
 
 ## 社区
 

@@ -236,7 +236,11 @@ def main() -> int:
     parser.add_argument("--mandatory", action="store_true")
     parser.add_argument("--allow-downgrade", action="store_true")
     parser.add_argument("--notes", default="")
-    parser.add_argument("--base-url", required=True)
+    parser.add_argument(
+        "--base-url",
+        required=True,
+        help="Artifact base URL stored in the manifest; this is not the public manifest URL",
+    )
     parser.add_argument(
         "--content-addressed",
         action="store_true",
@@ -270,10 +274,10 @@ def main() -> int:
     output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print(f"Wrote {output}")
-    print("Upload the release directory to:")
+    print("Artifact base URL:")
     print(f"  {diagnostic_url(args.base_url)}")
-    print("Client manifest URL should point to:")
-    print(f"  {diagnostic_url(args.base_url.rstrip('/') + '/manifest.json')}")
+    print("Configure Config::manifestUrl separately to the URL where --output is published;")
+    print("--base-url identifies artifacts and does not determine the manifest URL.")
     if args.content_addressed:
         print("Object store root:")
         print(f"  {(args.object_root or (args.release_dir.resolve().parent / 'objects' / 'sha256')).resolve()}")

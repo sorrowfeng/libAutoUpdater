@@ -65,14 +65,16 @@ Default selection order:
 - The built-in `file://` transport requires no optional backend, but `Updater`
   accepts only an absolute file URL with `allowLocalFileUrls=true`; a raw local
   path is not a valid manifest URL.
-- libcurl is used when CMake finds `CURL::libcurl`.
+- libcurl is used by the default core client when
+  `LIBAUTOUPDATER_WITH_CURL=ON` and CMake finds `CURL::libcurl`.
 - Windows uses WinHTTP when libcurl is unavailable and `LIBAUTOUPDATER_WITH_WINHTTP=ON`.
 - macOS uses CFNetwork when libcurl is unavailable and `LIBAUTOUPDATER_WITH_CFNETWORK=ON`.
 - The CFNetwork backend schedules each request in a private run-loop mode and
   performs reads only after a readable event. Positive connect and total
   transfer timeouts, as well as cancellation from another thread, are observed
   without leaving a blocked read or background worker behind.
-- Qt users can inject a `QNetworkAccessManager` adapter.
+- Qt users can inject the `QNetworkAccessManager` adapter from `examples/qt`.
+  It is example source, not an installed or exported CMake package target.
 
 ## Production Security Checklist
 

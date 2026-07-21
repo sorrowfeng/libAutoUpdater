@@ -59,7 +59,9 @@ The GitHub release workflow:
    the exact tagged commit.
 2. Builds and tests the Release configuration on Linux, macOS, and Windows.
 3. Runs `cmake --install` and validates the installed package contract.
-4. Packages the install tree as ZIP.
+4. Packages the install tree as ZIP. The workflow does not set
+   `BUILD_SHARED_LIBS`, so these official packages use the default static
+   `libAutoUpdater` configuration.
 5. Generates SPDX SBOM files containing installed-file hashes, selected HTTP
    and crypto dependency components, relationships, platform, source commit,
    and unique workflow-generation identity.
@@ -75,6 +77,27 @@ Each platform should include:
 - `libAutoUpdater-vX.Y.Z-macOS.zip`
 - `libAutoUpdater-vX.Y.Z-Windows.zip`
 - Matching `.spdx.json` files
+
+Shared-library builds are supported on Windows, macOS, and Linux through
+`BUILD_SHARED_LIBS=ON`, but the current workflow does not publish a separate
+shared package variant.
+
+## Application Update Feed Artifacts
+
+The GitHub Release ZIPs above distribute this library; they are distinct from
+an application's static update feed. A signed production feed publishes:
+
+- `manifest.json` and the default detached `manifest.json.sig` for every
+  release target.
+- `index.json` and `index.json.sig` when multi-platform/channel routing uses an
+  index.
+- Every artifact referenced by the release manifest.
+
+Run `tools/make_manifest.py` first, then sign the final bytes with
+`tools/sign_manifest.py`. For an index, generate it with `tools/make_index.py`
+and sign it separately. `--base-url` is the artifact base stored in a release
+manifest; it is not the public manifest URL. Never place the release private key
+in the published tree or reformat JSON after signing.
 
 ## Post-release
 

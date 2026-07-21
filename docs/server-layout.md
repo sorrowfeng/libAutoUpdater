@@ -12,11 +12,13 @@ updates/
     1.0.0/
       windows-x64/
         manifest.json
+        manifest.json.sig
         bin/MyApp.exe
         config/default.json
     1.1.0/
       windows-x64/
         manifest.json
+        manifest.json.sig
         bin/MyApp.exe
         config/default.json
 ```
@@ -50,6 +52,7 @@ updates/
     1.1.0/
       windows-x64/
         manifest.json
+        manifest.json.sig
   objects/
     sha256/
       9b/
@@ -76,9 +79,24 @@ Manifest:
 
 `path` is the server path. `localPath` is the installation path. Multiple versions can reference the same object.
 
+`baseUrl` always describes artifact resolution. It does not have to be the
+directory that contains `manifest.json`, especially with content-addressed
+storage. `Config::manifestUrl` must point to the separately published manifest.
+
 ## Index Manifest
 
 Use an index manifest to route multi-platform releases:
+
+```text
+updates/
+  index.json
+  index.json.sig
+  releases/
+    1.1.0/
+      windows-x64/
+        manifest.json
+        manifest.json.sig
+```
 
 ```json
 {
@@ -97,6 +115,14 @@ Use an index manifest to route multi-platform releases:
 ```
 
 `Config::manifestUrl` may point directly to a release manifest or to an index manifest.
+
+When `requireManifestSignature=true`, the initial `index.json` and every
+selected release `manifest.json` are independently verified over their exact
+published bytes. The default detached names are `index.json.sig` and
+`manifest.json.sig`. `manifestSignatureUrl` can override the signature URL for
+the initial document only; a release selected by an index still uses its release
+manifest URL plus `.sig`. Generate or format all JSON first, sign afterward,
+upload both layers of signatures, and never rewrite signed JSON in transit.
 
 An omitted or empty target `platform` or `arch` is a wildcard. Exact
 platform/architecture pairs take precedence over one-dimensional wildcards,

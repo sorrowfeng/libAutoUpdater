@@ -353,7 +353,7 @@ likelihood of affecting production update flows.
   - Document redirect, TLS, expiry, anti-replay, and elevated-helper policies.
   - Warn against placing long-lived credentials in download URLs.
 
-- [ ] **DOC-003 — Correct package and release documentation**
+- [x] **DOC-003 — Correct package and release documentation**
   - Ensure documented installed targets match the generated CMake package.
   - Document supported shared/static configurations and platform backends.
   - Keep release instructions consistent with manifest and signature filenames.

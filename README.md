@@ -115,6 +115,18 @@ find_package(libAutoUpdater CONFIG REQUIRED)
 target_link_libraries(MyApp PRIVATE libAutoUpdater::libAutoUpdater)
 ```
 
+When the package was built with `LIBAUTOUPDATER_BUILD_UPDATER=ON`, it also
+exports the imported executable target `libAutoUpdater::autoupdater_apply`.
+Packaging code can locate the installed helper with
+`$<TARGET_FILE:libAutoUpdater::autoupdater_apply>`; it is an executable target,
+not a link library.
+
+The default `BUILD_SHARED_LIBS=OFF` build is static. Setting
+`BUILD_SHARED_LIBS=ON` is supported on Windows, macOS, and Linux. Windows shared
+installs include the DLL and import library; installed Unix helpers use a
+relative runtime search path for the package's `lib` directory. See the
+[integration guide](docs/integration.md) for deployment layout details.
+
 As a subdirectory:
 
 ```cmake
@@ -154,6 +166,14 @@ See [docs/ecosystem.md](docs/ecosystem.md).
 | Windows | MSVC | WinHTTP, libcurl | WinHTTP avoids shipping libcurl |
 | macOS | AppleClang | CFNetwork, libcurl | CFNetwork uses system frameworks |
 | Linux | GCC, Clang | libcurl | Package-manager-owned installs should usually use the package manager |
+
+When `LIBAUTOUPDATER_WITH_CURL=ON` and CMake finds libcurl, the default core
+client selects it before a native backend. WinHTTP and CFNetwork are platform
+fallbacks only when libcurl was not selected. Without an injected
+`INetworkClient`, the Linux default core client has only the explicitly enabled
+`file://` transport when libcurl is absent. The Qt network adapter can be
+injected from the example source under `examples/qt`; it is not installed or
+exported as a package target.
 
 Signature verification remains runtime-configurable for local/test workflows,
 but the production HTTP(S) policy requires it. The default verifier uses
@@ -207,6 +227,19 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/releases/1.4.0/windows-x64/
 ```
 
+`make_manifest.py` writes `dist/MyApp/manifest.json` by default but does not sign
+it. After the bytes are final, create the production detached signature:
+
+```sh
+python tools/sign_manifest.py dist/MyApp/manifest.json \
+  --private-key release-private-key.pem \
+  --algorithm ed25519
+```
+
+The default output is `manifest.json.sig`. Upload the manifest, its signature,
+and every referenced artifact. Do not reformat or rewrite the JSON after
+signing.
+
 For larger projects, avoid duplicated files across releases by using content-addressed storage:
 
 ```sh
@@ -222,6 +255,12 @@ python tools/make_manifest.py dist/MyApp \
   --base-url https://example.com/updates/ \
   --output publish/updates/releases/1.4.0/windows-x64/manifest.json
 ```
+
+Here `baseUrl` identifies the artifact namespace; it does not determine the
+public manifest URL. Configure `Config::manifestUrl` to the URL where the
+`--output` file is actually published, then sign that exact file. For an index
+feed, `make_index.py` defaults to `index.json`; sign it as `index.json.sig`, and
+also sign every selected release manifest as `manifest.json.sig`.
 
 See [docs/server-layout.md](docs/server-layout.md) and [docs/content-addressed-storage.md](docs/content-addressed-storage.md).
 
@@ -361,6 +400,10 @@ The release workflow publishes Windows, macOS, and Linux install-tree ZIPs,
 SPDX SBOM files with installed-file hashes and selected HTTP/crypto dependency
 relationships,
 and release notes extracted from `CHANGELOG.md`.
+
+Those official ZIPs use the default static `libAutoUpdater` configuration. A
+shared build is supported from source/CMake but is not currently published as a
+separate GitHub Release variant.
 
 ## Community
 
