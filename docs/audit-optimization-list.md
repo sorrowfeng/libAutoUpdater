@@ -363,7 +363,13 @@ likelihood of affecting production update flows.
 These items are not confirmed vulnerabilities and must remain labelled as
 investigations until the required deployment evidence is available.
 
-- [ ] **RISK-001 — Verify apply-plan and state privilege boundaries**
+For this section only, `[x]` means the repository-side evidence contract,
+validator, and regression tests are complete. It does not close the deployment
+risk. Each item records its separate production status; see
+`docs/deployment-investigations.md`.
+
+- [x] **RISK-001 — Verify apply-plan and state privilege boundaries**
+  - Production status: **OPEN**; no signed-off production snapshot is present.
   - Gather production ACLs, temp-directory ownership, helper launch method,
     elevation behavior, and restart-command policy.
   - If a lower-privileged user can modify plan/state consumed by an elevated

@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "deployment": {
+    "id": "replace-with-deployment-id",
+    "environment": "test",
+    "platform": "windows",
+    "capturedAt": "2026-07-21T00:00:00Z",
+    "configurationSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "principals": {
+    "application": "replace-with-principal-id",
+    "helper": "replace-with-principal-id",
+    "applicationPrivilege": "unknown",
+    "helperPrivilege": "unknown",
+    "sameCredential": null,
+    "lessTrusted": ["replace-with-lower-trust-class"]
+  },
+  "paths": [
+    {
+      "role": "installRoot",
+      "path": "C:/replace-with-observed-path/install-root",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "tempRoot",
+      "path": "C:/replace-with-observed-path/temp-root",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "stateFile",
+      "path": "C:/replace-with-observed-path/state.json",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "applyPlan",
+      "path": "C:/replace-with-observed-path/apply-plan.json",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "journalRoot",
+      "path": "C:/replace-with-observed-path/journals",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "backupRoot",
+      "path": "C:/replace-with-observed-path/backups",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    },
+    {
+      "role": "helperExecutable",
+      "path": "C:/replace-with-observed-path/autoupdater_apply.exe",
+      "exists": null,
+      "ownerTrusted": null,
+      "aclComplete": null,
+      "lessTrustedWritable": null,
+      "lessTrustedReplaceable": null,
+      "unexpectedLink": null
+    }
+  ],
+  "launch": {
+    "kind": "unknown",
+    "authenticatedChannel": null,
+    "trustedRootsBound": null,
+    "ownerAclChecked": null,
+    "oneTimeNonce": null,
+    "intentAndDigestBound": null,
+    "releaseAuthorizationVerified": null,
+    "brokerOnlyPlanPublication": null
+  },
+  "restart": {"policy": "unknown", "privilege": "unknown"},
+  "stateStore": {
+    "kind": "bundled-json",
+    "accessControlVerified": null,
+    "atomicCasVerified": null,
+    "crashDurabilityVerified": null
+  },
+  "attestation": {
+    "productionSnapshot": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  }
+}

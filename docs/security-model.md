@@ -289,6 +289,10 @@ those controls, use a launcher that keeps the helper at the same privilege level
 as the application and fail with a permission error when the installation is
 not writable.
 
+The offline [deployment investigation procedure](deployment-investigations.md)
+defines the production evidence required to verify this boundary. Repository
+tests and example evidence are not a production attestation.
+
 ## Apply and Rollback
 
 Replacement is performed by `autoupdater_apply`:

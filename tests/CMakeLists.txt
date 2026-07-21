@@ -150,6 +150,13 @@ if(Python3_Interpreter_FOUND)
             --make-sbom ${libAutoUpdater_SOURCE_DIR}/tools/make_sbom.py
             --configured-dependencies ${libAutoUpdater_BINARY_DIR}/libAutoUpdater-sbom-dependencies.json
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/sbom-tool-validation)
+    add_test(
+        NAME libAutoUpdater_deployment_investigation_validation
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/deployment_investigation_tests.py
+            --privilege-boundary ${libAutoUpdater_SOURCE_DIR}/tools/check_privilege_boundary.py
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/deployment-investigation-validation)
 
     find_program(LIBAUTOUPDATER_OPENSSL_EXECUTABLE NAMES openssl)
     if(LIBAUTOUPDATER_OPENSSL_EXECUTABLE)
