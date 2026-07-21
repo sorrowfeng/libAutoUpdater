@@ -1,0 +1,1 @@
+{"schemaVersion":1,"appId":"com.example.fuzz","channel":"stable","version":"2.0.0","releaseDate":"2026-07-20T00:00:00Z","baseUrl":"https://updates.example.test/releases/2.0.0/","files":[{"path":"bin/app","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1}],"remove":["obsolete.txt"]}

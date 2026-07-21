@@ -44,6 +44,8 @@ jobs:
           tests/gc_objects_tests.py
           tests/metadata_tool_tests.py
           tests/sbom_tool_tests.py
+          tests/installed_update_rollback.py
+          tests/signed_release_artifact_test.py
 
       - name: Validate CMake Presets
         run: cmake --list-presets
@@ -372,7 +374,7 @@ jobs:
       - name: Install OpenSSL development package
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev
+          sudo apt-get install -y libssl-dev openssl
 
       - name: Configure required OpenSSL build
         run: >
@@ -394,7 +396,7 @@ jobs:
         run: |
           grep -F 'LIBAUTOUPDATER_TEST_HAS_OPENSSL=1' build/compile_commands.json
           ctest --test-dir build -C Debug \
-            -R '^libAutoUpdater_tests$' \
+            -R '^(libAutoUpdater_tests|libAutoUpdater_signed_release_artifact_validation)$' \
             --output-on-failure
 
   shared-package-contract:
@@ -465,6 +467,53 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build -C Debug --output-on-failure
+
+  coverage-guided-fuzzing:
+    name: Clang coverage-guided fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure persistent fuzz target
+        run: >
+          cmake -S tests/fuzz -B fuzz-build
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build fuzz-build --target libAutoUpdater_parser_fuzzer --parallel
+
+      - name: Run bounded coverage-guided session
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir -p fuzz-artifacts
+          ./fuzz-build/libAutoUpdater_parser_fuzzer \
+            tests/fuzz/corpus \
+            -dict=tests/fuzz/autoupdater.dict \
+            -artifact_prefix=fuzz-artifacts/ \
+            -max_len=1048576 \
+            -timeout=10 \
+            -rss_limit_mb=2048 \
+            -max_total_time=60 \
+            -print_final_stats=1
+
+      - name: Preserve evolved corpus and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: fuzz-results-${{ github.sha }}
+          path: |
+            tests/fuzz/corpus
+            fuzz-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
   coverage:
     name: Coverage

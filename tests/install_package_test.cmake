@@ -151,3 +151,44 @@ if(NOT helper_result EQUAL 2)
         "The installed updater helper did not return its argument-validation status (2); "
         "got ${helper_result}.\nstdout:\n${helper_stdout}\nstderr:\n${helper_stderr}")
 endif()
+
+set(installed_update_variables
+    PYTHON_EXECUTABLE
+    INSTALLED_UPDATE_SCRIPT
+    INSTALLED_UPDATE_FIXTURE)
+set(installed_update_variable_count 0)
+foreach(variable IN LISTS installed_update_variables)
+    if(DEFINED ${variable} AND NOT "${${variable}}" STREQUAL "")
+        math(EXPR installed_update_variable_count "${installed_update_variable_count} + 1")
+    endif()
+endforeach()
+
+if(installed_update_variable_count GREATER 0)
+    if(NOT installed_update_variable_count EQUAL 3)
+        message(FATAL_ERROR "Installed update validation requires all Python fixture variables")
+    endif()
+endif()
+
+if(installed_update_variable_count EQUAL 3)
+    foreach(path_variable IN ITEMS PYTHON_EXECUTABLE INSTALLED_UPDATE_SCRIPT INSTALLED_UPDATE_FIXTURE)
+        if(NOT EXISTS "${${path_variable}}")
+            message(FATAL_ERROR "${path_variable} does not exist: ${${path_variable}}")
+        endif()
+    endforeach()
+    execute_process(
+        COMMAND
+            "${PYTHON_EXECUTABLE}"
+            "${INSTALLED_UPDATE_SCRIPT}"
+            --updater "${installed_helper}"
+            --fixture "${INSTALLED_UPDATE_FIXTURE}"
+            --work-dir "${TEST_ROOT}/installed-update-rollback"
+        RESULT_VARIABLE installed_update_result
+        OUTPUT_VARIABLE installed_update_stdout
+        ERROR_VARIABLE installed_update_stderr)
+    if(NOT installed_update_result EQUAL 0)
+        message(FATAL_ERROR
+            "Installed updater apply/rollback validation failed (${installed_update_result}).\n"
+            "stdout:\n${installed_update_stdout}\n"
+            "stderr:\n${installed_update_stderr}")
+    endif()
+endif()

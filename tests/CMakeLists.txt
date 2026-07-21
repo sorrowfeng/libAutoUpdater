@@ -77,6 +77,8 @@ endif()
 
 add_test(NAME libAutoUpdater_tests COMMAND libAutoUpdater_tests)
 
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
 if(TARGET autoupdater_apply)
     set(libautoupdater_install_package_test_args
         -DPROJECT_BINARY_DIR=${libAutoUpdater_BINARY_DIR}
@@ -87,6 +89,13 @@ if(TARGET autoupdater_apply)
         -DINSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}
         -DEXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
         -DGENERATOR=${CMAKE_GENERATOR})
+
+    if(Python3_Interpreter_FOUND)
+        list(APPEND libautoupdater_install_package_test_args
+            -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
+            -DINSTALLED_UPDATE_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/installed_update_rollback.py
+            -DINSTALLED_UPDATE_FIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/installed_package_fixture/release)
+    endif()
 
     if(CMAKE_GENERATOR_PLATFORM)
         list(APPEND libautoupdater_install_package_test_args
@@ -111,9 +120,9 @@ if(TARGET autoupdater_apply)
             ${CMAKE_COMMAND}
             ${libautoupdater_install_package_test_args}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/install_package_test.cmake)
+    set_tests_properties(libAutoUpdater_install_package_validation PROPERTIES TIMEOUT 180)
 endif()
 
-find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(
         NAME libAutoUpdater_gc_objects_validation
@@ -141,6 +150,21 @@ if(Python3_Interpreter_FOUND)
             --make-sbom ${libAutoUpdater_SOURCE_DIR}/tools/make_sbom.py
             --configured-dependencies ${libAutoUpdater_BINARY_DIR}/libAutoUpdater-sbom-dependencies.json
             --work-dir ${CMAKE_CURRENT_BINARY_DIR}/sbom-tool-validation)
+
+    find_program(LIBAUTOUPDATER_OPENSSL_EXECUTABLE NAMES openssl)
+    if(LIBAUTOUPDATER_OPENSSL_EXECUTABLE)
+        add_test(
+            NAME libAutoUpdater_signed_release_artifact_validation
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/signed_release_artifact_test.py
+                --make-manifest ${libAutoUpdater_SOURCE_DIR}/tools/make_manifest.py
+                --sign-manifest ${libAutoUpdater_SOURCE_DIR}/tools/sign_manifest.py
+                --openssl ${LIBAUTOUPDATER_OPENSSL_EXECUTABLE}
+                --fixture ${CMAKE_CURRENT_SOURCE_DIR}/installed_package_fixture/release
+                --work-dir ${CMAKE_CURRENT_BINARY_DIR}/signed-release-artifact)
+        set_tests_properties(libAutoUpdater_signed_release_artifact_validation PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 if(Python3_Interpreter_FOUND AND TARGET libAutoUpdater_cli AND TARGET autoupdater_apply)

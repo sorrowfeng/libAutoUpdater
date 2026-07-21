@@ -1,0 +1,1 @@
+{"schemaVersion":2,"intent":"install","appId":"com.example.fuzz","fromVersion":"1.0.0","toVersion":"2.0.0","releaseId":"release-2","manifestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installDir":"install","stagingDir":"staging","backupDir":"backup","restartCommand":[],"operations":[]}

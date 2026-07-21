@@ -334,7 +334,7 @@ likelihood of affecting production update flows.
   - Replace the current no-op OpenSSL test pass with an explicit skip or a
     mandatory crypto test configuration.
 
-- [ ] **TEST-006 — Add sanitizer, fuzz, packaging, and install tests**
+- [x] **TEST-006 — Add sanitizer, fuzz, packaging, and install tests**
   - Run ASan/UBSan where supported.
   - Replace shallow fuzz-smoke input with persistent coverage-guided fuzzing.
   - Test installed CMake targets, static/shared consumers, generated manifests,

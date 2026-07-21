@@ -37,7 +37,7 @@ GitHub Actions covers:
 Workflow Actions are pinned to immutable commit SHAs and updated through
 reviewed Dependabot pull requests.
 
-## Fuzz Smoke Tests
+## Fuzz Testing
 
 `tests/FuzzSmokeTests.cpp` uses deterministic random inputs for:
 
@@ -47,4 +47,14 @@ reviewed Dependabot pull requests.
 - Apply-plan parser.
 - Managed path validation.
 
-This is not a replacement for long-running libFuzzer or AFL coverage. It is a lightweight CI regression guard.
+The smoke test remains a lightweight deterministic regression guard. A
+separate Clang/libFuzzer target in `tests/fuzz/` instruments the library and
+runs the parsers, managed-path policy, and URL helpers persistently under
+ASan/UBSan with a checked-in seed corpus and dictionary. CI runs a bounded
+coverage-guided session and preserves the evolved corpus and crash artifacts
+for review.
+
+Installed-package validation consumes both static and shared packages from a
+clean project, generates and independently verifies a signed release artifact,
+then uses the installed external updater to apply and roll back a fixture
+update.
