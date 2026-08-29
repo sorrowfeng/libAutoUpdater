@@ -44,8 +44,8 @@ class FakeDownloadNetwork final : public autoupdater::INetworkClient {
                    autoupdater::CancellationToken& cancel) noexcept override {
         try {
             ++attempts;
-            lastResumeOffset = resume && resume->offset > 0 ? std::optional<std::uint64_t>(resume->offset)
-                                                            : std::nullopt;
+            lastResumeOffset =
+                resume && resume->offset > 0 ? std::optional<std::uint64_t>(resume->offset) : std::nullopt;
             if (failuresBeforeSuccess > 0) {
                 --failuresBeforeSuccess;
                 return autoupdater::Result<autoupdater::DownloadResult>::fail(
@@ -159,7 +159,7 @@ void testDownloadExecutorHashMismatchCleansUpAndFails() {
     auto result = autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, nullptr, {}, cancel);
     LAU_REQUIRE(!result);
     LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::HashMismatch);
-    LAU_REQUIRE(network.attempts == 2);  // initial + one retry
+    LAU_REQUIRE(network.attempts == 2); // initial + one retry
     // Both the staged file and the temp download file must be gone.
     LAU_REQUIRE(!std::filesystem::exists(decision.downloads[0].stagingPath));
     LAU_REQUIRE(!std::filesystem::exists(decision.downloads[0].stagingPath.string() + ".download"));
@@ -177,7 +177,7 @@ void testDownloadExecutorCancelStopsDownload() {
 
     autoupdater::Config config;
     config.retry.maxRetries = 5;
-    config.retry.retryDelay = std::chrono::seconds(30);  // cancel must cut this short
+    config.retry.retryDelay = std::chrono::seconds(30); // cancel must cut this short
 
     auto fileSystem = autoupdater::createDefaultFileSystem();
     auto decision = makeDecision(root, "bin/a.txt", network.payload, payloadHash);
@@ -185,9 +185,7 @@ void testDownloadExecutorCancelStopsDownload() {
     decision.downloads.push_back(second.downloads[0]);
 
     autoupdater::CancellationToken cancel;
-    autoupdater::ProgressCallback cancelOnProgress = [&](const autoupdater::Progress&) {
-        cancel.cancel();
-    };
+    autoupdater::ProgressCallback cancelOnProgress = [&](const autoupdater::Progress&) { cancel.cancel(); };
     const auto start = std::chrono::steady_clock::now();
     auto result =
         autoupdater::executeDownloads(config, decision, network, *fileSystem, *hash, nullptr, cancelOnProgress, cancel);
@@ -211,7 +209,8 @@ void testDownloadExecutorResumesPartialDownload() {
     // Pre-seed a partial .download file with the first 4 bytes.
     std::filesystem::create_directories(decision.downloads[0].stagingPath.parent_path());
     {
-        std::ofstream partial(decision.downloads[0].stagingPath.string() + ".download", std::ios::binary | std::ios::trunc);
+        std::ofstream partial(decision.downloads[0].stagingPath.string() + ".download",
+                              std::ios::binary | std::ios::trunc);
         partial << "0123";
     }
 

@@ -7,10 +7,9 @@ namespace autoupdater {
 Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnvelope& envelope,
                                         const UpdateDecision& decision, IFileSystem& fileSystem) {
     const auto stateRoot = util::defaultStagingRoot(config.installDir);
-    const auto backupDir =
-        stateRoot / "backup" /
-        (util::sanitizePathComponent(config.currentVersion.toString()) + "-to-" +
-         util::sanitizePathComponent(envelope.manifest.version.toString()));
+    const auto backupDir = stateRoot / "backup" /
+                           (util::sanitizePathComponent(config.currentVersion.toString()) + "-to-" +
+                            util::sanitizePathComponent(envelope.manifest.version.toString()));
 
     ApplyPlan plan;
     plan.schemaVersion = 1;

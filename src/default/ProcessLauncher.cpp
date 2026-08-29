@@ -156,9 +156,9 @@ class ProcessLauncher final : public IProcessLauncher {
         // DETACHED_PROCESS gives the child its own lifetime: closing the
         // parent's console must not take the updater down with it.
         const DWORD flags = request.detached ? (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP) : 0;
-        const BOOL ok = CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, flags, nullptr,
-                                       workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup,
-                                       &process);
+        const BOOL ok =
+            CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE, flags, nullptr,
+                           workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process);
         if (!ok) {
             return Result<void>::fail({ErrorCode::ApplyLaunchFailed, "CreateProcessW failed"});
         }

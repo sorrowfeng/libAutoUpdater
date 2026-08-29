@@ -305,10 +305,9 @@ Result<CFStreamEventType> waitForStreamEvent(CFReadStreamRef stream, Cancellatio
     StreamWaitContext context;
     CFStreamClientContext clientContext{};
     clientContext.info = &context;
-    if (!CFReadStreamSetClient(stream,
-                               kCFStreamEventHasBytesAvailable | kCFStreamEventErrorOccurred |
-                                   kCFStreamEventEndEncountered,
-                               streamEventCallback, &clientContext)) {
+    if (!CFReadStreamSetClient(
+            stream, kCFStreamEventHasBytesAvailable | kCFStreamEventErrorOccurred | kCFStreamEventEndEncountered,
+            streamEventCallback, &clientContext)) {
         return Result<CFStreamEventType>::fail({ErrorCode::NetworkError, "CFReadStreamSetClient failed"});
     }
     CFReadStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
@@ -497,9 +496,9 @@ class CfNetworkClient final : public INetworkClient {
                 return Result<std::string>::fail({ErrorCode::NetworkError, "HTTP error " + std::to_string(status)});
             }
 
-            auto bytes = readResponse(stream.value().get(), cancel, deadlineAfter(options.transferTimeout), {}, {}, 0,
-                                      contentLength(response.value().headers.get()), nullptr,
-                                      response.value().bufferedBody);
+            auto bytes =
+                readResponse(stream.value().get(), cancel, deadlineAfter(options.transferTimeout), {}, {}, 0,
+                             contentLength(response.value().headers.get()), nullptr, response.value().bufferedBody);
             if (!bytes) {
                 return Result<std::string>::fail(bytes.error());
             }
@@ -560,10 +559,10 @@ class CfNetworkClient final : public INetworkClient {
             }
 
             const auto initialBytes = (options.enableResume && resume) ? resume->offset : 0;
-            auto bytes = readResponse(stream.value().get(), cancel, deadlineAfter(options.transferTimeout),
-                                      std::move(progress), util::pathToUtf8(target), initialBytes,
-                                      contentLength(response.value().headers.get()), &output,
-                                      response.value().bufferedBody);
+            auto bytes =
+                readResponse(stream.value().get(), cancel, deadlineAfter(options.transferTimeout), std::move(progress),
+                             util::pathToUtf8(target), initialBytes, contentLength(response.value().headers.get()),
+                             &output, response.value().bufferedBody);
             if (!bytes) {
                 const auto code =
                     bytes.error().code == ErrorCode::NetworkError ? ErrorCode::DownloadFailed : bytes.error().code;

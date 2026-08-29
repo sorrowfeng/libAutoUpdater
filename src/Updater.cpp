@@ -639,8 +639,8 @@ struct Updater::Impl {
 
         // Only the operation list is taken from the plan; the install root is
         // always our own configured directory, never plan-controlled input.
-        const auto backupRoot = pending.value()->backupDir.empty() ? plan.value().backupDir
-                                                                   : pending.value()->backupDir;
+        const auto backupRoot =
+            pending.value()->backupDir.empty() ? plan.value().backupDir : pending.value()->backupDir;
         for (auto it = plan.value().operations.rbegin(); it != plan.value().operations.rend(); ++it) {
             auto target = util::safeJoin(config.installDir, it->target);
             if (!target) {
@@ -667,8 +667,7 @@ struct Updater::Impl {
                     return Result<void>::fail(targetHash.error());
                 }
                 if (backupHash.value() != targetHash.value()) {
-                    return Result<void>::fail(
-                        {ErrorCode::HashMismatch, "Rolled-back file does not match its backup"});
+                    return Result<void>::fail({ErrorCode::HashMismatch, "Rolled-back file does not match its backup"});
                 }
             } else if (it->type == ApplyOperationType::Replace) {
                 auto removed = deps.fileSystem->remove(target.value());

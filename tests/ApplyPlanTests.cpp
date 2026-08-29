@@ -40,9 +40,8 @@ void testApplyPlanRoundTripPreservesUnicodePaths() {
     plan.stagingDir = root / std::filesystem::u8path(u8"暂存目录");
     plan.backupDir = root / std::filesystem::u8path(u8"备份目录");
     plan.restartCommand = {autoupdater::util::pathToUtf8(plan.installDir / std::filesystem::u8path(u8"应用.exe"))};
-    plan.operations.push_back(
-        {autoupdater::ApplyOperationType::Replace, u8"资源/应用.txt", u8"资源/应用.txt",
-         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 4});
+    plan.operations.push_back({autoupdater::ApplyOperationType::Replace, u8"资源/应用.txt", u8"资源/应用.txt",
+                               "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 4});
 
     const auto json = plan.toJson();
     LAU_REQUIRE(json.find(u8"安装目录") != std::string::npos);

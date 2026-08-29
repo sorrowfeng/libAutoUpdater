@@ -224,12 +224,12 @@ void testDownloadAsyncPersistsPendingUpdate() {
     auto network = std::make_shared<FileServingNetwork>();
     network->fileContent = content;
     network->manifestText = std::string("{") +
-        "\"schemaVersion\": 1,"
-        "\"version\": \"1.1.0\","
-        "\"releaseId\": \"rel-1.1.0\","
-        "\"baseUrl\": \"mock://server/\","
-        "\"files\": [{\"path\": \"bin/app.txt\", \"sha256\": \"" + contentHash + "\", \"size\": " +
-        std::to_string(content.size()) + "}]}";
+                            "\"schemaVersion\": 1,"
+                            "\"version\": \"1.1.0\","
+                            "\"releaseId\": \"rel-1.1.0\","
+                            "\"baseUrl\": \"mock://server/\","
+                            "\"files\": [{\"path\": \"bin/app.txt\", \"sha256\": \"" +
+                            contentHash + "\", \"size\": " + std::to_string(content.size()) + "}]}";
 
     {
         autoupdater::Config config;

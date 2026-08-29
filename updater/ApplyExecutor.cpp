@@ -110,7 +110,7 @@ bool containsSymlinkBelow(const std::filesystem::path& root, const std::filesyst
         std::error_code ec;
         const auto status = std::filesystem::symlink_status(current, ec);
         if (ec || !std::filesystem::exists(status)) {
-            return false;  // the remaining path does not exist yet
+            return false; // the remaining path does not exist yet
         }
         if (status.type() == std::filesystem::file_type::symlink) {
             return true;
@@ -130,37 +130,6 @@ Result<std::filesystem::path> joinChecked(const std::filesystem::path& root, con
             {ErrorCode::PathTraversalRejected, std::string("Symlink rejected in ") + what + ": " + relative});
     }
     return joined;
-}
-
-// Copies `from` to `to`, keeping the permissions of the destination when it
-// already exists (so updated executables stay executable) and inheriting the
-// source permissions otherwise.
-Result<void> copyPreservingTargetPermissions(const std::filesystem::path& from, const std::filesystem::path& to) {
-    auto dirs = createDirectories(to.parent_path());
-    if (!dirs) {
-        return dirs;
-    }
-#ifndef _WIN32
-    std::optional<std::filesystem::perms> targetPerms;
-    {
-        std::error_code ec;
-        const auto status = std::filesystem::status(to, ec);
-        if (!ec && std::filesystem::exists(status)) {
-            targetPerms = status.permissions();
-        }
-    }
-#endif
-    std::error_code ec;
-    std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
-    }
-#ifndef _WIN32
-    const auto sourceStatus = std::filesystem::status(from, ec);
-    const auto perms = targetPerms.has_value() ? *targetPerms : sourceStatus.permissions();
-    std::filesystem::permissions(to, perms, ec);
-#endif
-    return Result<void>::ok();
 }
 
 // Copies `from` to `to` keeping the source permissions. Used for backups and
@@ -370,7 +339,7 @@ void recoverJournal(const std::filesystem::path& journalPath) {
     }
 
     ApplyPlan plan;
-    plan.installDir = journalPath.parent_path().parent_path().parent_path();  // <install>/.autoupdater/journal/x.json
+    plan.installDir = journalPath.parent_path().parent_path().parent_path(); // <install>/.autoupdater/journal/x.json
     plan.backupDir = util::pathFromUtf8(backupDirText->asString());
 
     std::vector<AppliedOperation> applied;
@@ -482,7 +451,7 @@ Result<void> waitForProcessExit(std::uint64_t pid, std::chrono::seconds timeout)
         if (!handle) {
             const DWORD error = GetLastError();
             if (error == ERROR_INVALID_PARAMETER) {
-                return Result<void>::ok();  // no such process anymore
+                return Result<void>::ok(); // no such process anymore
             }
             // e.g. ERROR_ACCESS_DENIED: the process exists but we cannot wait
             // on it; keep polling until it disappears or we time out.

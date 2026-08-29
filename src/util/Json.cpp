@@ -17,8 +17,8 @@ const Json::Array kEmptyArray;
 // Bounds for safe double -> int64_t conversion. Both are exactly
 // representable as double; a value v is convertible iff
 // kInt64MinAsDouble <= v < kInt64MaxPlusOneAsDouble.
-constexpr double kInt64MinAsDouble = -9223372036854775808.0;  // -2^63
-constexpr double kInt64MaxPlusOneAsDouble = 9223372036854775808.0;  // 2^63
+constexpr double kInt64MinAsDouble = -9223372036854775808.0;       // -2^63
+constexpr double kInt64MaxPlusOneAsDouble = 9223372036854775808.0; // 2^63
 
 bool doubleFitsInt64(double value) {
     return std::isfinite(value) && std::trunc(value) == value && value >= kInt64MinAsDouble &&
@@ -483,9 +483,8 @@ bool Json::asUInt64(std::uint64_t& out) const noexcept {
     const double value = std::get<double>(storage_);
     // 2^64 is exactly representable as double; any finite integral double in
     // [0, 2^64) converts to std::uint64_t without undefined behavior.
-    constexpr double kUInt64MaxPlusOneAsDouble = 18446744073709551616.0;  // 2^64
-    if (!std::isfinite(value) || std::trunc(value) != value || value < 0.0 ||
-        value >= kUInt64MaxPlusOneAsDouble) {
+    constexpr double kUInt64MaxPlusOneAsDouble = 18446744073709551616.0; // 2^64
+    if (!std::isfinite(value) || std::trunc(value) != value || value < 0.0 || value >= kUInt64MaxPlusOneAsDouble) {
         return false;
     }
     out = static_cast<std::uint64_t>(value);

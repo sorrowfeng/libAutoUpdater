@@ -19,15 +19,15 @@ void testJsonParsesUnicodeEscapes() {
 
 void testJsonRejectsInvalidUnicodeEscapes() {
     LAU_REQUIRE(!Json::parse("{\"a\": \"\\uzzzz\"}"));
-    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uD83D\"}"));           // unpaired high surrogate
-    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uDE00\"}"));           // unpaired low surrogate
-    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uD83D\\u0041\"}"));    // high surrogate + non-low
+    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uD83D\"}"));        // unpaired high surrogate
+    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uDE00\"}"));        // unpaired low surrogate
+    LAU_REQUIRE(!Json::parse("{\"a\": \"\\uD83D\\u0041\"}")); // high surrogate + non-low
 }
 
 void testJsonRejectsUnescapedControlCharacters() {
-    LAU_REQUIRE(!Json::parse("{\"a\": \"x\ty\"}"));   // raw tab inside string
-    LAU_REQUIRE(!Json::parse("{\"a\": \"x\ny\"}"));   // raw newline inside string
-    LAU_REQUIRE(Json::parse("{\"a\": \"x\\ty\"}"));   // escaped tab is fine
+    LAU_REQUIRE(!Json::parse("{\"a\": \"x\ty\"}")); // raw tab inside string
+    LAU_REQUIRE(!Json::parse("{\"a\": \"x\ny\"}")); // raw newline inside string
+    LAU_REQUIRE(Json::parse("{\"a\": \"x\\ty\"}")); // escaped tab is fine
 }
 
 void testJsonRejectsDeepNesting() {
@@ -59,7 +59,7 @@ void testJsonNumbersRejectOutOfRangeConversions() {
 
     LAU_REQUIRE(root.get("huge")->asInt(-1) == -1);
     LAU_REQUIRE(root.get("negative")->asInt(-1) == -5);
-    LAU_REQUIRE(root.get("fraction")->asInt(-1) == -1);  // not integral
+    LAU_REQUIRE(root.get("fraction")->asInt(-1) == -1); // not integral
     LAU_REQUIRE(root.get("ok")->asInt(-1) == 42);
 
     std::uint64_t out = 0;
@@ -78,6 +78,6 @@ void testJsonNumbersRejectOutOfRangeConversions() {
 }
 
 void testJsonStrictWhitespace() {
-    LAU_REQUIRE(!Json::parse("{\v\"a\": 1}"));  // vertical tab is not JSON whitespace
+    LAU_REQUIRE(!Json::parse("{\v\"a\": 1}")); // vertical tab is not JSON whitespace
     LAU_REQUIRE(Json::parse("{\n\t\r \"a\": 1}"));
 }

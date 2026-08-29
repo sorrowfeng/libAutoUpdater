@@ -79,7 +79,7 @@ std::optional<std::string> base64Decode(std::string_view input) {
                 ++padding;
             } else {
                 if (paddingStarted) {
-                    return std::nullopt;  // data after '=' is malformed
+                    return std::nullopt; // data after '=' is malformed
                 }
                 const int value = table[static_cast<unsigned char>(ch)];
                 if (value < 0) {
