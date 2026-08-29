@@ -128,7 +128,20 @@ def run_update_cli(command: list[str], attempts: int) -> subprocess.CompletedPro
     for attempt in range(1, attempts + 1):
         if attempts > 1:
             print(f"  attempt {attempt}/{attempts}")
-        result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace", text=True, timeout=60)
+        try:
+            result = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace", text=True,
+                                    timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            # The captured output is the only clue for hangs in CI; print it
+            # before giving up.
+            print("CLI timed out after 60 seconds")
+            if exc.stdout:
+                print("--- captured stdout ---")
+                print(exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode("utf-8", "replace"))
+            if exc.stderr:
+                print("--- captured stderr ---")
+                print(exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", "replace"))
+            raise
         if not should_retry_cli(result) or attempt == attempts:
             return result
         print("  transient network failure; retrying...")
