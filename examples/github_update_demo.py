@@ -123,7 +123,7 @@ def should_retry_cli(result: subprocess.CompletedProcess[str]) -> bool:
     )
 
 
-def run_update_cli(command: list[str], attempts: int) -> subprocess.CompletedProcess[str]:
+def run_update_cli(command: list[str], attempts: int, install_dir: Path) -> subprocess.CompletedProcess[str]:
     result: subprocess.CompletedProcess[str] | None = None
     for attempt in range(1, attempts + 1):
         if attempts > 1:
@@ -211,7 +211,7 @@ def main() -> int:
     ]
 
     print("\nRunning updater CLI")
-    result = run_update_cli(command, max(1, args.attempts))
+    result = run_update_cli(command, max(1, args.attempts), install_dir)
     print(result.stdout)
     if result.stderr:
         print(result.stderr, file=sys.stderr)

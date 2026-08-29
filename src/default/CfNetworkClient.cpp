@@ -265,12 +265,28 @@ Result<CfRef<CFReadStreamRef>> openStream(const HttpRequest& request, const Netw
         }
     }
 
+    // CFNetwork HTTP streams deliver client events reliably only when they
+    // are scheduled on the run loop *before* being opened.
+    CFReadStreamScheduleWithRunLoop(stream.get(), CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+
     if (!CFReadStreamOpen(stream.get())) {
+        CFReadStreamUnscheduleFromRunLoop(stream.get(), CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
         return Result<CfRef<CFReadStreamRef>>::fail(
             {ErrorCode::NetworkError, streamError(stream.get(), "CFReadStreamOpen")});
     }
     return Result<CfRef<CFReadStreamRef>>::ok(std::move(stream));
 }
+
+// Unschedules a stream opened by openStream when the enclosing scope ends.
+struct ScheduledStreamGuard {
+    CFReadStreamRef stream = nullptr;
+    ~ScheduledStreamGuard() {
+        if (stream) {
+            CFReadStreamSetClient(stream, 0, nullptr, nullptr);
+            CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+        }
+    }
+};
 
 CfRef<CFHTTPMessageRef> copyResponseHeaders(CFReadStreamRef stream) {
     const auto value = CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPResponseHeader);
@@ -288,7 +304,9 @@ constexpr std::size_t kMaxTextBytes = 16 * 1024 * 1024;
 // Waits for the next stream event using run-loop slices so the wait honors
 // both the cancellation token and an absolute deadline. CFReadStreamRead is
 // only called after kCFStreamEventHasBytesAvailable, so it never blocks
-// indefinitely.
+// indefinitely. The stream must already be scheduled on the current run loop
+// (openStream does this before opening it: CFNetwork HTTP streams do not
+// deliver client events reliably when scheduled after CFReadStreamOpen).
 
 struct StreamWaitContext {
     CFStreamEventType event = 0;
@@ -310,7 +328,6 @@ Result<CFStreamEventType> waitForStreamEvent(CFReadStreamRef stream, Cancellatio
             streamEventCallback, &clientContext)) {
         return Result<CFStreamEventType>::fail({ErrorCode::NetworkError, "CFReadStreamSetClient failed"});
     }
-    CFReadStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
 
     Result<CFStreamEventType> outcome =
         Result<CFStreamEventType>::fail({ErrorCode::NetworkError, "Stream wait failed"});
@@ -331,9 +348,6 @@ Result<CFStreamEventType> waitForStreamEvent(CFReadStreamRef stream, Cancellatio
             break;
         }
     }
-
-    CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-    CFReadStreamSetClient(stream, 0, nullptr, nullptr);
     return outcome;
 }
 
@@ -508,6 +522,7 @@ class CfNetworkClient final : public INetworkClient {
             if (!stream) {
                 return Result<std::string>::fail(stream.error());
             }
+            ScheduledStreamGuard unschedule{stream.value().get()};
             auto response = waitForResponse(stream.value().get(), cancel, deadlineAfter(options.connectTimeout));
             if (!response) {
                 return Result<std::string>::fail(response.error());
@@ -556,6 +571,7 @@ class CfNetworkClient final : public INetworkClient {
             if (!stream) {
                 return Result<DownloadResult>::fail(stream.error());
             }
+            ScheduledStreamGuard unschedule{stream.value().get()};
             auto response = waitForResponse(stream.value().get(), cancel, deadlineAfter(options.connectTimeout));
             if (!response) {
                 return Result<DownloadResult>::fail(response.error());
