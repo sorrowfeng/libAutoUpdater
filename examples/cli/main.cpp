@@ -100,6 +100,11 @@ void printBanner(const autoupdater::Config& config, bool applyWhenReady) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // The demo/CI scripts capture stdout through pipes; without this the
+    // block-buffered output would be invisible until the process exits.
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
+
     const auto args = commandLineArgs(argc, argv);
     autoupdater::Config config;
     config.appId = "libAutoUpdater.example";

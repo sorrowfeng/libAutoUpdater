@@ -141,6 +141,15 @@ def run_update_cli(command: list[str], attempts: int) -> subprocess.CompletedPro
             if exc.stderr:
                 print("--- captured stderr ---")
                 print(exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", "replace"))
+            updater_log = install_dir / ".autoupdater" / "updater.log"
+            if updater_log.exists():
+                print("--- updater.log ---")
+                print(updater_log.read_text(encoding="utf-8", errors="replace"))
+            journal_dir = install_dir / ".autoupdater" / "journal"
+            if journal_dir.is_dir():
+                for journal in sorted(journal_dir.glob("*.json")):
+                    print(f"--- journal {journal.name} ---")
+                    print(journal.read_text(encoding="utf-8", errors="replace"))
             raise
         if not should_retry_cli(result) or attempt == attempts:
             return result
