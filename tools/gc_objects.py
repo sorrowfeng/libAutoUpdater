@@ -48,6 +48,7 @@ def main() -> int:
     parser.add_argument("--manifest", action="append", type=Path, required=True)
     parser.add_argument("--object-prefix", default="objects/sha256")
     parser.add_argument("--delete", action="store_true", help="Delete unreferenced objects; default is dry-run")
+    parser.add_argument("--yes", action="store_true", help="Confirm deletion; required together with --delete")
     args = parser.parse_args()
 
     object_root = args.object_root.resolve()
@@ -59,13 +60,18 @@ def main() -> int:
         if rel not in referenced:
             stale.append(path)
 
-    action = "Deleting" if args.delete else "Would delete"
+    delete = args.delete and args.yes
+    if args.delete and not args.yes:
+        print("--delete requires --yes to confirm deletion; running as dry-run")
+
+    action = "Deleting" if delete else "Would delete"
+    print(f"{action} {len(stale)} unreferenced object(s)")
     for path in stale:
         print(f"{action} {path}")
-        if args.delete:
+        if delete:
             path.unlink()
 
-    if args.delete:
+    if delete:
         prune_empty_dirs(object_root)
 
     print(f"Referenced objects: {len(referenced)}")

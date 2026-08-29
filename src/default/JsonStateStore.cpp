@@ -1,9 +1,11 @@
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include "libAutoUpdater/interfaces/IFileSystem.h"
 #include "util/Json.h"
 #include "util/PathUtil.h"
 
 #include <fstream>
+#include <mutex>
 #include <sstream>
 
 namespace autoupdater {
@@ -15,6 +17,7 @@ class JsonStateStore final : public IStateStore {
     explicit JsonStateStore(std::filesystem::path path) : path_(std::move(path)) {}
 
     Result<void> saveLastAcceptedVersion(const Version& version, const std::string& releaseId) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -25,6 +28,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<std::optional<Version>> loadLastAcceptedVersion() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<std::optional<Version>>::fail(root.error());
@@ -41,6 +45,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<std::string> loadLastAcceptedReleaseId() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<std::string>::fail(root.error());
@@ -53,6 +58,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<void> savePendingUpdate(const PendingUpdate& pending) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -67,6 +73,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<std::optional<PendingUpdate>> loadPendingUpdate() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<std::optional<PendingUpdate>>::fail(root.error());
@@ -102,6 +109,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<void> clearPendingUpdate() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -111,6 +119,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<void> saveDownloadResume(const DownloadResumeState& state) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -132,6 +141,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<std::optional<DownloadResumeState>> loadDownloadResume(const std::string& key) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<std::optional<DownloadResumeState>>::fail(root.error());
@@ -150,7 +160,10 @@ class JsonStateStore final : public IStateStore {
         const auto& object = recordIt->second;
         const auto* offset = object.get("offset");
         if (offset && offset->isNumber()) {
-            state.offset = static_cast<std::uint64_t>(offset->asNumber());
+            // A corrupt or out-of-range offset makes the record unusable.
+            if (!offset->asUInt64(state.offset)) {
+                return Result<std::optional<DownloadResumeState>>::ok(std::nullopt);
+            }
         }
         const auto* etag = object.get("etag");
         if (etag && etag->isString()) {
@@ -168,6 +181,7 @@ class JsonStateStore final : public IStateStore {
     }
 
     Result<void> clearDownloadResume(const std::string& key) noexcept override {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto root = loadRoot();
         if (!root) {
             return Result<void>::fail(root.error());
@@ -187,18 +201,30 @@ class JsonStateStore final : public IStateStore {
             if (!std::filesystem::exists(path_)) {
                 return Result<util::Json::Object>::ok({});
             }
-            std::ifstream input(path_, std::ios::binary);
-            if (!input) {
-                return Result<util::Json::Object>::fail({ErrorCode::StateStoreError, "Failed to open state file"});
+            std::string text;
+            {
+                // Keep the stream scope tight: on Windows an open handle
+                // would block the quarantine rename below.
+                std::ifstream input(path_, std::ios::binary);
+                if (!input) {
+                    return Result<util::Json::Object>::fail({ErrorCode::StateStoreError, "Failed to open state file"});
+                }
+                std::ostringstream stream;
+                stream << input.rdbuf();
+                text = stream.str();
             }
-            std::ostringstream stream;
-            stream << input.rdbuf();
-            auto json = util::Json::parse(stream.str());
-            if (!json) {
-                return Result<util::Json::Object>::fail(json.error());
-            }
-            if (!json.value().isObject()) {
-                return Result<util::Json::Object>::fail({ErrorCode::StateStoreError, "State file root must be object"});
+            auto json = util::Json::parse(text);
+            if (!json || !json.value().isObject()) {
+                // Self-heal: quarantine the corrupt file and continue with an
+                // empty state instead of failing every future save/load.
+                std::error_code ec;
+                auto corruptPath = path_;
+                corruptPath += ".corrupt";
+                std::filesystem::rename(path_, corruptPath, ec);
+                if (ec) {
+                    std::filesystem::remove(path_, ec);
+                }
+                return Result<util::Json::Object>::ok({});
             }
             return Result<util::Json::Object>::ok(json.value().asObject());
         } catch (...) {
@@ -208,23 +234,41 @@ class JsonStateStore final : public IStateStore {
 
     Result<void> saveRoot(const util::Json::Object& root) noexcept {
         try {
-            std::error_code ec;
-            std::filesystem::create_directories(path_.parent_path(), ec);
-            if (ec) {
-                return Result<void>::fail({ErrorCode::StateStoreError, ec.message()});
+            const auto parent = path_.parent_path();
+            if (!parent.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(parent, ec);
+                if (ec) {
+                    return Result<void>::fail({ErrorCode::StateStoreError, ec.message()});
+                }
             }
-            std::ofstream output(path_, std::ios::binary | std::ios::trunc);
-            if (!output) {
-                return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
+            // Write to a temporary file first, then atomically move it over
+            // the live state file, so a crash mid-write cannot truncate the
+            // previous good state.
+            auto tempPath = path_;
+            tempPath += ".tmp";
+            {
+                std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+                if (!output) {
+                    return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
+                }
+                output << util::Json(root).stringify(2);
+                output.flush();
+                if (!output.good()) {
+                    std::error_code ec;
+                    std::filesystem::remove(tempPath, ec);
+                    return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
+                }
             }
-            output << util::Json(root).stringify(2);
-            return Result<void>::ok();
+            auto fileSystem = createDefaultFileSystem();
+            return fileSystem->renameOrReplace(tempPath, path_);
         } catch (...) {
             return Result<void>::fail({ErrorCode::StateStoreError, "Failed to write state file"});
         }
     }
 
     std::filesystem::path path_;
+    std::mutex mutex_;
 };
 
 } // namespace

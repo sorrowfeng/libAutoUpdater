@@ -7,8 +7,13 @@ namespace {
 class DirectDispatcher final : public IEventDispatcher {
   public:
     void post(std::function<void()> fn) noexcept override {
-        if (fn) {
-            fn();
+        // The dispatcher contract is noexcept; a throwing user callback must
+        // not terminate the host process.
+        try {
+            if (fn) {
+                fn();
+            }
+        } catch (...) {
         }
     }
 };

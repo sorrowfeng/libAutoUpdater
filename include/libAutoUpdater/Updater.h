@@ -11,9 +11,8 @@
 #include "libAutoUpdater/interfaces/ISignatureVerifier.h"
 #include "libAutoUpdater/interfaces/IStateStore.h"
 
+#include <chrono>
 #include <memory>
-#include <mutex>
-#include <thread>
 
 namespace autoupdater {
 
@@ -21,7 +20,15 @@ namespace autoupdater {
 ///
 /// Operations run asynchronously. User callbacks are delivered through the
 /// configured IEventDispatcher; GUI applications should inject a dispatcher that
-/// posts back to the UI thread.
+/// posts back to the UI thread. With the default direct dispatcher, callbacks
+/// run on the updater's background worker thread.
+///
+/// Thread safety: all public member functions may be called from any thread.
+/// Starting a new asynchronous operation (checkAsync/downloadAsync/...) first
+/// cancels and joins the previous worker, so it may block briefly while the
+/// previous operation notices the cancellation. Dependency setters
+/// (setNetworkClient, ...) should not race with an in-flight operation; the
+/// snapshot in effect when an operation starts is used for its whole lifetime.
 class Updater {
   public:
     explicit Updater(Config config);

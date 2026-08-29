@@ -11,17 +11,28 @@ namespace autoupdater {
 
 namespace {
 
-std::string currentUtcIsoLike() {
-    const auto now = std::time(nullptr);
+// Parses a strict ISO-8601 UTC timestamp ("YYYY-MM-DDTHH:MM:SSZ") so expiry
+// checks compare instants instead of doing a fragile lexicographic compare.
+Result<std::time_t> parseIsoUtcTimestamp(const std::string& text) {
     std::tm tm{};
+    std::istringstream stream(text);
+    stream >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+    if (stream.fail() || !stream.eof()) {
+        return Result<std::time_t>::fail({ErrorCode::ManifestParseFailed, "Timestamp is not ISO-8601 UTC"});
+    }
+    if (tm.tm_mon < 0 || tm.tm_mon > 11 || tm.tm_mday < 1 || tm.tm_mday > 31 || tm.tm_hour < 0 || tm.tm_hour > 23 ||
+        tm.tm_min < 0 || tm.tm_min > 59 || tm.tm_sec < 0 || tm.tm_sec > 60) {
+        return Result<std::time_t>::fail({ErrorCode::ManifestParseFailed, "Timestamp field out of range"});
+    }
 #ifdef _WIN32
-    gmtime_s(&tm, &now);
+    const std::time_t value = _mkgmtime(&tm);
 #else
-    gmtime_r(&now, &tm);
+    const std::time_t value = timegm(&tm);
 #endif
-    std::ostringstream stream;
-    stream << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return stream.str();
+    if (value == static_cast<std::time_t>(-1)) {
+        return Result<std::time_t>::fail({ErrorCode::ManifestParseFailed, "Timestamp is not representable"});
+    }
+    return Result<std::time_t>::ok(value);
 }
 
 Result<void> validateManifestAgainstConfig(const Config& config, const Manifest& manifest) {
@@ -44,9 +55,14 @@ Result<void> validateManifestAgainstConfig(const Config& config, const Manifest&
     if (manifest.minClientVersion && config.clientVersion < *manifest.minClientVersion) {
         return Result<void>::fail({ErrorCode::UnsupportedManifestSchema, "Updater client version is too old"});
     }
-    if (config.security.rejectExpiredManifest && !manifest.expiresAt.empty() &&
-        currentUtcIsoLike() > manifest.expiresAt) {
-        return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest has expired"});
+    if (config.security.rejectExpiredManifest && !manifest.expiresAt.empty()) {
+        const auto expiry = parseIsoUtcTimestamp(manifest.expiresAt);
+        if (!expiry) {
+            return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest expiresAt is malformed"});
+        }
+        if (std::time(nullptr) > expiry.value()) {
+            return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest has expired"});
+        }
     }
     if (!util::urlStartsWithAny(manifest.baseUrl, config.security.allowedBaseUrls)) {
         return Result<void>::fail({ErrorCode::SecurityPolicyViolation, "Manifest baseUrl is not allowed"});

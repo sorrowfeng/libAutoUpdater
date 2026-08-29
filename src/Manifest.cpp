@@ -88,6 +88,9 @@ Result<Manifest> Manifest::parse(const std::string& jsonText) noexcept {
         manifest.platform = optionalString(json.value(), "platform");
         manifest.arch = optionalString(json.value(), "arch");
         manifest.releaseId = optionalString(json.value(), "releaseId");
+        if (!manifest.releaseId.empty() && !util::isSafePathComponent(manifest.releaseId)) {
+            return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "releaseId contains unsafe characters"});
+        }
         manifest.releaseDate = optionalString(json.value(), "releaseDate");
         manifest.publishedAt = optionalString(json.value(), "publishedAt");
         manifest.expiresAt = optionalString(json.value(), "expiresAt");
@@ -129,11 +132,18 @@ Result<Manifest> Manifest::parse(const std::string& jsonText) noexcept {
                 file.path = path.value();
                 file.localPath = optionalString(item, "localPath");
                 file.sha256 = sha.value();
+                if (!util::isValidSha256Hex(file.sha256)) {
+                    return Result<Manifest>::fail(
+                        {ErrorCode::ManifestParseFailed, "file sha256 must be 64 hex characters: " + file.path});
+                }
                 const auto* size = item.get("size");
                 if (!size || !size->isNumber()) {
                     return Result<Manifest>::fail({ErrorCode::ManifestParseFailed, "file size is required"});
                 }
-                file.size = static_cast<std::uint64_t>(size->asNumber());
+                if (!size->asUInt64(file.size)) {
+                    return Result<Manifest>::fail({ErrorCode::ManifestParseFailed,
+                                                   "file size is not a valid non-negative integer: " + file.path});
+                }
 
                 auto validPath = util::validateManagedPath(file.path);
                 if (!validPath) {

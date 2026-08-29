@@ -63,6 +63,9 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
         plan.fromVersion = optionalString(json.value(), "fromVersion");
         plan.toVersion = optionalString(json.value(), "toVersion");
         plan.releaseId = optionalString(json.value(), "releaseId");
+        if (!plan.releaseId.empty() && !util::isSafePathComponent(plan.releaseId)) {
+            return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "releaseId contains unsafe characters"});
+        }
         plan.manifestSha256 = optionalString(json.value(), "manifestSha256");
 
         auto installDir = requiredString(json.value(), "installDir");
@@ -76,6 +79,10 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
         }
         if (!backupDir) {
             return Result<ApplyPlan>::fail(backupDir.error());
+        }
+        if (installDir.value().empty() || stagingDir.value().empty() || backupDir.value().empty()) {
+            return Result<ApplyPlan>::fail(
+                {ErrorCode::ManifestParseFailed, "installDir, stagingDir and backupDir must not be empty"});
         }
         plan.installDir = util::pathFromUtf8(installDir.value());
         plan.stagingDir = util::pathFromUtf8(stagingDir.value());
@@ -118,7 +125,10 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
             op.sha256 = optionalString(item, "sha256");
             const auto* size = item.get("size");
             if (size && size->isNumber()) {
-                op.size = static_cast<std::uint64_t>(size->asNumber());
+                if (!size->asUInt64(op.size)) {
+                    return Result<ApplyPlan>::fail(
+                        {ErrorCode::ManifestParseFailed, "operation size is not a valid non-negative integer"});
+                }
             }
             auto validTarget = util::validateManagedPath(op.target);
             if (!validTarget) {
@@ -128,6 +138,12 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText) noexcept {
                 auto validSource = util::validateManagedPath(op.source);
                 if (!validSource) {
                     return Result<ApplyPlan>::fail(validSource.error());
+                }
+                // A replace without a hash would always fail verifyReplace
+                // later; reject it at parse time with a clear message.
+                if (!util::isValidSha256Hex(op.sha256)) {
+                    return Result<ApplyPlan>::fail(
+                        {ErrorCode::ManifestParseFailed, "replace operation requires a 64-hex sha256: " + op.target});
                 }
             }
             plan.operations.push_back(std::move(op));

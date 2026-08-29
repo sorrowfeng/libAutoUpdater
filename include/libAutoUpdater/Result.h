@@ -2,11 +2,12 @@
 
 #include "libAutoUpdater/Error.h"
 
+#include <cassert>
 #include <utility>
 
 namespace autoupdater {
 
-template <class T> class Result {
+template <class T> class [[nodiscard]] Result {
   public:
     static Result ok(T value) {
         Result result;
@@ -30,9 +31,11 @@ template <class T> class Result {
     }
 
     const T& value() const {
+        assert(hasValue_ && "Result::value() called on a failed Result");
         return value_;
     }
     T& value() {
+        assert(hasValue_ && "Result::value() called on a failed Result");
         return value_;
     }
 
@@ -46,7 +49,7 @@ template <class T> class Result {
     Error error_{ErrorCode::InternalError, "Result has no value"};
 };
 
-template <> class Result<void> {
+template <> class [[nodiscard]] Result<void> {
   public:
     static Result ok() {
         Result result;

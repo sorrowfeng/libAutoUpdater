@@ -176,6 +176,11 @@ Result<std::string> sha256File(const std::filesystem::path& path) noexcept {
                 sha.update(reinterpret_cast<const std::uint8_t*>(buffer.data()), static_cast<std::size_t>(count));
             }
         }
+        // Distinguish a real read error from normal EOF; hashing partial
+        // content must not be reported as a successful hash.
+        if (input.bad()) {
+            return Result<std::string>::fail({ErrorCode::FileSystemError, "I/O error while hashing file"});
+        }
 
         return Result<std::string>::ok(toHex(sha.final()));
     } catch (...) {

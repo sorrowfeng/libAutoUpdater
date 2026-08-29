@@ -10,13 +10,18 @@ class LibAutoUpdaterConan(ConanFile):
     homepage = "https://github.com/sorrowfeng/libAutoUpdater"
     description = "C++17 cross-platform desktop online update library."
     topics = ("updater", "desktop", "cmake", "cpp17")
+    package_type = "library"
     settings = "os", "arch", "compiler", "build_type"
     options = {
+        "shared": [True, False],
+        "fPIC": [True, False],
         "with_curl": [True, False],
         "with_openssl": [True, False],
         "build_updater": [True, False],
     }
     default_options = {
+        "shared": False,
+        "fPIC": True,
         "with_curl": True,
         "with_openssl": True,
         "build_updater": True,
@@ -29,6 +34,14 @@ class LibAutoUpdaterConan(ConanFile):
         "updater/*",
         "LICENSE",
     )
+
+    def config_options(self):
+        if self.settings.os == "Windows":
+            del self.options.fPIC
+
+    def configure(self):
+        if self.options.shared:
+            self.options.rm_safe("fPIC")
 
     def requirements(self):
         if self.options.with_curl:
@@ -43,6 +56,7 @@ class LibAutoUpdaterConan(ConanFile):
         deps = CMakeDeps(self)
         deps.generate()
         tc = CMakeToolchain(self)
+        tc.variables["BUILD_SHARED_LIBS"] = bool(self.options.shared)
         tc.variables["LIBAUTOUPDATER_BUILD_EXAMPLES"] = False
         tc.variables["LIBAUTOUPDATER_BUILD_TESTS"] = False
         tc.variables["LIBAUTOUPDATER_BUILD_UPDATER"] = bool(self.options.build_updater)
@@ -64,3 +78,10 @@ class LibAutoUpdaterConan(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "libAutoUpdater")
         self.cpp_info.set_property("cmake_target_name", "libAutoUpdater::libAutoUpdater")
         self.cpp_info.libs = ["libAutoUpdater"]
+        # Native network backends link system libraries that must be visible
+        # to consumers of a static package.
+        if not self.options.with_curl:
+            if self.settings.os == "Windows":
+                self.cpp_info.system_libs.append("winhttp")
+            elif self.settings.os in ("Macos", "iOS", "tvOS", "watchOS"):
+                self.cpp_info.frameworks.extend(["CFNetwork", "CoreFoundation"])

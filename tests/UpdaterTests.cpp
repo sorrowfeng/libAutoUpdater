@@ -2,11 +2,14 @@
 
 #include "libAutoUpdater/Updater.h"
 #include "libAutoUpdater/interfaces/IEventDispatcher.h"
+#include "libAutoUpdater/interfaces/IHashProvider.h"
 #include "libAutoUpdater/interfaces/INetworkClient.h"
+#include "libAutoUpdater/interfaces/IStateStore.h"
 
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -60,6 +63,36 @@ class StaticManifestNetwork final : public autoupdater::INetworkClient {
                    autoupdater::CancellationToken&) noexcept override {
         return autoupdater::Result<autoupdater::DownloadResult>::fail(
             {autoupdater::ErrorCode::DownloadFailed, "not used"});
+    }
+};
+
+// Serves a manifest describing one file and the file content itself.
+class FileServingNetwork final : public autoupdater::INetworkClient {
+  public:
+    std::string manifestText;
+    std::string fileContent;
+
+    autoupdater::Result<std::string> getText(const std::string&, const autoupdater::NetworkOptions&,
+                                             autoupdater::CancellationToken&) noexcept override {
+        return autoupdater::Result<std::string>::ok(manifestText);
+    }
+
+    autoupdater::Result<autoupdater::DownloadResult>
+    downloadToFile(const std::string&, const std::filesystem::path& target, const autoupdater::NetworkOptions&,
+                   const std::optional<autoupdater::DownloadResumeInfo>&, autoupdater::ProgressCallback,
+                   autoupdater::CancellationToken&) noexcept override {
+        try {
+            std::filesystem::create_directories(target.parent_path());
+            std::ofstream output(target, std::ios::binary | std::ios::trunc);
+            output << fileContent;
+            output.close();
+            autoupdater::DownloadResult result;
+            result.bytesWritten = fileContent.size();
+            return autoupdater::Result<autoupdater::DownloadResult>::ok(result);
+        } catch (...) {
+            return autoupdater::Result<autoupdater::DownloadResult>::fail(
+                {autoupdater::ErrorCode::DownloadFailed, "unexpected failure"});
+        }
     }
 };
 
@@ -176,6 +209,67 @@ void testUpdaterStillReportsTerminalCheckResultWhenSuppressed() {
 
     dispatcher->drain();
     LAU_REQUIRE(checks.load() == 1);
+
+    std::error_code ec;
+    std::filesystem::remove_all(installDir, ec);
+}
+
+void testDownloadAsyncPersistsPendingUpdate() {
+    auto dispatcher = std::make_shared<QueuedDispatcher>();
+    auto installDir = uniqueTempDir();
+
+    const auto content = std::string("new binary content");
+    const auto contentHash = autoupdater::createDefaultHashProvider()->sha256Bytes(content).value();
+
+    auto network = std::make_shared<FileServingNetwork>();
+    network->fileContent = content;
+    network->manifestText = std::string("{") +
+        "\"schemaVersion\": 1,"
+        "\"version\": \"1.1.0\","
+        "\"releaseId\": \"rel-1.1.0\","
+        "\"baseUrl\": \"mock://server/\","
+        "\"files\": [{\"path\": \"bin/app.txt\", \"sha256\": \"" + contentHash + "\", \"size\": " +
+        std::to_string(content.size()) + "}]}";
+
+    {
+        autoupdater::Config config;
+        config.manifestUrl = "mock://manifest";
+        config.currentVersion = autoupdater::Version::parse("1.0.0").value();
+        config.installDir = installDir;
+        config.retry.retryDelay = std::chrono::milliseconds(1);
+
+        autoupdater::Updater updater(config);
+        updater.setNetworkClient(network);
+        updater.setEventDispatcher(dispatcher);
+
+        // The split flow: check first, then download.
+        updater.checkAsync();
+        for (int i = 0; i < 400 && updater.state() != autoupdater::State::UpdateAvailable; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        LAU_REQUIRE(updater.state() == autoupdater::State::UpdateAvailable);
+
+        updater.downloadAsync();
+        for (int i = 0; i < 400 && updater.state() != autoupdater::State::ReadyToApply; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        LAU_REQUIRE(updater.state() == autoupdater::State::ReadyToApply);
+
+        // The pending update must be persisted so rollbackLastUpdate() and
+        // markCurrentVersionHealthy() work after a restart.
+        auto store = autoupdater::createJsonStateStore(installDir / ".autoupdater" / "state.json");
+        auto pending = store->loadPendingUpdate();
+        LAU_REQUIRE(pending);
+        LAU_REQUIRE(pending.value().has_value());
+        LAU_REQUIRE(pending.value()->version.toString() == "1.1.0");
+        LAU_REQUIRE(pending.value()->releaseId == "rel-1.1.0");
+
+        auto healthy = updater.markCurrentVersionHealthy();
+        LAU_REQUIRE(healthy);
+        auto cleared = store->loadPendingUpdate();
+        LAU_REQUIRE(cleared);
+        LAU_REQUIRE(!cleared.value().has_value());
+    }
 
     std::error_code ec;
     std::filesystem::remove_all(installDir, ec);

@@ -25,6 +25,11 @@ struct NetworkOptions {
 };
 
 /// Security policy for manifest verification, URL allowlists, and replay checks.
+///
+/// Note: requireManifestSignature defaults to false, which means manifest
+/// integrity then relies on transport security (TLS) and the per-file SHA-256
+/// checks only. Production deployments should enable signature verification
+/// (publicKeyPem + manifestSignatureUrl) and/or restrict allowedBaseUrls.
 struct SecurityOptions {
     bool requireManifestSignature = false;
     std::string manifestSignatureUrl;

@@ -3,6 +3,7 @@
 #include "libAutoUpdater/Result.h"
 #include "libAutoUpdater/Version.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>

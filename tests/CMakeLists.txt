@@ -3,6 +3,7 @@ add_executable(libAutoUpdater_tests
     main.cpp
     VersionTests.cpp
     ManifestTests.cpp
+    JsonParserTests.cpp
     ManifestFetcherTests.cpp
     UpdatePlannerTests.cpp
     ApplyPlanTests.cpp
@@ -12,6 +13,7 @@ add_executable(libAutoUpdater_tests
     ApplyExecutorTests.cpp
     StateStoreTests.cpp
     UpdaterTests.cpp
+    DownloadExecutorTests.cpp
     FuzzSmokeTests.cpp)
 
 target_compile_features(libAutoUpdater_tests PRIVATE cxx_std_17)

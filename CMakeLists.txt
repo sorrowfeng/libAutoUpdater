@@ -117,6 +117,14 @@ add_library(libAutoUpdater::libAutoUpdater ALIAS libAutoUpdater)
 
 libautoupdater_apply_project_warnings(libAutoUpdater)
 
+# Without export annotations, a Windows shared build would silently produce a
+# DLL exporting nothing. WINDOWS_EXPORT_ALL_SYMBOLS keeps shared builds
+# usable until explicit export macros are introduced.
+set_target_properties(libAutoUpdater PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
+
 target_compile_features(libAutoUpdater PUBLIC cxx_std_17)
 target_include_directories(libAutoUpdater
     PUBLIC
@@ -126,7 +134,7 @@ target_include_directories(libAutoUpdater
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_compile_definitions(libAutoUpdater
-    PUBLIC
+    PRIVATE
         LIBAUTOUPDATER_VERSION="${PROJECT_VERSION}")
 
 if(WIN32)
@@ -139,7 +147,12 @@ if(LIBAUTOUPDATER_WITH_CURL)
         target_sources(libAutoUpdater PRIVATE src/default/CurlNetworkClient.cpp)
         target_link_libraries(libAutoUpdater PRIVATE CURL::libcurl)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_CURL=1)
-        set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL TRUE)
+        # Static archives record private dependencies as $<LINK_ONLY:...>
+        # interface entries; shared libraries do not, so only static builds
+        # need find_dependency() calls in the installed package config.
+        if(NOT BUILD_SHARED_LIBS)
+            set(LIBAUTOUPDATER_CONFIG_REQUIRES_CURL TRUE)
+        endif()
         set(LIBAUTOUPDATER_HAS_HTTP_BACKEND TRUE)
     elseif(LIBAUTOUPDATER_REQUIRE_CURL)
         message(FATAL_ERROR "LIBAUTOUPDATER_REQUIRE_CURL=ON but CMake could not find CURL")
@@ -167,7 +180,9 @@ if(LIBAUTOUPDATER_WITH_OPENSSL)
         target_sources(libAutoUpdater PRIVATE src/default/OpenSslSignatureVerifier.cpp)
         target_link_libraries(libAutoUpdater PRIVATE OpenSSL::Crypto)
         target_compile_definitions(libAutoUpdater PRIVATE LIBAUTOUPDATER_HAS_OPENSSL=1)
-        set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL TRUE)
+        if(NOT BUILD_SHARED_LIBS)
+            set(LIBAUTOUPDATER_CONFIG_REQUIRES_OPENSSL TRUE)
+        endif()
     endif()
 endif()
 
@@ -209,9 +224,12 @@ configure_package_config_file(
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/libAutoUpdaterConfigVersion.cmake
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion)
+    # 0.x releases may break the API between minor versions.
+    COMPATIBILITY SameMinorVersion)
 
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/libAutoUpdaterConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/libAutoUpdaterConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libAutoUpdater)
+
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/libAutoUpdater)

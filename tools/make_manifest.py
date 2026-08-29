@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -159,6 +160,13 @@ def main() -> int:
     parser.add_argument("--exclude", action="append", default=[], help="Glob or directory prefix to exclude")
     parser.add_argument("--remove", action="append", default=[], help="Managed path to remove during apply")
     args = parser.parse_args()
+
+    if args.base_url.startswith("http://"):
+        print(
+            "warning: --base-url uses plain http://; use https:// in production "
+            "to protect release artifacts in transit",
+            file=sys.stderr,
+        )
 
     manifest = build_manifest(args)
     output = args.output or (args.release_dir / "manifest.json")

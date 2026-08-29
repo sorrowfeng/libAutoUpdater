@@ -7,6 +7,8 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
+import uuid
 from pathlib import Path
 
 
@@ -22,6 +24,12 @@ def spdx_id_for(index: int) -> str:
     return f"SPDXRef-File-{index}"
 
 
+def sanitize_spdx_name(name: str) -> str:
+    """Keep only characters allowed in an SPDX identifier ([A-Za-z0-9.-])."""
+    sanitized = re.sub(r"[^A-Za-z0-9.-]", "-", name)
+    return sanitized or "package"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
@@ -34,8 +42,16 @@ def main() -> int:
     if not root.is_dir():
         raise SystemExit(f"SBOM root does not exist: {root}")
 
+    package_spdx_id = f"SPDXRef-Package-{sanitize_spdx_name(args.name)}"
+
     files = []
-    relationships = []
+    relationships = [
+        {
+            "spdxElementId": "SPDXRef-DOCUMENT",
+            "relationshipType": "DESCRIBES",
+            "relatedSpdxElement": package_spdx_id,
+        }
+    ]
     for index, path in enumerate(sorted(p for p in root.rglob("*") if p.is_file()), start=1):
         file_id = spdx_id_for(index)
         files.append(
@@ -50,26 +66,30 @@ def main() -> int:
         )
         relationships.append(
             {
-                "spdxElementId": "SPDXRef-Package-libAutoUpdater",
+                "spdxElementId": package_spdx_id,
                 "relationshipType": "CONTAINS",
                 "relatedSpdxElement": file_id,
             }
         )
 
+    now = dt.datetime.now(dt.timezone.utc)
     document = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"{args.name}-{args.version}",
-        "documentNamespace": f"https://github.com/sorrowfeng/libAutoUpdater/sbom/{args.version}",
+        "documentNamespace": (
+            f"https://github.com/sorrowfeng/libAutoUpdater/sbom/"
+            f"{args.version}-{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+        ),
         "creationInfo": {
-            "created": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "creators": ["Tool: libAutoUpdater tools/make_sbom.py"],
         },
         "packages": [
             {
                 "name": args.name,
-                "SPDXID": "SPDXRef-Package-libAutoUpdater",
+                "SPDXID": package_spdx_id,
                 "versionInfo": args.version,
                 "downloadLocation": "https://github.com/sorrowfeng/libAutoUpdater",
                 "filesAnalyzed": True,

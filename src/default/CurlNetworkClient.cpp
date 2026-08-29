@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
 
@@ -24,7 +25,12 @@ void ensureCurlGlobalInit() {
 struct TextContext {
     std::string data;
     CancellationToken* cancel = nullptr;
+    bool overflow = false;
 };
+
+// Manifests and other text payloads are small; cap them so a hostile or
+// broken server cannot exhaust memory.
+constexpr std::size_t kMaxTextBytes = 16 * 1024 * 1024;
 
 struct FileContext {
     std::ofstream* output = nullptr;
@@ -35,6 +41,7 @@ struct FileContext {
     std::string etag;
     std::string lastModified;
     CancellationToken* cancel = nullptr;
+    bool writeFailed = false;
 };
 
 std::size_t writeText(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
@@ -43,6 +50,10 @@ std::size_t writeText(char* ptr, std::size_t size, std::size_t nmemb, void* user
         return 0;
     }
     const auto bytes = size * nmemb;
+    if (context->data.size() + bytes > kMaxTextBytes) {
+        context->overflow = true;
+        return 0;
+    }
     context->data.append(ptr, bytes);
     return bytes;
 }
@@ -54,6 +65,12 @@ std::size_t writeFile(char* ptr, std::size_t size, std::size_t nmemb, void* user
     }
     const auto bytes = size * nmemb;
     context->output->write(ptr, static_cast<std::streamsize>(bytes));
+    if (!context->output->good()) {
+        // Abort the transfer so a full disk is reported as a disk error
+        // instead of surfacing later as a hash mismatch.
+        context->writeFailed = true;
+        return 0;
+    }
     context->downloaded += static_cast<std::uint64_t>(bytes);
     if (context->progress) {
         context->progress({context->downloaded, context->total, context->currentFile});
@@ -81,6 +98,13 @@ std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* us
             context->etag = value;
         } else if (key == "last-modified") {
             context->lastModified = value;
+        } else if (key == "content-length") {
+            // Report the total during the transfer as well. The last header
+            // block seen belongs to the final response after redirects.
+            const auto length = std::strtoull(value.c_str(), nullptr, 10);
+            if (length > 0) {
+                context->total = context->downloaded + static_cast<std::uint64_t>(length);
+            }
         }
     }
     return bytes;
@@ -88,6 +112,13 @@ std::size_t writeHeader(char* ptr, std::size_t size, std::size_t nmemb, void* us
 
 void applyCommonOptions(CURL* curl, const NetworkOptions& options) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    // Initial requests may use http(s) or local file URLs (used by tests and
+    // file-based release hosting); redirects may never leave http(s).
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https,file");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#endif
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(options.connectTimeout.count()));
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(options.transferTimeout.count()));
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, options.verifyTls ? 1L : 0L);
@@ -118,6 +149,9 @@ class CurlNetworkClient final : public INetworkClient {
 
         if (cancel.isCancelled()) {
             return Result<std::string>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+        }
+        if (context.overflow) {
+            return Result<std::string>::fail({ErrorCode::NetworkError, "Response exceeds the size limit"});
         }
         if (code != CURLE_OK) {
             return Result<std::string>::fail({ErrorCode::NetworkError, curl_easy_strerror(code)});
@@ -186,10 +220,12 @@ class CurlNetworkClient final : public INetworkClient {
             }
 
             const CURLcode code = curl_easy_perform(curl);
-            double contentLength = 0;
-            curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &contentLength);
+            curl_off_t contentLength = 0;
+            curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
             if (contentLength > 0) {
-                context.total = static_cast<std::uint64_t>(contentLength);
+                // downloaded starts at the resume offset, so after a complete
+                // transfer it equals the full object size.
+                context.total = context.downloaded;
             }
             long response = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
@@ -200,6 +236,9 @@ class CurlNetworkClient final : public INetworkClient {
 
             if (cancel.isCancelled()) {
                 return Result<DownloadResult>::fail({ErrorCode::Cancelled, "Operation cancelled"});
+            }
+            if (context.writeFailed) {
+                return Result<DownloadResult>::fail({ErrorCode::FileSystemError, "Failed to write download to disk"});
             }
             if (code != CURLE_OK) {
                 return Result<DownloadResult>::fail({ErrorCode::DownloadFailed, curl_easy_strerror(code)});

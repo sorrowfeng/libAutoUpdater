@@ -26,13 +26,16 @@ jobs:
         run: >
           cmake -S . -B build
           -DLIBAUTOUPDATER_BUILD_EXAMPLES=OFF
-          -DLIBAUTOUPDATER_BUILD_TESTS=OFF
+          -DLIBAUTOUPDATER_BUILD_TESTS=ON
           -DLIBAUTOUPDATER_BUILD_UPDATER=ON
           -DLIBAUTOUPDATER_WITH_QT=OFF
           -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Install
         run: cmake --install build --config Release --prefix install-package

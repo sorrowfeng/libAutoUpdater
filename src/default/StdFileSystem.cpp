@@ -3,6 +3,10 @@
 #include <fstream>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace autoupdater {
 
 namespace {
@@ -72,15 +76,30 @@ class StdFileSystem final : public IFileSystem {
                     return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
                 }
             }
-            std::filesystem::remove(to, ec);
-            ec.clear();
+#ifdef _WIN32
+            // MoveFileExW atomically replaces an existing destination; a
+            // remove+rename sequence would leave a window where the target
+            // does not exist at all.
+            if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                return Result<void>::ok();
+            }
+            // Fall through to the copy path for cross-volume moves.
+#else
+            // POSIX rename(2) atomically replaces the destination.
             std::filesystem::rename(from, to, ec);
+            if (!ec) {
+                return Result<void>::ok();
+            }
+            ec.clear();
+            // Fall through to the copy path for cross-device moves (EXDEV).
+#endif
+            std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
             if (ec) {
-                std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
-                if (ec) {
-                    return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
-                }
-                std::filesystem::remove(from, ec);
+                return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
+            }
+            std::filesystem::remove(from, ec);
+            if (ec) {
+                return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
             }
             return Result<void>::ok();
         } catch (...) {
@@ -137,12 +156,24 @@ class StdFileSystem final : public IFileSystem {
                     return Result<void>::fail({ErrorCode::FileSystemError, ec.message()});
                 }
             }
-            std::ofstream output(path, std::ios::binary | std::ios::trunc);
-            if (!output) {
-                return Result<void>::fail({ErrorCode::FileSystemError, "Failed to open file for writing"});
+            // Write to a sibling temp file and atomically move it over the
+            // destination so a crash cannot leave a truncated file behind.
+            auto tempPath = path;
+            tempPath += ".tmp";
+            {
+                std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+                if (!output) {
+                    return Result<void>::fail({ErrorCode::FileSystemError, "Failed to open file for writing"});
+                }
+                output.write(text.data(), static_cast<std::streamsize>(text.size()));
+                output.flush();
+                if (!output.good()) {
+                    output.close();
+                    std::filesystem::remove(tempPath, ec);
+                    return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write file contents"});
+                }
             }
-            output.write(text.data(), static_cast<std::streamsize>(text.size()));
-            return Result<void>::ok();
+            return renameOrReplace(tempPath, path);
         } catch (...) {
             return Result<void>::fail({ErrorCode::FileSystemError, "Failed to write file"});
         }

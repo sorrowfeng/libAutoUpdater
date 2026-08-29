@@ -403,7 +403,10 @@ The updater executable executes the apply plan and writes a transaction journal:
 install/.autoupdater/journal/<transaction-id>.json
 ```
 
-The journal records each completed step so interrupted operations can be inspected and future recovery logic can resume cleanup or rollback.
+The journal records each applied operation, the backup directory, and a transaction
+state (`applying`, then a terminal state). On startup the updater scans the journal
+directory and rolls back any transaction still in the `applying` state, so an
+interrupted apply is reverted before a new apply begins.
 
 ## 7. Update Flow
 
@@ -680,7 +683,12 @@ Lock location:
 install/.autoupdater/update.lock
 ```
 
-The current implementation uses an atomic lock directory. Future platform-specific implementations may use a Windows named mutex or POSIX `flock`.
+The lock is an atomically created directory. The acquiring updater writes an
+`owner.txt` file inside it containing its process id and the acquisition timestamp.
+If the lock already exists, the updater reads `owner.txt` and reclaims the lock when
+the recorded owner process is no longer alive (a stale lock left by a crashed
+updater); otherwise it fails with "Another update appears to be running". Future
+platform-specific implementations may use a Windows named mutex or POSIX `flock`.
 
 ## 11. CMake Targets
 
@@ -950,11 +958,16 @@ Mitigation:
 
 The apply process may be interrupted.
 
-Mitigation:
+Mitigation (implemented):
 
-- Record each step in a transaction journal.
-- Detect incomplete transactions on the next start.
-- Support rollback or cleanup.
+- Each replaced file is first materialized as a temporary file next to its
+  destination and then renamed over it atomically, so a crash cannot leave a
+  partially written file at the target path.
+- Each completed operation is recorded in the transaction journal, which is kept
+  in the `applying` state until the transaction finishes.
+- On the next start the updater detects journals still in the `applying` state
+  and rolls back the recorded operations from the backup directory, then marks
+  the journal as `rolled-back` so recovery is not repeated.
 
 ## 16. Acceptance Criteria
 

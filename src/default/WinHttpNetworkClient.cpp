@@ -192,7 +192,8 @@ Result<WinHttpRequest> openRequest(const std::string& url, const NetworkOptions&
         return Result<WinHttpRequest>::fail(parsed.error());
     }
 
-    WinHttpHandle session(WinHttpOpen(L"libAutoUpdater/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+    const auto userAgent = widen(std::string("libAutoUpdater/") + LIBAUTOUPDATER_VERSION);
+    WinHttpHandle session(WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                                       WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) {
         return failLast<WinHttpRequest>(ErrorCode::NetworkError, "WinHttpOpen");
@@ -267,13 +268,20 @@ std::string queryHeader(HINTERNET request, const wchar_t* name) {
 }
 
 std::uint64_t queryContentLength(HINTERNET request) {
-    DWORD value = 0;
-    DWORD size = sizeof(value);
-    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &value, &size, WINHTTP_NO_HEADER_INDEX)) {
+    // Query the header as text: the NUMBER variant is limited to a 32-bit
+    // DWORD and truncates objects larger than 4 GiB.
+    DWORD size = 0;
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, WINHTTP_NO_OUTPUT_BUFFER,
+                        &size, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
         return 0;
     }
-    return value;
+    std::wstring value(size / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, value.data(), &size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(_wcstoui64(value.c_str(), nullptr, 10));
 }
 
 Result<std::vector<char>> readResponseBytes(HINTERNET request, CancellationToken& cancel, ProgressCallback progress,
@@ -311,6 +319,12 @@ Result<std::vector<char>> readResponseBytes(HINTERNET request, CancellationToken
                 return Result<std::vector<char>>::fail({ErrorCode::DownloadFailed, "Failed to write target file"});
             }
         } else {
+            // Text payloads (manifests) are small; cap them so a hostile or
+            // broken server cannot exhaust memory.
+            constexpr std::size_t kMaxTextBytes = 16 * 1024 * 1024;
+            if (bytes.size() + read > kMaxTextBytes) {
+                return Result<std::vector<char>>::fail({ErrorCode::NetworkError, "Response exceeds the size limit"});
+            }
             bytes.insert(bytes.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(read));
         }
         downloaded += read;

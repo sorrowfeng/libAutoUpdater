@@ -1,6 +1,5 @@
 #include "util/PathUtil.h"
 
-#include <algorithm>
 #include <cctype>
 
 namespace autoupdater::util {
@@ -13,6 +12,28 @@ bool hasDrivePrefix(const std::string& path) {
 
 bool startsWith(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string toLowerAscii(std::string value) {
+    for (auto& c : value) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return value;
+}
+
+// Windows reserves these device names in every directory, with any extension.
+bool isWindowsReservedName(const std::string& segment) {
+    const auto dot = segment.find('.');
+    const auto stem = toLowerAscii(segment.substr(0, dot));
+    static const char* const kReserved[] = {"con",  "prn",  "aux",  "nul",  "com1", "com2", "com3",
+                                            "com4", "com5", "com6", "com7", "com8", "com9", "lpt1",
+                                            "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+    for (const auto* name : kReserved) {
+        if (stem == name) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -45,6 +66,7 @@ Result<void> validateManagedPath(const std::string& path) noexcept {
         return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path must use forward slashes"});
     }
 
+    bool firstSegment = true;
     std::size_t start = 0;
     while (start <= path.size()) {
         const auto end = path.find('/', start);
@@ -52,6 +74,24 @@ Result<void> validateManagedPath(const std::string& path) noexcept {
         if (part.empty() || part == "." || part == "..") {
             return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path contains unsafe segment"});
         }
+        // ':' would address an NTFS alternate data stream instead of the file.
+        if (part.find(':') != std::string::npos) {
+            return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path segment contains ':'"});
+        }
+        // Windows silently strips trailing dots and spaces, which would
+        // desynchronize the hashed name from the on-disk name.
+        if (part.back() == '.' || part.back() == ' ') {
+            return Result<void>::fail(
+                {ErrorCode::PathTraversalRejected, "Managed path segment ends with '.' or space"});
+        }
+        if (isWindowsReservedName(part)) {
+            return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path uses a reserved device name"});
+        }
+        // The updater's internal state directory must never be a target.
+        if (firstSegment && part == ".autoupdater") {
+            return Result<void>::fail({ErrorCode::PathTraversalRejected, "Managed path targets updater state"});
+        }
+        firstSegment = false;
         if (end == std::string::npos) {
             break;
         }
@@ -107,16 +147,47 @@ bool pathAllowedByWhitelist(const std::string& path, const std::vector<std::stri
     return false;
 }
 
-std::string normalizeManifestPath(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    while (!path.empty() && path.front() == '/') {
-        path.erase(path.begin());
-    }
-    return path;
-}
-
 std::filesystem::path defaultStagingRoot(const std::filesystem::path& installDir) {
     return installDir / ".autoupdater";
+}
+
+// True when `value` is a non-empty identifier made only of [A-Za-z0-9._+-]
+// and is not "." or "..". Suitable for values interpolated into file names
+// such as release ids or version strings.
+bool isSafePathComponent(const std::string& value) noexcept {
+    if (value.empty() || value == "." || value == "..") {
+        return false;
+    }
+    for (const char c : value) {
+        const auto uc = static_cast<unsigned char>(c);
+        const bool ok = std::isalnum(uc) || c == '.' || c == '_' || c == '-' || c == '+';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isValidSha256Hex(const std::string& value) noexcept {
+    if (value.size() != 64) {
+        return false;
+    }
+    for (const char c : value) {
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string sanitizePathComponent(std::string value) {
+    for (auto& ch : value) {
+        if (ch == '+' || ch == '/' || ch == '\\' || ch == ':') {
+            ch = '_';
+        }
+    }
+    return value;
 }
 
 } // namespace autoupdater::util

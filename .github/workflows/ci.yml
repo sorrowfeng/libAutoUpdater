@@ -89,12 +89,12 @@ jobs:
       - name: Install clang-format
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format
+          sudo apt-get install -y clang-format-18
 
       - name: Check format
         run: |
           mapfile -t files < <(git ls-files '*.cpp' '*.h')
-          clang-format --dry-run --Werror "${files[@]}"
+          clang-format-18 --dry-run --Werror "${files[@]}"
 
   static-analysis:
     name: clang-tidy

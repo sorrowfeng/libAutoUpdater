@@ -36,6 +36,10 @@ class Json {
     bool asBool(bool fallback = false) const noexcept;
     double asNumber(double fallback = 0) const noexcept;
     std::int64_t asInt(std::int64_t fallback = 0) const noexcept;
+    // Returns true and sets `out` only when the value is a number holding an
+    // exact non-negative integer that fits in std::uint64_t. This avoids the
+    // undefined behavior of casting out-of-range doubles at call sites.
+    bool asUInt64(std::uint64_t& out) const noexcept;
     const std::string& asString() const noexcept;
     const Object& asObject() const noexcept;
     const Array& asArray() const noexcept;

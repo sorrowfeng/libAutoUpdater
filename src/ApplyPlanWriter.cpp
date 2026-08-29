@@ -2,30 +2,15 @@
 
 #include "util/PathUtil.h"
 
-#include <sstream>
-
 namespace autoupdater {
-
-namespace {
-
-std::string safeVersionForPath(const Version& version) {
-    auto text = version.toString();
-    for (auto& ch : text) {
-        if (ch == '+' || ch == '/' || ch == '\\' || ch == ':') {
-            ch = '_';
-        }
-    }
-    return text;
-}
-
-} // namespace
 
 Result<WrittenApplyPlan> writeApplyPlan(const Config& config, const ManifestEnvelope& envelope,
                                         const UpdateDecision& decision, IFileSystem& fileSystem) {
     const auto stateRoot = util::defaultStagingRoot(config.installDir);
     const auto backupDir =
         stateRoot / "backup" /
-        (safeVersionForPath(config.currentVersion) + "-to-" + safeVersionForPath(envelope.manifest.version));
+        (util::sanitizePathComponent(config.currentVersion.toString()) + "-to-" +
+         util::sanitizePathComponent(envelope.manifest.version.toString()));
 
     ApplyPlan plan;
     plan.schemaVersion = 1;

@@ -35,7 +35,7 @@ std::vector<std::string> split(const std::string& text, char delimiter) {
     return parts;
 }
 
-bool validDotIdentifiers(const std::string& text, bool allowEmpty) {
+bool validDotIdentifiers(const std::string& text, bool allowEmpty, bool rejectLeadingZero) {
     if (text.empty()) {
         return allowEmpty;
     }
@@ -46,7 +46,9 @@ bool validDotIdentifiers(const std::string& text, bool allowEmpty) {
         if (!std::all_of(part.begin(), part.end(), isIdentifierChar)) {
             return false;
         }
-        if (isNumericIdentifier(part) && part.size() > 1 && part.front() == '0') {
+        // SemVer forbids leading zeros in numeric prerelease identifiers but
+        // explicitly allows them in build metadata.
+        if (rejectLeadingZero && isNumericIdentifier(part) && part.size() > 1 && part.front() == '0') {
             return false;
         }
     }
@@ -146,7 +148,7 @@ Result<Version> Version::parse(const std::string& text) noexcept {
         if (plus != std::string::npos) {
             coreAndPrerelease = text.substr(0, plus);
             build = text.substr(plus + 1);
-            if (!validDotIdentifiers(build, false)) {
+            if (!validDotIdentifiers(build, false, false)) {
                 return Result<Version>::fail({ErrorCode::VersionParseFailed, "Invalid build metadata"});
             }
         }
@@ -157,7 +159,7 @@ Result<Version> Version::parse(const std::string& text) noexcept {
         if (dash != std::string::npos) {
             core = coreAndPrerelease.substr(0, dash);
             prerelease = coreAndPrerelease.substr(dash + 1);
-            if (!validDotIdentifiers(prerelease, false)) {
+            if (!validDotIdentifiers(prerelease, false, true)) {
                 return Result<Version>::fail({ErrorCode::VersionParseFailed, "Invalid prerelease identifiers"});
             }
         }

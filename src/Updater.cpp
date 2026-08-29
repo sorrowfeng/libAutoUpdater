@@ -16,16 +16,6 @@ namespace autoupdater {
 
 namespace {
 
-std::string safeVersionForPath(const Version& version) {
-    auto text = version.toString();
-    for (auto& ch : text) {
-        if (ch == '+' || ch == '/' || ch == '\\' || ch == ':') {
-            ch = '_';
-        }
-    }
-    return text;
-}
-
 std::string detectPlatform() {
 #ifdef _WIN32
     return "windows";
@@ -158,6 +148,56 @@ struct Updater::Impl {
         });
     }
 
+    // noexcept wrapper used from contexts (e.g. worker thread top level)
+    // where throwing would terminate the process.
+    void reportErrorCatching(Error error) noexcept {
+        try {
+            reportError(std::move(error));
+        } catch (...) {
+        }
+    }
+
+    // Reports an operation failure. A user-initiated cancellation is not an
+    // error: it returns the updater to Idle without firing onError.
+    void reportFailure(const Error& error) {
+        if (error.code == ErrorCode::Cancelled) {
+            // start() joins the previous worker before launching a new task,
+            // so no newer operation can be running here; a plain check is
+            // enough to avoid clobbering a state set after cancellation.
+            const auto current = state();
+            if (current == State::Checking || current == State::Downloading) {
+                setState(State::Idle);
+            }
+            return;
+        }
+        reportError(error);
+    }
+
+    static State stateForCheck(const CheckResult& check) {
+        if (check.updateAvailable) {
+            return State::UpdateAvailable;
+        }
+        if (check.reinstallRequired) {
+            // The current install is too old to update; only a manual
+            // reinstall helps. Reporting UpToDate here would be misleading.
+            return State::Failed;
+        }
+        return State::UpToDate;
+    }
+
+    void savePendingUpdate(const Dependencies& deps, const ManifestEnvelope& envelope,
+                           const WrittenApplyPlan& written) {
+        if (!deps.stateStore) {
+            return;
+        }
+        PendingUpdate pending;
+        pending.version = envelope.manifest.version;
+        pending.releaseId = envelope.manifest.releaseId;
+        pending.backupDir = written.plan.backupDir;
+        pending.applyPlanPath = written.path;
+        (void)deps.stateStore->savePendingUpdate(pending);
+    }
+
     Result<void> validateConfig(const Dependencies& deps) {
         if (config.manifestUrl.empty()) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "manifestUrl is required"});
@@ -188,7 +228,7 @@ struct Updater::Impl {
 
         if (effectiveConfig.tempDir == util::defaultStagingRoot(effectiveConfig.installDir) / "staging") {
             effectiveConfig.tempDir = util::defaultStagingRoot(effectiveConfig.installDir) / "staging" /
-                                      safeVersionForPath(envelope.value().manifest.version);
+                                      util::sanitizePathComponent(envelope.value().manifest.version.toString());
         }
 
         auto snapshot =
@@ -217,15 +257,34 @@ struct Updater::Impl {
     void start(std::function<void()> task) noexcept {
         try {
             std::lock_guard<std::mutex> workerLock(workerMutex);
+            // Signal the previous operation to stop before joining it so a
+            // long-running download does not block this call longer than the
+            // time the operation needs to notice the cancellation.
+            {
+                std::lock_guard<std::mutex> lock(tokenMutex);
+                if (currentToken) {
+                    currentToken->cancel();
+                }
+            }
             joinWorkerUnlocked();
             auto token = std::make_shared<CancellationToken>();
             {
                 std::lock_guard<std::mutex> lock(tokenMutex);
                 currentToken = token;
             }
-            worker = std::thread([task = std::move(task), token] {
+            worker = std::thread([this, task = std::move(task), token] {
                 (void)token;
-                task();
+                try {
+                    task();
+                } catch (...) {
+                    // A task must never let an exception escape the thread;
+                    // that would terminate the host process. The library
+                    // promises Result-based errors instead.
+                    try {
+                        reportErrorCatching({ErrorCode::InternalError, "Updater worker task threw unexpectedly"});
+                    } catch (...) {
+                    }
+                }
             });
         } catch (...) {
             reportError({ErrorCode::InternalError, "Failed to start updater worker"});
@@ -251,13 +310,18 @@ struct Updater::Impl {
             }
 
             const auto check = decision.value().checkResult;
-            setState(check.updateAvailable ? State::UpdateAvailable : State::UpToDate);
             auto callback = callbacksCopy().onCheckResult;
             post([callback = std::move(callback), check] {
                 if (callback) {
                     callback(check);
                 }
             });
+            if (check.reinstallRequired) {
+                reportError({ErrorCode::ReinstallRequired,
+                             "Current version is below the manifest minVersion; a manual reinstall is required"});
+                return;
+            }
+            setState(stateForCheck(check));
         });
     }
 
@@ -283,11 +347,18 @@ struct Updater::Impl {
             }
 
             if (!check.updateAvailable || check.reinstallRequired) {
-                setState(check.updateAvailable ? State::UpdateAvailable : State::UpToDate);
-                std::lock_guard<std::mutex> lock(mutex);
-                lastConfig = effective;
-                lastEnvelope = envelope;
-                lastDecision = decision.value();
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    lastConfig = effective;
+                    lastEnvelope = envelope;
+                    lastDecision = decision.value();
+                }
+                if (check.reinstallRequired) {
+                    reportError({ErrorCode::ReinstallRequired,
+                                 "Current version is below the manifest minVersion; a manual reinstall is required"});
+                    return;
+                }
+                setState(stateForCheck(check));
                 return;
             }
 
@@ -304,7 +375,7 @@ struct Updater::Impl {
                 },
                 *tokenCopy());
             if (!downloaded) {
-                reportError(downloaded.error());
+                reportFailure(downloaded.error());
                 return;
             }
 
@@ -314,14 +385,7 @@ struct Updater::Impl {
                 return;
             }
 
-            if (deps.stateStore) {
-                PendingUpdate pending;
-                pending.version = envelope.manifest.version;
-                pending.releaseId = envelope.manifest.releaseId;
-                pending.backupDir = written.value().plan.backupDir;
-                pending.applyPlanPath = written.value().path;
-                deps.stateStore->savePendingUpdate(pending);
-            }
+            savePendingUpdate(deps, envelope, written.value());
 
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -356,7 +420,10 @@ struct Updater::Impl {
             return;
         }
 
-        stopPeriodicCheck();
+        // Serializes concurrent start/stop calls so periodicWorker is never
+        // assigned while still joinable (which would terminate the process).
+        std::lock_guard<std::mutex> lifecycleLock(periodicLifecycleMutex);
+        stopPeriodicCheckUnlocked();
         {
             std::lock_guard<std::mutex> lock(periodicMutex);
             periodicStop = false;
@@ -396,6 +463,11 @@ struct Updater::Impl {
     }
 
     void stopPeriodicCheck() noexcept {
+        std::lock_guard<std::mutex> lifecycleLock(periodicLifecycleMutex);
+        stopPeriodicCheckUnlocked();
+    }
+
+    void stopPeriodicCheckUnlocked() noexcept {
         {
             std::lock_guard<std::mutex> lock(periodicMutex);
             periodicStop = true;
@@ -439,7 +511,12 @@ struct Updater::Impl {
             }
 
             if (!decision.checkResult.updateAvailable || decision.checkResult.reinstallRequired) {
-                setState(decision.checkResult.updateAvailable ? State::UpdateAvailable : State::UpToDate);
+                if (decision.checkResult.reinstallRequired) {
+                    reportError({ErrorCode::ReinstallRequired,
+                                 "Current version is below the manifest minVersion; a manual reinstall is required"});
+                    return;
+                }
+                setState(stateForCheck(decision.checkResult));
                 return;
             }
 
@@ -456,7 +533,7 @@ struct Updater::Impl {
                 },
                 *tokenCopy());
             if (!downloaded) {
-                reportError(downloaded.error());
+                reportFailure(downloaded.error());
                 return;
             }
 
@@ -465,6 +542,7 @@ struct Updater::Impl {
                 reportError(written.error());
                 return;
             }
+            savePendingUpdate(deps, envelope, written.value());
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 lastConfig = effective;
@@ -511,13 +589,20 @@ struct Updater::Impl {
             return Result<void>::ok();
         }
         std::string releaseId;
+        std::filesystem::path backupDir;
         auto pending = deps.stateStore->loadPendingUpdate();
         if (pending && pending.value()) {
             releaseId = pending.value()->releaseId;
+            backupDir = pending.value()->backupDir;
         }
         auto save = deps.stateStore->saveLastAcceptedVersion(config.currentVersion, releaseId);
         if (!save) {
             return save;
+        }
+        // The update proved healthy, so its rollback backup is no longer
+        // needed; otherwise backups would accumulate without bound.
+        if (!backupDir.empty() && deps.fileSystem) {
+            (void)deps.fileSystem->removeAll(backupDir);
         }
         return deps.stateStore->clearPendingUpdate();
     }
@@ -527,7 +612,7 @@ struct Updater::Impl {
         if (!deps.stateStore) {
             return Result<void>::ok();
         }
-        if (!deps.fileSystem) {
+        if (!deps.fileSystem || !deps.hashProvider) {
             return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
         }
         auto pending = deps.stateStore->loadPendingUpdate();
@@ -550,12 +635,16 @@ struct Updater::Impl {
             return Result<void>::fail(plan.error());
         }
 
+        // Only the operation list is taken from the plan; the install root is
+        // always our own configured directory, never plan-controlled input.
+        const auto backupRoot = pending.value()->backupDir.empty() ? plan.value().backupDir
+                                                                   : pending.value()->backupDir;
         for (auto it = plan.value().operations.rbegin(); it != plan.value().operations.rend(); ++it) {
-            auto target = util::safeJoin(plan.value().installDir, it->target);
+            auto target = util::safeJoin(config.installDir, it->target);
             if (!target) {
                 return Result<void>::fail(target.error());
             }
-            auto backup = util::safeJoin(plan.value().backupDir, it->target);
+            auto backup = util::safeJoin(backupRoot, it->target);
             if (!backup) {
                 return Result<void>::fail(backup.error());
             }
@@ -565,6 +654,20 @@ struct Updater::Impl {
                 if (!copied) {
                     return copied;
                 }
+                // The plan's sha256 describes the *new* file, not the backup,
+                // so verify restore integrity by comparing backup and target.
+                auto backupHash = deps.hashProvider->sha256File(backup.value());
+                auto targetHash = deps.hashProvider->sha256File(target.value());
+                if (!backupHash) {
+                    return Result<void>::fail(backupHash.error());
+                }
+                if (!targetHash) {
+                    return Result<void>::fail(targetHash.error());
+                }
+                if (backupHash.value() != targetHash.value()) {
+                    return Result<void>::fail(
+                        {ErrorCode::HashMismatch, "Rolled-back file does not match its backup"});
+                }
             } else if (it->type == ApplyOperationType::Replace) {
                 auto removed = deps.fileSystem->remove(target.value());
                 if (!removed) {
@@ -573,6 +676,10 @@ struct Updater::Impl {
             }
         }
 
+        // Rollback succeeded: drop the consumed backup and pending record.
+        if (!backupRoot.empty()) {
+            (void)deps.fileSystem->removeAll(backupRoot);
+        }
         return deps.stateStore->clearPendingUpdate();
     }
 
@@ -594,6 +701,7 @@ struct Updater::Impl {
     std::mutex tokenMutex;
     std::shared_ptr<CancellationToken> currentToken;
     std::mutex periodicMutex;
+    std::mutex periodicLifecycleMutex;
     std::condition_variable periodicCv;
     bool periodicStop = false;
 
