@@ -18,12 +18,21 @@
 extern char** environ;
 #endif
 
-// posix_spawn extensions used below are not available everywhere.
+// posix_spawn extensions used below are not available everywhere. Note that
+// __GLIBC_PREREQ is a function-like macro that only exists under glibc, so it
+// must be guarded by nested #if instead of a single combined expression.
 #if !defined(_WIN32)
-#if (defined(__GLIBC__) && __GLIBC_PREREQ(2, 26)) || defined(__APPLE__)
+#if defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 26)
 #define LIBAUTOUPDATER_POSIX_SPAWN_SETSID 1
 #endif
-#if (defined(__GLIBC__) && __GLIBC_PREREQ(2, 29)) || defined(__APPLE__)
+#if __GLIBC_PREREQ(2, 29)
+#define LIBAUTOUPDATER_POSIX_SPAWN_CHDIR 1
+#endif
+#elif defined(__APPLE__)
+// macOS provides POSIX_SPAWN_SETSID and posix_spawn_file_actions_addchdir_np
+// since 10.15.
+#define LIBAUTOUPDATER_POSIX_SPAWN_SETSID 1
 #define LIBAUTOUPDATER_POSIX_SPAWN_CHDIR 1
 #endif
 #endif
