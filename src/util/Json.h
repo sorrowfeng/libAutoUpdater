@@ -18,8 +18,7 @@ class Json {
     using Array = std::vector<Json>;
 
   private:
-    using Storage =
-        std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double, std::string, Object, Array>;
+    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double, std::string, Object, Array>;
 
     template <typename Integer> static Storage integerStorage(Integer value) noexcept {
         static_assert(sizeof(Integer) <= sizeof(std::uint64_t), "JSON integers wider than 64 bits are unsupported");

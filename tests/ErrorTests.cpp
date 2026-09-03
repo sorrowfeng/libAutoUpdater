@@ -27,16 +27,16 @@ void testStructuredDiagnosticsAreStableAndNonSensitive() {
     const std::string privateMaterial = "PRIVATE_KEY_MATERIAL";
     const autoupdater::Error sensitive{
         autoupdater::ErrorCode::ApplyLaunchFailed,
-        "request https://user:password@example.test/release?token=" + credential +
-            "&X-Amz-Signature=" + signature + " failed; signature=" + signature +
-            "; -----BEGIN PRIVATE KEY----- " + privateMaterial + " -----END PRIVATE KEY-----",
+        "request https://user:password@example.test/release?token=" + credential + "&X-Amz-Signature=" + signature +
+            " failed; signature=" + signature + "; -----BEGIN PRIVATE KEY----- " + privateMaterial +
+            " -----END PRIVATE KEY-----",
         autoupdater::ErrorPhase::Restart,
     };
 
     const auto diagnostic = autoupdater::formatDiagnostic(sensitive);
     LAU_REQUIRE(diagnostic == "phase=Restart code=ApplyLaunchFailed");
-    for (const auto* secret : {"user", "password", "token", "X-Amz-Signature", credential.c_str(),
-                               signature.c_str(), "PRIVATE KEY", privateMaterial.c_str()}) {
+    for (const auto* secret : {"user", "password", "token", "X-Amz-Signature", credential.c_str(), signature.c_str(),
+                               "PRIVATE KEY", privateMaterial.c_str()}) {
         LAU_REQUIRE(diagnostic.find(secret) == std::string::npos);
     }
 }

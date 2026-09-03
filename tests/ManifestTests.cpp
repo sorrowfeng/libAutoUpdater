@@ -9,8 +9,8 @@ namespace {
 
 const std::string kSha256(64, 'a');
 
-autoupdater::Result<autoupdater::Manifest>
-parseManifestTargets(std::vector<autoupdater::ManifestFile> files, std::vector<std::string> remove = {}) {
+autoupdater::Result<autoupdater::Manifest> parseManifestTargets(std::vector<autoupdater::ManifestFile> files,
+                                                                std::vector<std::string> remove = {}) {
     autoupdater::Manifest manifest;
     manifest.version = autoupdater::Version::parse("1.1.0").value();
     manifest.files = std::move(files);
@@ -77,8 +77,7 @@ void testManifestRejectsConflictingManagedTargets() {
 
     requireTargetConflict(parseManifestTargets({}, {"obsolete.dll", "obsolete.dll"}));
 
-    requireTargetConflict(parseManifestTargets(
-        {{"objects/app.bin", "bin/app.exe", kSha256, 4}}, {"bin/app.exe"}));
+    requireTargetConflict(parseManifestTargets({{"objects/app.bin", "bin/app.exe", kSha256, 4}}, {"bin/app.exe"}));
 
     requireTargetConflict(parseManifestTargets({
         {"bin/app.exe", "", kSha256, 4},

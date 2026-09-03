@@ -399,8 +399,7 @@ JournalError normalizeJournalError(const JournalError& stored, ErrorCode fallbac
 
 void normalizeSummaryErrors(ApplyJournalSummary& summary, ErrorPhase transactionPhase) {
     summary.applyError = normalizeJournalError(summary.applyError, ErrorCode::ApplyFailed, transactionPhase);
-    summary.rollbackError =
-        normalizeJournalError(summary.rollbackError, ErrorCode::ApplyFailed, ErrorPhase::Rollback);
+    summary.rollbackError = normalizeJournalError(summary.rollbackError, ErrorCode::ApplyFailed, ErrorPhase::Rollback);
     summary.restartError =
         normalizeJournalError(summary.restartError, ErrorCode::ApplyLaunchFailed, ErrorPhase::Restart);
 }
@@ -423,8 +422,7 @@ int phasePriority(ErrorPhase phase) noexcept {
 }
 
 Error combinedError(const Error& primary, std::string_view context, const Error& secondary) {
-    Error combined{ErrorCode::ApplyFailed,
-                   primary.message + "; " + std::string(context) + ": " + secondary.message};
+    Error combined{ErrorCode::ApplyFailed, primary.message + "; " + std::string(context) + ": " + secondary.message};
     const auto phase = phasePriority(secondary.phase) > phasePriority(primary.phase) ? secondary.phase : primary.phase;
     return detail::withErrorPhase(std::move(combined), phase);
 }
@@ -653,8 +651,8 @@ class ApplyTransaction final {
           hashProvider_(hashProvider), processLauncher_(processLauncher), limits_(std::move(limits)), hooks_(hooks),
           transactionId_(std::move(transactionId)), planDigest_(std::move(planDigest)), journal_(installRoot_, limits_),
           summary_(std::move(summary)) {
-        normalizeSummaryErrors(summary_, plan_.intent == ApplyPlanIntent::Rollback ? ErrorPhase::Rollback
-                                                                                   : ErrorPhase::Apply);
+        normalizeSummaryErrors(summary_,
+                               plan_.intent == ApplyPlanIntent::Rollback ? ErrorPhase::Rollback : ErrorPhase::Apply);
     }
 
     Result<void> start() {
@@ -927,9 +925,9 @@ class ApplyTransaction final {
         record.error = toJournalError(operationError);
         auto saved = journal_.writeOperation(record);
         if (!saved) {
-            return Result<void>::fail(combinedError(
-                operationError, "failed to record operation error",
-                detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
+            return Result<void>::fail(
+                combinedError(operationError, "failed to record operation error",
+                              detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
         }
         auto boundary = checkpoint("journal.operation_error.after", record.index);
         if (!boundary) {
@@ -1292,8 +1290,8 @@ class ApplyTransaction final {
                     {ErrorCode::ApplyFailed, "Apply journal operation does not match its plan snapshot"});
             }
             auto record = std::move(*loaded.value());
-            const auto phase = record.rollbackState == JournalRollbackState::Failed ? ErrorPhase::Rollback
-                                                                                    : transactionPhase();
+            const auto phase =
+                record.rollbackState == JournalRollbackState::Failed ? ErrorPhase::Rollback : transactionPhase();
             record.error = normalizeJournalError(record.error, ErrorCode::ApplyFailed, phase);
             records.push_back(std::move(record));
         }
@@ -1505,9 +1503,9 @@ class ApplyTransaction final {
         record.error = toJournalError(rollbackError);
         auto saved = journal_.writeOperation(record);
         if (!saved) {
-            return Result<void>::fail(combinedError(
-                rollbackError, "failed to record rollback error",
-                detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
+            return Result<void>::fail(
+                combinedError(rollbackError, "failed to record rollback error",
+                              detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
         }
         auto boundary = checkpoint("journal.rollback_failed.after", record.index);
         if (!boundary) {
@@ -1555,16 +1553,15 @@ class ApplyTransaction final {
         summary_.rollbackError = toJournalError(classifiedRollbackError);
         auto saved = journal_.writeSummary(summary_);
         if (!saved) {
-            return Result<void>::fail(combinedError(
-                combinedError(original, "rollback failed", classifiedRollbackError),
-                "failed to record rollback failure",
-                detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
+            return Result<void>::fail(
+                combinedError(combinedError(original, "rollback failed", classifiedRollbackError),
+                              "failed to record rollback failure",
+                              detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence)));
         }
         auto boundary = checkpoint("journal.recovery_failed.after", kNoOperation);
         if (!boundary) {
-            return Result<void>::fail(
-                combinedError(combinedError(original, "rollback failed", classifiedRollbackError),
-                              "recovery failure checkpoint failed", boundary.error()));
+            return Result<void>::fail(combinedError(combinedError(original, "rollback failed", classifiedRollbackError),
+                                                    "recovery failure checkpoint failed", boundary.error()));
         }
         return Result<void>::fail(combinedError(original, "rollback failed", classifiedRollbackError));
     }
@@ -1599,10 +1596,10 @@ class ApplyTransaction final {
 
         if (summary_.restartState == JournalRestartState::Intent) {
             summary_.restartState = JournalRestartState::OutcomeUnknown;
-            const auto restartError = detail::withErrorPhase(
-                Error{ErrorCode::ApplyLaunchFailed,
-                      "Restart intent was interrupted; the process was not launched again"},
-                ErrorPhase::Restart);
+            const auto restartError =
+                detail::withErrorPhase(Error{ErrorCode::ApplyLaunchFailed,
+                                             "Restart intent was interrupted; the process was not launched again"},
+                                       ErrorPhase::Restart);
             summary_.restartError = toJournalError(restartError);
             auto completed = persistCompletion("journal.complete.after");
             if (!completed) {
@@ -1718,7 +1715,7 @@ class ApplyTransaction final {
 };
 
 Result<void> validateRecoveredSummary(const ApplyPlan& plan, const ActiveTransaction& transaction,
-                                       const ApplyJournalSummary& summary) {
+                                      const ApplyJournalSummary& summary) {
     if (summary.transactionId != transaction.transactionId || summary.planDigest != transaction.planDigest) {
         return Result<void>::fail({ErrorCode::ApplyFailed, "Apply transaction and journal summary disagree"});
     }
@@ -2185,11 +2182,10 @@ Result<void> executeApplyPlanWithDependencies(const ApplyPlan& plan, ApplyExecut
                         detail::withErrorPhase(remainingActive.error(), ErrorPhase::StatePersistence));
                 }
                 if (remainingActive.value()) {
-                    return recovered
-                               ? Result<void>::fail(detail::withErrorPhase(
-                                     {ErrorCode::ApplyFailed, "Recovered transaction remains active"},
-                                     ErrorPhase::Recovery))
-                               : recovered;
+                    return recovered ? Result<void>::fail(detail::withErrorPhase(
+                                           {ErrorCode::ApplyFailed, "Recovered transaction remains active"},
+                                           ErrorPhase::Recovery))
+                                     : recovered;
                 }
                 auto recoveredTerminal = journal.loadTerminal();
                 if (!recoveredTerminal) {
@@ -2221,8 +2217,7 @@ Result<void> executeApplyPlanWithDependencies(const ApplyPlan& plan, ApplyExecut
         return withFallbackPhase(execute(), phase);
     } catch (...) {
         const auto phase = plan.intent == ApplyPlanIntent::Rollback ? ErrorPhase::Rollback : ErrorPhase::Apply;
-        return Result<void>::fail(
-            detail::withErrorPhase({ErrorCode::ApplyFailed, "Unexpected apply failure"}, phase));
+        return Result<void>::fail(detail::withErrorPhase({ErrorCode::ApplyFailed, "Unexpected apply failure"}, phase));
     }
 }
 

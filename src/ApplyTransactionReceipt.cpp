@@ -78,8 +78,8 @@ Result<std::string> readBoundedFile(IRootedFile& file, std::uint64_t maxBytes, c
             break;
         }
         if (contents.size() > maxBytes || read.value() > maxBytes - contents.size()) {
-            return Result<std::string>::fail({ErrorCode::ResourceLimitExceeded,
-                                              description + " grew beyond its byte limit"});
+            return Result<std::string>::fail(
+                {ErrorCode::ResourceLimitExceeded, description + " grew beyond its byte limit"});
         }
         contents.append(buffer.data(), read.value());
     }
@@ -120,8 +120,8 @@ CivilDate civilFromDays(std::int64_t days) {
 
 Result<std::string> detail::formatApplyCompletionTimestamp(const util::UtcInstant& instant) noexcept {
     try {
-        if (instant.unixSeconds < kMinimumRfc3339UnixSeconds ||
-            instant.unixSeconds > kMaximumRfc3339UnixSeconds || instant.nanoseconds >= 1000000000U) {
+        if (instant.unixSeconds < kMinimumRfc3339UnixSeconds || instant.unixSeconds > kMaximumRfc3339UnixSeconds ||
+            instant.nanoseconds >= 1000000000U) {
             return Result<std::string>::fail(receiptError("Apply completion timestamp is outside RFC 3339 range"));
         }
 
@@ -223,12 +223,12 @@ Result<ApplyTransactionReceipt> parseApplyTransactionReceipt(const std::string& 
             }
             auto instant = util::parseRfc3339(timestamp.value());
             if (!instant || !detail::formatApplyCompletionTimestamp(instant.value())) {
-                return Result<ApplyTransactionReceipt>::fail(receiptError("Invalid terminal apply completion timestamp"));
+                return Result<ApplyTransactionReceipt>::fail(
+                    receiptError("Invalid terminal apply completion timestamp"));
             }
             completedAt = instant.value();
         }
-        return Result<ApplyTransactionReceipt>::ok(
-            {transactionId.value(), planDigest.value(), std::move(completedAt)});
+        return Result<ApplyTransactionReceipt>::ok({transactionId.value(), planDigest.value(), std::move(completedAt)});
     } catch (...) {
         return Result<ApplyTransactionReceipt>::fail(receiptError("Failed to parse terminal apply receipt"));
     }
@@ -284,8 +284,7 @@ Result<ApplyPlan> detail::loadTerminalApplyPlan(IFileSystem& fileSystem, const s
         if (!root) {
             return Result<ApplyPlan>::fail(root.error());
         }
-        const auto snapshotPath =
-            ".autoupdater/journal/" + receipt.transactionId + ".plan.json";
+        const auto snapshotPath = ".autoupdater/journal/" + receipt.transactionId + ".plan.json";
         auto opened = root.value()->openRegularFile(snapshotPath, RootedFileOpenMode::ReadOnly);
         if (!opened) {
             return Result<ApplyPlan>::fail(opened.error());
@@ -293,8 +292,7 @@ Result<ApplyPlan> detail::loadTerminalApplyPlan(IFileSystem& fileSystem, const s
         if (!opened.value().exists()) {
             return Result<ApplyPlan>::fail(receiptError("Terminal apply plan snapshot is missing"));
         }
-        auto contents = readBoundedFile(*opened.value().file, limits.maxApplyPlanBytes,
-                                        "Terminal apply plan snapshot");
+        auto contents = readBoundedFile(*opened.value().file, limits.maxApplyPlanBytes, "Terminal apply plan snapshot");
         auto closed = opened.value().file->close();
         if (!contents) {
             auto error = contents.error();

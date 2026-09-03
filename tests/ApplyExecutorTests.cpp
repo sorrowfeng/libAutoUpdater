@@ -649,10 +649,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     LAU_REQUIRE(failedSummary.value().fileState == autoupdater::updater::JournalFileState::RecoveryFailed);
     LAU_REQUIRE(!failedSummary.value().applyError.empty());
     LAU_REQUIRE(!failedSummary.value().rollbackError.empty());
-    const auto failedOperationPath =
-        journalDir / (active.value().transactionId + ".ops") / "00000001.json";
-    const auto failedOperation =
-        autoupdater::updater::parseApplyJournalOperation(readFile(failedOperationPath));
+    const auto failedOperationPath = journalDir / (active.value().transactionId + ".ops") / "00000001.json";
+    const auto failedOperation = autoupdater::updater::parseApplyJournalOperation(readFile(failedOperationPath));
     LAU_REQUIRE(failedOperation);
     LAU_REQUIRE(failedOperation.value().rollbackState == autoupdater::updater::JournalRollbackState::Failed);
 
@@ -676,8 +674,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     constexpr const char* kLegacySecret = "AU022_LEGACY_JOURNAL_SECRET";
     for (const auto* field : {"applyError", "rollbackError"}) {
         auto errorObject = legacySummaryObject.at(field).asObject();
-        errorObject["message"] = autoupdater::util::Json(
-            std::string("https://user:password@example.test/?token=") + kLegacySecret);
+        errorObject["message"] =
+            autoupdater::util::Json(std::string("https://user:password@example.test/?token=") + kLegacySecret);
         legacySummaryObject[field] = autoupdater::util::Json(std::move(errorObject));
     }
     writeFile(failedSummaryPath, autoupdater::util::Json(std::move(legacySummaryObject)).stringify(2));
@@ -687,8 +685,8 @@ void testApplyExecutorRecoversFailedPublicRollbackOfRollback() {
     auto legacyOperationObject = legacyOperationJson.value().asObject();
     auto legacyOperationError = legacyOperationObject.at("error").asObject();
     constexpr const char* kLegacyOperationSecret = "AU022_LEGACY_OPERATION_SECRET";
-    legacyOperationError["message"] = autoupdater::util::Json(
-        std::string("signature=") + kLegacyOperationSecret + "; -----BEGIN PRIVATE KEY-----");
+    legacyOperationError["message"] =
+        autoupdater::util::Json(std::string("signature=") + kLegacyOperationSecret + "; -----BEGIN PRIVATE KEY-----");
     legacyOperationObject["error"] = autoupdater::util::Json(std::move(legacyOperationError));
     writeFile(failedOperationPath, autoupdater::util::Json(std::move(legacyOperationObject)).stringify(2));
 
@@ -762,8 +760,7 @@ void testApplyExecutorReportsRestartFailurePhase() {
     dependencies.fileSystem = autoupdater::createDefaultFileSystem();
     dependencies.hashProvider = hashProvider;
     dependencies.processLauncher = processLauncher;
-    const auto result =
-        autoupdater::updater::executeApplyPlanWithDependencies(plan, std::move(dependencies));
+    const auto result = autoupdater::updater::executeApplyPlanWithDependencies(plan, std::move(dependencies));
 
     LAU_REQUIRE(!result);
     LAU_REQUIRE(result.error().code == autoupdater::ErrorCode::ApplyLaunchFailed);

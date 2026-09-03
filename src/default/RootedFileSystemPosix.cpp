@@ -146,8 +146,8 @@ Result<void> syncDirectory(int descriptor, const std::string& context) {
 }
 
 Result<std::string> directoryDurabilityKey(int parent, int child) {
-    struct stat parentStatus{};
-    struct stat childStatus{};
+    struct stat parentStatus {};
+    struct stat childStatus {};
     if (::fstat(parent, &parentStatus) != 0 || ::fstat(child, &childStatus) != 0) {
         return posixFailureValue<std::string>("Failed to identify rooted directory durability boundary");
     }
@@ -216,7 +216,7 @@ Result<FileDescriptor> duplicateDescriptor(int source) {
 }
 
 Result<void> ensureDirectoryDescriptor(int descriptor, const std::string& context) {
-    struct stat status{};
+    struct stat status {};
     if (::fstat(descriptor, &status) != 0) {
         return posixFailure("Failed to inspect " + context);
     }
@@ -227,7 +227,7 @@ Result<void> ensureDirectoryDescriptor(int descriptor, const std::string& contex
 }
 
 Result<void> ensureRegularDescriptor(int descriptor, const std::string& context) {
-    struct stat status{};
+    struct stat status {};
     if (::fstat(descriptor, &status) != 0) {
         return posixFailure("Failed to inspect " + context);
     }
@@ -238,7 +238,7 @@ Result<void> ensureRegularDescriptor(int descriptor, const std::string& context)
 }
 
 Result<void> ensureSingleLinkDescriptor(int descriptor, const std::string& context) {
-    struct stat status{};
+    struct stat status {};
     if (::fstat(descriptor, &status) != 0) {
         return posixFailure("Failed to inspect " + context);
     }
@@ -350,8 +350,8 @@ std::string identityFromStat(const struct stat& status) {
 }
 
 Result<bool> sameDirectory(int left, int right) {
-    struct stat leftStatus{};
-    struct stat rightStatus{};
+    struct stat leftStatus {};
+    struct stat rightStatus {};
     if (::fstat(left, &leftStatus) != 0 || ::fstat(right, &rightStatus) != 0) {
         return posixFailureValue<bool>("Failed to compare rooted directory identity");
     }
@@ -378,7 +378,7 @@ bool sameIdentity(const struct stat& left, const struct stat& right) noexcept {
 }
 
 Result<struct stat> descriptorStatus(int descriptor, const std::string& context) {
-    struct stat status{};
+    struct stat status {};
     if (::fstat(descriptor, &status) != 0) {
         return posixFailureValue<struct stat>("Failed to inspect " + context);
     }
@@ -386,7 +386,7 @@ Result<struct stat> descriptorStatus(int descriptor, const std::string& context)
 }
 
 Result<struct stat> entryStatus(int parent, const std::string& name, const std::string& context) {
-    struct stat status{};
+    struct stat status {};
     if (::fstatat(parent, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         return posixFailureValue<struct stat>("Failed to inspect " + context);
     }
@@ -426,7 +426,7 @@ Result<void> removeEntryWithIdentity(int parent, const std::string& name, const 
     if (removed) {
         *removed = false;
     }
-    struct stat status{};
+    struct stat status {};
     if (::fstatat(parent, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         if (errno == ENOENT) {
             return syncDirectory(parent, context + " parent");
@@ -596,8 +596,8 @@ class PrivateNamespace {
         if (cleaned_ || !parent_ || !directory_) {
             return Result<void>::ok();
         }
-        struct stat opened{};
-        struct stat named{};
+        struct stat opened {};
+        struct stat named {};
         if (::fstat(directory_.get(), &opened) != 0) {
             return posixFailure("Failed to inspect private temporary namespace");
         }
@@ -671,8 +671,8 @@ Result<PrivateNamespace> createPrivateNamespace(FileDescriptor parent) {
         if (::fchmod(directory.get(), S_IRWXU) != 0) {
             return posixFailureValue<PrivateNamespace>("Failed to secure private temporary namespace");
         }
-        struct stat opened{};
-        struct stat named{};
+        struct stat opened {};
+        struct stat named {};
         if (::fstat(directory.get(), &opened) != 0 ||
             ::fstatat(parent.get(), name.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0) {
             return posixFailureValue<PrivateNamespace>("Failed to verify private temporary namespace");
@@ -783,7 +783,7 @@ class PosixRootedFile final : public IRootedFile {
     }
 
     Result<RootedFileMetadata> metadata() noexcept override {
-        struct stat status{};
+        struct stat status {};
         if (::fstat(file_.get(), &status) != 0 || status.st_size < 0) {
             return posixFailureValue<RootedFileMetadata>("Failed to read rooted file metadata");
         }

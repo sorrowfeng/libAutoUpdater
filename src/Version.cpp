@@ -19,8 +19,7 @@ bool isAsciiDigit(char value) noexcept {
 }
 
 bool isIdentifierChar(char value) noexcept {
-    return isAsciiDigit(value) || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
-           value == '-';
+    return isAsciiDigit(value) || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || value == '-';
 }
 
 bool isNumericIdentifier(const std::string& text) {

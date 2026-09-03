@@ -93,8 +93,7 @@ bool validHealthConfirmationTimeout(std::chrono::seconds timeout) noexcept {
 Result<bool> healthConfirmationExpired(const std::optional<util::UtcInstant>& completedAt,
                                        std::chrono::seconds timeout) {
     if (!validHealthConfirmationTimeout(timeout)) {
-        return Result<bool>::fail(
-            {ErrorCode::InvalidConfig, "healthConfirmationTimeout is outside the safe range"});
+        return Result<bool>::fail({ErrorCode::InvalidConfig, "healthConfirmationTimeout is outside the safe range"});
     }
     if (!completedAt || timeout.count() == 0) {
         return Result<bool>::ok(false);
@@ -490,8 +489,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
                 terminalPlan.value().rollbackOf->planDigest,
                 std::nullopt,
             };
-            auto forwardPlan = detail::loadTerminalApplyPlan(*deps.fileSystem, config.installDir, forwardReceipt,
-                                                             config.resources);
+            auto forwardPlan =
+                detail::loadTerminalApplyPlan(*deps.fileSystem, config.installDir, forwardReceipt, config.resources);
             if (!forwardPlan) {
                 return Result<std::optional<PendingUpdate>>::fail(forwardPlan.error());
             }
@@ -505,8 +504,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         auto* compareAndSet = dynamic_cast<IPendingUpdateCompareAndSet*>(deps.stateStore.get());
         if (!compareAndSet) {
             return Result<std::optional<PendingUpdate>>::fail(
-                {ErrorCode::StateStoreError,
-                 "State store does not support atomic pending-update reconciliation",
+                {ErrorCode::StateStoreError, "State store does not support atomic pending-update reconciliation",
                  ErrorPhase::StatePersistence});
         }
         auto cleared = compareAndSet->clearPendingUpdateIfMatches(*pending.value());
@@ -533,18 +531,18 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             return Result<void>::fail(terminal.error());
         }
         if (!terminal.value()) {
-            return Result<void>::fail(
-                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
-                 ErrorPhase::Apply});
+            return Result<void>::fail({ErrorCode::ApplyFailed,
+                                       "Pending update is not authorized by the terminal apply receipt",
+                                       ErrorPhase::Apply});
         }
         auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
         if (!authorized) {
             return Result<void>::fail(authorized.error());
         }
         if (!authorized.value()) {
-            return Result<void>::fail(
-                {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
-                 ErrorPhase::Apply});
+            return Result<void>::fail({ErrorCode::ApplyFailed,
+                                       "Pending update is not authorized by the terminal apply receipt",
+                                       ErrorPhase::Apply});
         }
         auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
         if (!expired) {
@@ -578,8 +576,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         if (!token) {
             return Result<UpdateDecision>::fail({ErrorCode::InternalError, "Updater task has no cancellation token"});
         }
-        auto envelope = fetchAndVerifyManifest(effectiveConfig, *deps.network, *deps.hashProvider,
-                                               *deps.signatureVerifier, *token);
+        auto envelope =
+            fetchAndVerifyManifest(effectiveConfig, *deps.network, *deps.hashProvider, *deps.signatureVerifier, *token);
         if (!envelope) {
             return Result<UpdateDecision>::fail(envelope.error());
         }
@@ -772,9 +770,9 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             return valid;
         }
         if (!deps.stateStore) {
-            return Result<void>::fail(
-                {ErrorCode::InvalidConfig, "A state store is required before an update can become ready",
-                 ErrorPhase::StatePersistence});
+            return Result<void>::fail({ErrorCode::InvalidConfig,
+                                       "A state store is required before an update can become ready",
+                                       ErrorPhase::StatePersistence});
         }
         if (!setGenerationState(generation, State::Downloading)) {
             return Result<void>::fail({ErrorCode::Cancelled, "Updater is shutting down"});
@@ -811,8 +809,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         pending.applyPlanDigest = written.value().digest;
         auto saved = deps.stateStore->savePendingUpdate(pending);
         if (!saved) {
-            return Result<void>::fail(
-                detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence));
+            return Result<void>::fail(detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence));
         }
 
         ReadyGeneration ready;
@@ -942,42 +939,42 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
 
             try {
                 auto self = shared_from_this();
-                periodicWorker = std::thread([self = std::move(self), stopToken, interval, downloadWhenAvailable,
-                                              runImmediately] {
-                    auto trigger = [self, stopToken, downloadWhenAvailable] {
-                        const auto current = self->state();
-                        if (stopToken->load(std::memory_order_acquire) ||
-                            self->shuttingDown.load(std::memory_order_acquire) || self->hasPendingWork() ||
-                            current == State::Checking || current == State::Downloading ||
-                            current == State::ReadyToApply || current == State::Applying) {
-                            return;
-                        }
-                        if (stopToken->load(std::memory_order_acquire)) {
-                            return;
-                        }
-                        if (downloadWhenAvailable) {
-                            self->checkAndDownloadAsync(stopToken);
-                        } else {
-                            self->checkAsync(stopToken);
-                        }
-                    };
+                periodicWorker =
+                    std::thread([self = std::move(self), stopToken, interval, downloadWhenAvailable, runImmediately] {
+                        auto trigger = [self, stopToken, downloadWhenAvailable] {
+                            const auto current = self->state();
+                            if (stopToken->load(std::memory_order_acquire) ||
+                                self->shuttingDown.load(std::memory_order_acquire) || self->hasPendingWork() ||
+                                current == State::Checking || current == State::Downloading ||
+                                current == State::ReadyToApply || current == State::Applying) {
+                                return;
+                            }
+                            if (stopToken->load(std::memory_order_acquire)) {
+                                return;
+                            }
+                            if (downloadWhenAvailable) {
+                                self->checkAndDownloadAsync(stopToken);
+                            } else {
+                                self->checkAsync(stopToken);
+                            }
+                        };
 
-                    if (runImmediately) {
-                        trigger();
-                    }
-
-                    std::unique_lock<std::mutex> lock(self->periodicMutex);
-                    while (!stopToken->load(std::memory_order_acquire)) {
-                        if (self->periodicCv.wait_for(lock, interval, [stopToken] {
-                                return stopToken->load(std::memory_order_acquire);
-                            })) {
-                            break;
+                        if (runImmediately) {
+                            trigger();
                         }
-                        lock.unlock();
-                        trigger();
-                        lock.lock();
-                    }
-                });
+
+                        std::unique_lock<std::mutex> lock(self->periodicMutex);
+                        while (!stopToken->load(std::memory_order_acquire)) {
+                            if (self->periodicCv.wait_for(lock, interval, [stopToken] {
+                                    return stopToken->load(std::memory_order_acquire);
+                                })) {
+                                break;
+                            }
+                            lock.unlock();
+                            trigger();
+                            lock.lock();
+                        }
+                    });
             } catch (...) {
                 stopToken->store(true, std::memory_order_release);
                 {
@@ -1057,8 +1054,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
                 }
             } else {
                 const auto current = state();
-                if (current == State::Checking || current == State::Downloading ||
-                    current == State::ReadyToApply || current == State::Applying) {
+                if (current == State::Checking || current == State::Downloading || current == State::ReadyToApply ||
+                    current == State::Applying) {
                     notifyError({ErrorCode::DownloadFailed, "No checked update generation is available to download"});
                     return;
                 }
@@ -1151,15 +1148,14 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
             }
             auto pending = deps.stateStore->loadPendingUpdate();
             if (!pending) {
-                reportGenerationError(
-                    generation, detail::withErrorPhase(pending.error(), ErrorPhase::StatePersistence));
+                reportGenerationError(generation,
+                                      detail::withErrorPhase(pending.error(), ErrorPhase::StatePersistence));
                 return;
             }
             if (!pending.value() || !samePendingUpdate(*pending.value(), ready->persistedPending)) {
-                reportGenerationError(
-                    generation,
-                    {ErrorCode::StateStoreError, "Persisted pending update does not match the ready generation",
-                     ErrorPhase::StatePersistence});
+                reportGenerationError(generation, {ErrorCode::StateStoreError,
+                                                   "Persisted pending update does not match the ready generation",
+                                                   ErrorPhase::StatePersistence});
                 return;
             }
 
@@ -1181,9 +1177,8 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
                 }
             }
             if (generationChanged) {
-                notifyGenerationError(generation,
-                                      {ErrorCode::ApplyLaunchFailed, "Ready generation changed before apply launch",
-                                       ErrorPhase::Apply});
+                notifyGenerationError(generation, {ErrorCode::ApplyLaunchFailed,
+                                                   "Ready generation changed before apply launch", ErrorPhase::Apply});
                 return;
             }
             postForGeneration(generation, [stateCallback = std::move(stateCallback)] {
@@ -1233,9 +1228,9 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         std::string releaseId;
         if (pending.value()) {
             if (pending.value()->version.toString() != config.currentVersion.toString()) {
-                return Result<void>::fail(
-                    {ErrorCode::StateStoreError, "Pending update version does not match the running version",
-                     ErrorPhase::StatePersistence});
+                return Result<void>::fail({ErrorCode::StateStoreError,
+                                           "Pending update version does not match the running version",
+                                           ErrorPhase::StatePersistence});
             }
             if (!deps.fileSystem) {
                 return Result<void>::fail({ErrorCode::InvalidConfig, "File system dependency is missing"});
@@ -1245,18 +1240,18 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
                 return Result<void>::fail(terminal.error());
             }
             if (!terminal.value()) {
-                return Result<void>::fail(
-                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
-                     ErrorPhase::Apply});
+                return Result<void>::fail({ErrorCode::ApplyFailed,
+                                           "Pending update is not authorized by the terminal apply receipt",
+                                           ErrorPhase::Apply});
             }
             auto authorized = terminalAuthorizesPendingInstall(*deps.fileSystem, *terminal.value(), *pending.value());
             if (!authorized) {
                 return Result<void>::fail(authorized.error());
             }
             if (!authorized.value()) {
-                return Result<void>::fail(
-                    {ErrorCode::ApplyFailed, "Pending update is not authorized by the terminal apply receipt",
-                     ErrorPhase::Apply});
+                return Result<void>::fail({ErrorCode::ApplyFailed,
+                                           "Pending update is not authorized by the terminal apply receipt",
+                                           ErrorPhase::Apply});
             }
             auto expired = healthConfirmationExpired(terminal.value()->completedAt, config.healthConfirmationTimeout);
             if (!expired) {
@@ -1272,8 +1267,7 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         auto committed = deps.stateStore->commitHealthyVersion(config.currentVersion, releaseId, pending.value());
         if (!committed) {
-            return Result<void>::fail(
-                detail::withErrorPhase(committed.error(), ErrorPhase::StatePersistence));
+            return Result<void>::fail(detail::withErrorPhase(committed.error(), ErrorPhase::StatePersistence));
         }
         return committed;
     }
@@ -1306,16 +1300,14 @@ struct Updater::Impl : std::enable_shared_from_this<Updater::Impl> {
         }
         auto pending = loadPendingAndReconcileRollback(deps);
         if (!pending) {
-            return Result<void>::fail(
-                detail::withFallbackErrorPhase(pending.error(), ErrorPhase::Rollback));
+            return Result<void>::fail(detail::withFallbackErrorPhase(pending.error(), ErrorPhase::Rollback));
         }
         if (!pending.value()) {
             return Result<void>::ok();
         }
         auto written = writeRollbackRequestPlan(config, *pending.value(), *deps.fileSystem);
         if (!written) {
-            return Result<void>::fail(
-                detail::withFallbackErrorPhase(written.error(), ErrorPhase::Rollback));
+            return Result<void>::fail(detail::withFallbackErrorPhase(written.error(), ErrorPhase::Rollback));
         }
         return launchApplyProcess(config, written.value().path, written.value().digest, ApplyLaunchIntent::Rollback,
                                   *deps.processLauncher);

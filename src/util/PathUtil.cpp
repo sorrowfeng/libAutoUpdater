@@ -112,9 +112,8 @@ Result<void> validateManagedTargetPath(const std::string& path) noexcept {
     // reserved updater state directory. String case-folding alone cannot
     // distinguish such an alias without opening an attacker-selected path.
     if (isUpdaterStateSegment(firstSegment) || firstSegment.find('~') != std::string::npos) {
-        return Result<void>::fail(
-            {ErrorCode::SecurityPolicyViolation,
-             "Managed targets cannot use the reserved or alias-ambiguous updater namespace"});
+        return Result<void>::fail({ErrorCode::SecurityPolicyViolation,
+                                   "Managed targets cannot use the reserved or alias-ambiguous updater namespace"});
     }
     return Result<void>::ok();
 }
@@ -152,21 +151,18 @@ Result<void> validateManagedTargetPaths(const std::vector<std::string>& paths) n
             const auto& previous = keys[index - 1];
             const auto& current = keys[index];
             if (previous == current) {
-                return Result<void>::fail(
-                    {ErrorCode::SecurityPolicyViolation,
-                     "Managed operation targets collide under portable filesystem semantics"});
+                return Result<void>::fail({ErrorCode::SecurityPolicyViolation,
+                                           "Managed operation targets collide under portable filesystem semantics"});
             }
-            if (current.size() > previous.size() &&
-                current.compare(0, previous.size(), previous) == 0 && current[previous.size()] == '\0') {
-                return Result<void>::fail(
-                    {ErrorCode::SecurityPolicyViolation,
-                     "Managed operation targets have an ancestor/descendant conflict"});
+            if (current.size() > previous.size() && current.compare(0, previous.size(), previous) == 0 &&
+                current[previous.size()] == '\0') {
+                return Result<void>::fail({ErrorCode::SecurityPolicyViolation,
+                                           "Managed operation targets have an ancestor/descendant conflict"});
             }
         }
         return Result<void>::ok();
     } catch (...) {
-        return Result<void>::fail(
-            {ErrorCode::InternalError, "Failed to validate the managed operation target set"});
+        return Result<void>::fail({ErrorCode::InternalError, "Failed to validate the managed operation target set"});
     }
 }
 

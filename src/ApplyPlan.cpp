@@ -29,8 +29,7 @@ Result<std::string> optionalString(const util::Json& object, const std::string& 
         return Result<std::string>::ok({});
     }
     if (!value->isString()) {
-        return Result<std::string>::fail(
-            {ErrorCode::ManifestParseFailed, "Optional field must be a string: " + key});
+        return Result<std::string>::fail({ErrorCode::ManifestParseFailed, "Optional field must be a string: " + key});
     }
     return Result<std::string>::ok(value->asString());
 }
@@ -38,9 +37,8 @@ Result<std::string> optionalString(const util::Json& object, const std::string& 
 Result<void> requireOnlyKeys(const util::Json& object, std::initializer_list<const char*> allowedKeys,
                              const std::string& context) {
     for (const auto& entry : object.asObject()) {
-        const auto allowed = std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) {
-            return entry.first == key;
-        });
+        const auto allowed =
+            std::any_of(allowedKeys.begin(), allowedKeys.end(), [&](const char* key) { return entry.first == key; });
         if (!allowed) {
             return Result<void>::fail(
                 {ErrorCode::ManifestParseFailed, context + " contains unknown field: " + entry.first});
@@ -163,9 +161,8 @@ Result<std::optional<std::uint32_t>> operationPermissions(const util::Json& obje
     return Result<std::optional<std::uint32_t>>::ok(static_cast<std::uint32_t>(number));
 }
 
-Result<std::optional<ApplyOperationPrecondition>> operationPrecondition(const util::Json& object,
-                                                                         int schemaVersion,
-                                                                         const ResourceLimits& limits) {
+Result<std::optional<ApplyOperationPrecondition>> operationPrecondition(const util::Json& object, int schemaVersion,
+                                                                        const ResourceLimits& limits) {
     const auto* value = object.get("precondition");
     if (!value) {
         return Result<std::optional<ApplyOperationPrecondition>>::ok(std::nullopt);
@@ -174,8 +171,7 @@ Result<std::optional<ApplyOperationPrecondition>> operationPrecondition(const ut
         return Result<std::optional<ApplyOperationPrecondition>>::fail(
             {ErrorCode::ManifestParseFailed, "operation precondition requires a schemaVersion 2 object"});
     }
-    auto keys = requireOnlyKeys(*value, {"exists", "size", "sha256", "permissions"},
-                                "Apply operation precondition");
+    auto keys = requireOnlyKeys(*value, {"exists", "size", "sha256", "permissions"}, "Apply operation precondition");
     if (!keys) {
         return Result<std::optional<ApplyOperationPrecondition>>::fail(keys.error());
     }
@@ -245,25 +241,22 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
         ApplyPlan plan;
         std::uint64_t totalArtifactBytes = 0;
         const auto* schema = json.value().get("schemaVersion");
-        if (!schema || !isNonNegativeInteger(*schema) ||
-            (schema->asUInt64() != 1 && schema->asUInt64() != 2)) {
+        if (!schema || !isNonNegativeInteger(*schema) || (schema->asUInt64() != 1 && schema->asUInt64() != 2)) {
             return Result<ApplyPlan>::fail(
                 {ErrorCode::UnsupportedManifestSchema, "Unsupported apply plan schemaVersion"});
         }
         plan.schemaVersion = static_cast<int>(schema->asUInt64());
-        Result<void> rootKeys = plan.schemaVersion == 1
-                                    ? requireOnlyKeys(
-                                          json.value(),
-                                          {"schemaVersion", "appId", "fromVersion", "toVersion", "releaseId",
-                                           "manifestSha256", "installDir", "stagingDir", "backupDir",
-                                           "restartCommand", "operations"},
-                                          "Apply plan")
-                                    : requireOnlyKeys(
-                                          json.value(),
-                                          {"schemaVersion", "intent", "rollbackOf", "appId", "fromVersion",
-                                           "toVersion", "releaseId", "manifestSha256", "installDir", "stagingDir",
-                                           "backupDir", "restartCommand", "operations"},
-                                          "Apply plan");
+        Result<void> rootKeys =
+            plan.schemaVersion == 1
+                ? requireOnlyKeys(json.value(),
+                                  {"schemaVersion", "appId", "fromVersion", "toVersion", "releaseId", "manifestSha256",
+                                   "installDir", "stagingDir", "backupDir", "restartCommand", "operations"},
+                                  "Apply plan")
+                : requireOnlyKeys(json.value(),
+                                  {"schemaVersion", "intent", "rollbackOf", "appId", "fromVersion", "toVersion",
+                                   "releaseId", "manifestSha256", "installDir", "stagingDir", "backupDir",
+                                   "restartCommand", "operations"},
+                                  "Apply plan");
         if (!rootKeys) {
             return Result<ApplyPlan>::fail(rootKeys.error());
         }
@@ -277,8 +270,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
             plan.intent = ApplyPlanIntent::Install;
         } else {
             if (!intent || !intent->isString()) {
-                return Result<ApplyPlan>::fail(
-                    {ErrorCode::ManifestParseFailed, "Apply plan intent is required"});
+                return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "Apply plan intent is required"});
             }
             auto parsedIntent = intentFromString(intent->asString());
             if (!parsedIntent) {
@@ -290,8 +282,8 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                     return Result<ApplyPlan>::fail(
                         {ErrorCode::ManifestParseFailed, "Rollback plans require rollbackOf"});
                 }
-                auto referenceKeys = requireOnlyKeys(*rollbackOf, {"transactionId", "planDigest"},
-                                                     "Apply rollback reference");
+                auto referenceKeys =
+                    requireOnlyKeys(*rollbackOf, {"transactionId", "planDigest"}, "Apply rollback reference");
                 if (!referenceKeys) {
                     return Result<ApplyPlan>::fail(referenceKeys.error());
                 }
@@ -303,8 +295,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                 if (!planDigest) {
                     return Result<ApplyPlan>::fail(planDigest.error());
                 }
-                if (!util::isLowerHexSha256(transactionId.value()) ||
-                    !util::isLowerHexSha256(planDigest.value())) {
+                if (!util::isLowerHexSha256(transactionId.value()) || !util::isLowerHexSha256(planDigest.value())) {
                     return Result<ApplyPlan>::fail(
                         {ErrorCode::ManifestParseFailed, "Rollback transaction reference is invalid"});
                 }
@@ -332,20 +323,17 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
         if (!fromVersion.value().empty()) {
             auto parsed = Version::parse(fromVersion.value());
             if (!parsed) {
-                return Result<ApplyPlan>::fail(
-                    {ErrorCode::ManifestParseFailed, "Apply plan fromVersion is invalid"});
+                return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "Apply plan fromVersion is invalid"});
             }
         }
         if (!toVersion.value().empty()) {
             auto parsed = Version::parse(toVersion.value());
             if (!parsed) {
-                return Result<ApplyPlan>::fail(
-                    {ErrorCode::ManifestParseFailed, "Apply plan toVersion is invalid"});
+                return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "Apply plan toVersion is invalid"});
             }
         }
         if (!manifestSha256.value().empty() && !util::isLowerHexSha256(manifestSha256.value())) {
-            return Result<ApplyPlan>::fail(
-                {ErrorCode::ManifestParseFailed, "Apply plan manifestSha256 is invalid"});
+            return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "Apply plan manifestSha256 is invalid"});
         }
         plan.appId = std::move(appId.value());
         plan.fromVersion = std::move(fromVersion.value());
@@ -381,8 +369,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
         const auto* restart = json.value().get("restartCommand");
         if (restart) {
             if (!restart->isArray()) {
-                return Result<ApplyPlan>::fail(
-                    {ErrorCode::ManifestParseFailed, "restartCommand must be an array"});
+                return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "restartCommand must be an array"});
             }
             for (const auto& item : restart->asArray()) {
                 if (!item.isString() || hasEmbeddedNul(item.asString())) {
@@ -420,8 +407,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                 plan.schemaVersion == 1
                     ? requireOnlyKeys(item, {"type", "source", "target", "sha256", "size"}, "Apply operation")
                     : requireOnlyKeys(item,
-                                      {"type", "source", "target", "sha256", "size", "permissions",
-                                       "precondition"},
+                                      {"type", "source", "target", "sha256", "size", "permissions", "precondition"},
                                       "Apply operation");
             if (!operationKeys) {
                 return Result<ApplyPlan>::fail(operationKeys.error());
@@ -444,9 +430,8 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                     return Result<ApplyPlan>::fail(sha256.error());
                 }
                 if (!util::isLowerHexSha256(sha256.value())) {
-                    return Result<ApplyPlan>::fail(
-                        {ErrorCode::ManifestParseFailed,
-                         "Replace operation sha256 must be a lowercase SHA-256 digest"});
+                    return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed,
+                                                    "Replace operation sha256 must be a lowercase SHA-256 digest"});
                 }
                 op.source = std::move(source.value());
                 op.sha256 = std::move(sha256.value());
@@ -460,8 +445,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
             }
             op.size = size.value();
             if (op.type == ApplyOperationType::Remove && op.size != 0) {
-                return Result<ApplyPlan>::fail(
-                    {ErrorCode::ManifestParseFailed, "Remove operation size must be zero"});
+                return Result<ApplyPlan>::fail({ErrorCode::ManifestParseFailed, "Remove operation size must be zero"});
             }
             auto permissions = operationPermissions(item, plan.schemaVersion);
             if (!permissions) {
@@ -486,8 +470,7 @@ Result<ApplyPlan> ApplyPlan::parse(const std::string& jsonText, const ResourceLi
                 const auto existingEvidence = sourceEvidence.find(sourceKey);
                 if (existingEvidence == sourceEvidence.end()) {
                     sourceEvidence.emplace(sourceKey, std::make_pair(op.sha256, op.size));
-                } else if (existingEvidence->second.first != op.sha256 ||
-                           existingEvidence->second.second != op.size) {
+                } else if (existingEvidence->second.first != op.sha256 || existingEvidence->second.second != op.size) {
                     return Result<ApplyPlan>::fail(
                         {ErrorCode::ManifestParseFailed,
                          "Shared apply sources must use identical size and SHA-256 evidence"});

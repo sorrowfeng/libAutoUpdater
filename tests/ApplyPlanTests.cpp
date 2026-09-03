@@ -94,8 +94,7 @@ void testApplyPlanRollbackContract() {
     rollback.backupDir = "install/.autoupdater/backup/rollback/transaction";
     rollback.operations.emplace_back(autoupdater::ApplyOperationType::Replace, "bin/app", "bin/app",
                                      std::string(64, 'b'), 4, 0751U);
-    rollback.operations[0].precondition =
-        autoupdater::ApplyOperationPrecondition{true, 5, std::string(64, 'c'), 0755U};
+    rollback.operations[0].precondition = autoupdater::ApplyOperationPrecondition{true, 5, std::string(64, 'c'), 0755U};
 
     auto parsed = autoupdater::ApplyPlan::parse(rollback.toJson());
     LAU_REQUIRE(parsed);
@@ -172,14 +171,17 @@ void testApplyPlanRejectsConflictingManagedTargets() {
 }
 
 void testApplyPlanAllowsSharedSourceForDistinctManagedTargets() {
-    const auto parsed = autoupdater::ApplyPlan::parse(applyPlanWithOperations({
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/first.exe", kSha256, 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/second.exe", kSha256, 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "a", kSha256, 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "ab", kSha256, 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/first", kSha256, 9},
-        {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/second", kSha256, 9},
-    }).toJson());
+    const auto parsed = autoupdater::ApplyPlan::parse(
+        applyPlanWithOperations(
+            {
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/first.exe", kSha256, 9},
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "bin/second.exe", kSha256, 9},
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "a", kSha256, 9},
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "ab", kSha256, 9},
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/first", kSha256, 9},
+                {autoupdater::ApplyOperationType::Replace, "objects/shared.bin", "shared/second", kSha256, 9},
+            })
+            .toJson());
 
     LAU_REQUIRE(parsed);
     LAU_REQUIRE(parsed.value().schemaVersion == 2);

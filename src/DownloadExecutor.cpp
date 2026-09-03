@@ -177,15 +177,14 @@ class DownloadResumeCoordinator final {
         }
         auto loaded = batchStore_->loadDownloadResumeBatch(scope_, keys);
         if (!loaded) {
-            return Result<void>::fail(
-                detail::withErrorPhase(loaded.error(), ErrorPhase::StatePersistence));
+            return Result<void>::fail(detail::withErrorPhase(loaded.error(), ErrorPhase::StatePersistence));
         }
         const std::set<std::string> requested(keys.begin(), keys.end());
         for (auto& state : loaded.value()) {
             if (requested.find(state.key) == requested.end() || cached_.find(state.key) != cached_.end()) {
-                return Result<void>::fail(
-                    {ErrorCode::StateStoreError, "Download resume batch returned an unexpected resource",
-                     ErrorPhase::StatePersistence});
+                return Result<void>::fail({ErrorCode::StateStoreError,
+                                           "Download resume batch returned an unexpected resource",
+                                           ErrorPhase::StatePersistence});
             }
             cached_.emplace(state.key, std::move(state));
         }
@@ -223,8 +222,7 @@ class DownloadResumeCoordinator final {
         if (!batchStore_) {
             auto saved = store_->saveDownloadResume(state);
             if (!saved) {
-                return Result<void>::fail(
-                    detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence));
+                return Result<void>::fail(detail::withErrorPhase(saved.error(), ErrorPhase::StatePersistence));
             }
             return saved;
         }
@@ -241,8 +239,7 @@ class DownloadResumeCoordinator final {
         if (!batchStore_) {
             auto cleared = store_->clearDownloadResume(key);
             if (!cleared) {
-                return Result<void>::fail(
-                    detail::withErrorPhase(cleared.error(), ErrorPhase::StatePersistence));
+                return Result<void>::fail(detail::withErrorPhase(cleared.error(), ErrorPhase::StatePersistence));
             }
             return cleared;
         }
@@ -264,8 +261,7 @@ class DownloadResumeCoordinator final {
         std::vector<std::string> clears(clears_.begin(), clears_.end());
         auto applied = batchStore_->applyDownloadResumeBatch(scope_, upserts, clears);
         if (!applied) {
-            return Result<void>::fail(
-                detail::withErrorPhase(applied.error(), ErrorPhase::StatePersistence));
+            return Result<void>::fail(detail::withErrorPhase(applied.error(), ErrorPhase::StatePersistence));
         }
         upserts_.clear();
         clears_.clear();
@@ -325,13 +321,12 @@ Result<void> executeDownloads(const Config& config, const UpdateDecision& decisi
     if (dynamic_cast<detail::IDownloadResumeBatchStore*>(stateStore)) {
         auto now = util::currentUtcInstant();
         if (!now) {
-            return Result<void>::fail(
-                detail::withErrorPhase(now.error(), ErrorPhase::StatePersistence));
+            return Result<void>::fail(detail::withErrorPhase(now.error(), ErrorPhase::StatePersistence));
         }
         if (now.value().unixSeconds < 0) {
-            return Result<void>::fail(
-                {ErrorCode::StateStoreError, "The system clock cannot timestamp download resume state",
-                 ErrorPhase::StatePersistence});
+            return Result<void>::fail({ErrorCode::StateStoreError,
+                                       "The system clock cannot timestamp download resume state",
+                                       ErrorPhase::StatePersistence});
         }
         resumeScope.nowUnixSeconds = static_cast<std::uint64_t>(now.value().unixSeconds);
     }

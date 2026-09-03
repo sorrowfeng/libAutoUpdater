@@ -59,8 +59,8 @@ std::string fileUrlForPath(const std::filesystem::path& path) {
     std::string encoded;
     encoded.reserve(portable.size());
     for (const unsigned char ch : portable) {
-        const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-                                (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+        const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+                                ch == '-' || ch == '.' || ch == '_' || ch == '~';
         if (unreserved || ch == '/' || ch == ':') {
             encoded.push_back(static_cast<char>(ch));
         } else {
@@ -1478,8 +1478,8 @@ void testDefaultNetworkAndDownloadExecutorReportCompleteFileProgress() {
     auto directRoot = fileSystem->openRoot(root / "direct", autoupdater::RootAccess::ReadWrite, true);
     LAU_REQUIRE(directRoot);
 
-    auto directFresh = directRoot.value()->openRegularFile(
-        "fresh.bin", autoupdater::RootedFileOpenMode::CreateOrTruncate);
+    auto directFresh =
+        directRoot.value()->openRegularFile("fresh.bin", autoupdater::RootedFileOpenMode::CreateOrTruncate);
     LAU_REQUIRE(directFresh && directFresh.value().exists());
     std::vector<autoupdater::Progress> directFreshEvents;
     const auto directFreshResult = network->downloadToFile(
@@ -1493,8 +1493,7 @@ void testDefaultNetworkAndDownloadExecutorReportCompleteFileProgress() {
 
     constexpr std::size_t resumeOffset = 100'000;
     writeFile(root / "direct/resumed.bin", contents.substr(0, resumeOffset));
-    auto directResumed =
-        directRoot.value()->openRegularFile("resumed.bin", autoupdater::RootedFileOpenMode::ReadWrite);
+    auto directResumed = directRoot.value()->openRegularFile("resumed.bin", autoupdater::RootedFileOpenMode::ReadWrite);
     LAU_REQUIRE(directResumed && directResumed.value().exists());
     LAU_REQUIRE(directResumed.value().file->seek(resumeOffset));
     autoupdater::DownloadResumeInfo directResume;

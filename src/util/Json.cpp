@@ -32,8 +32,7 @@ bool isValidUtf8(const std::string& text) noexcept {
         }
 
         if (first >= 0xC2U && first <= 0xDFU) {
-            if (index + 1 >= text.size() ||
-                !isContinuationByte(static_cast<unsigned char>(text[index + 1]))) {
+            if (index + 1 >= text.size() || !isContinuationByte(static_cast<unsigned char>(text[index + 1]))) {
                 return false;
             }
             index += 2;

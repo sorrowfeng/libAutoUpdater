@@ -89,8 +89,7 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
 
         Kind kind = Kind::Response;
         std::string body;
-        autoupdater::Error error{autoupdater::ErrorCode::ManifestDownloadFailed,
-                                 "scripted manifest request failed"};
+        autoupdater::Error error{autoupdater::ErrorCode::ManifestDownloadFailed, "scripted manifest request failed"};
 
         static Step response(std::string body) {
             Step step;
@@ -114,8 +113,8 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
 
     explicit ScriptedManifestNetwork(std::vector<Step> steps) : steps_(std::move(steps)) {}
 
-    autoupdater::Result<autoupdater::TextResponse> getText(const std::string& url,
-                                                           const autoupdater::NetworkOptions&, std::uint64_t,
+    autoupdater::Result<autoupdater::TextResponse> getText(const std::string& url, const autoupdater::NetworkOptions&,
+                                                           std::uint64_t,
                                                            autoupdater::CancellationToken& cancel) noexcept override {
         try {
             Step step;
@@ -203,8 +202,7 @@ class ScriptedManifestNetwork final : public autoupdater::INetworkClient {
 
 std::filesystem::path uniqueTempDir();
 
-class PendingStateStore final : public autoupdater::IStateStore,
-                                public autoupdater::IPendingUpdateCompareAndSet {
+class PendingStateStore final : public autoupdater::IStateStore, public autoupdater::IPendingUpdateCompareAndSet {
   public:
     PendingStateStore() = default;
     explicit PendingStateStore(std::optional<autoupdater::PendingUpdate> pending) : pending_(std::move(pending)) {}
@@ -236,8 +234,7 @@ class PendingStateStore final : public autoupdater::IStateStore,
     commitHealthyVersion(const autoupdater::Version& version, const std::string& releaseId,
                          const std::optional<autoupdater::PendingUpdate>& expectedPending) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto samePending = [](const autoupdater::PendingUpdate& left,
-                                    const autoupdater::PendingUpdate& right) {
+        const auto samePending = [](const autoupdater::PendingUpdate& left, const autoupdater::PendingUpdate& right) {
             return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
                    left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
                    left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
@@ -263,8 +260,7 @@ class PendingStateStore final : public autoupdater::IStateStore,
             return autoupdater::Result<void>::fail(
                 {autoupdater::ErrorCode::StateStoreError, "scripted pending-state save failed"});
         }
-        const auto samePending = [](const autoupdater::PendingUpdate& left,
-                                    const autoupdater::PendingUpdate& right) {
+        const auto samePending = [](const autoupdater::PendingUpdate& left, const autoupdater::PendingUpdate& right) {
             return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
                    left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
                    left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
@@ -296,8 +292,7 @@ class PendingStateStore final : public autoupdater::IStateStore,
     autoupdater::Result<void>
     clearPendingUpdateIfMatches(const autoupdater::PendingUpdate& expectedPending) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto samePending = [](const autoupdater::PendingUpdate& left,
-                                    const autoupdater::PendingUpdate& right) {
+        const auto samePending = [](const autoupdater::PendingUpdate& left, const autoupdater::PendingUpdate& right) {
             return left.version.toString() == right.version.toString() && left.releaseId == right.releaseId &&
                    left.backupDir.lexically_normal() == right.backupDir.lexically_normal() &&
                    left.applyPlanPath.lexically_normal() == right.applyPlanPath.lexically_normal() &&
@@ -470,8 +465,7 @@ class ForwardingFileSystemSpy final : public autoupdater::IFileSystem {
         std::filesystem::path path;
         autoupdater::RootAccess access = autoupdater::RootAccess::ReadOnly;
         bool create = false;
-        autoupdater::RootedDirectoryCreationMode directoryMode =
-            autoupdater::RootedDirectoryCreationMode::Private;
+        autoupdater::RootedDirectoryCreationMode directoryMode = autoupdater::RootedDirectoryCreationMode::Private;
     };
 
     explicit ForwardingFileSystemSpy(std::shared_ptr<autoupdater::IFileSystem> delegate)
@@ -521,8 +515,7 @@ class ForwardingFileSystemSpy final : public autoupdater::IFileSystem {
         return delegate_->readText(path, maxBytes);
     }
 
-    autoupdater::Result<void> writeText(const std::filesystem::path& path,
-                                        const std::string& text) noexcept override {
+    autoupdater::Result<void> writeText(const std::filesystem::path& path, const std::string& text) noexcept override {
         ++directWriteCalls_;
         return delegate_->writeText(path, text);
     }
@@ -571,14 +564,11 @@ void writeTerminalReceipt(const std::filesystem::path& installDir, const std::st
     writeFileContents(installDir / ".autoupdater" / "journal" / "terminal.json", serialized.value());
 }
 
-std::string writeApplyPlanSnapshot(const std::filesystem::path& installDir,
-                                   const std::string& transactionId,
+std::string writeApplyPlanSnapshot(const std::filesystem::path& installDir, const std::string& transactionId,
                                    const autoupdater::ApplyPlan& plan) {
     const auto json = plan.toJson();
     const auto digest = autoupdater::util::sha256Bytes(json);
-    writeFileContents(installDir / ".autoupdater" / "journal" /
-                          (transactionId + ".plan.json"),
-                      json);
+    writeFileContents(installDir / ".autoupdater" / "journal" / (transactionId + ".plan.json"), json);
     return digest;
 }
 
@@ -603,18 +593,14 @@ autoupdater::PendingUpdate pendingUpdateFor(const autoupdater::Config& config, c
     return pending;
 }
 
-void writeLegacyPendingState(const std::filesystem::path& statePath,
-                             const autoupdater::PendingUpdate& pending) {
-    const std::string json =
-        "{\"pendingUpdate\":{\"version\":\"" + pending.version.toString() +
-        "\",\"releaseId\":\"" + pending.releaseId + "\",\"backupDir\":\"" +
-        pending.backupDir.generic_u8string() + "\",\"applyPlanPath\":\"" +
-        pending.applyPlanPath.generic_u8string() + "\"}}";
+void writeLegacyPendingState(const std::filesystem::path& statePath, const autoupdater::PendingUpdate& pending) {
+    const std::string json = "{\"pendingUpdate\":{\"version\":\"" + pending.version.toString() + "\",\"releaseId\":\"" +
+                             pending.releaseId + "\",\"backupDir\":\"" + pending.backupDir.generic_u8string() +
+                             "\",\"applyPlanPath\":\"" + pending.applyPlanPath.generic_u8string() + "\"}}";
     writeFileContents(statePath, json);
 }
 
-std::optional<std::string> argumentValue(const autoupdater::ProcessLaunchRequest& request,
-                                         const std::string& name) {
+std::optional<std::string> argumentValue(const autoupdater::ProcessLaunchRequest& request, const std::string& name) {
     for (std::size_t index = 0; index + 1 < request.arguments.size(); ++index) {
         if (request.arguments[index] == name) {
             return request.arguments[index + 1];
@@ -632,8 +618,7 @@ bool hasArgument(const autoupdater::ProcessLaunchRequest& request, const std::st
     return false;
 }
 
-void requireInstallRootWasReadOnly(const ForwardingFileSystemSpy& fileSystem,
-                                   const std::filesystem::path& installDir) {
+void requireInstallRootWasReadOnly(const ForwardingFileSystemSpy& fileSystem, const std::filesystem::path& installDir) {
     std::size_t installRootOpenCount = 0;
     for (const auto& opened : fileSystem.rootOpens()) {
         if (opened.path.lexically_normal() != installDir.lexically_normal()) {
@@ -648,7 +633,7 @@ void requireInstallRootWasReadOnly(const ForwardingFileSystemSpy& fileSystem,
 }
 
 void requireManagedInstallContentWasNotOpenedWritable(const ForwardingFileSystemSpy& fileSystem,
-                                                       const std::filesystem::path& installDir) {
+                                                      const std::filesystem::path& installDir) {
     for (const auto& opened : fileSystem.rootOpens()) {
         const auto relative = opened.path.lexically_normal().lexically_relative(installDir.lexically_normal());
         if (relative.empty() || relative.is_absolute()) {
@@ -658,8 +643,7 @@ void requireManagedInstallContentWasNotOpenedWritable(const ForwardingFileSystem
         if (component != relative.end() && *component == "..") {
             continue;
         }
-        const bool privateUpdaterState = relative != "." && component != relative.end() &&
-                                         *component == ".autoupdater";
+        const bool privateUpdaterState = relative != "." && component != relative.end() && *component == ".autoupdater";
         if (!privateUpdaterState) {
             LAU_REQUIRE(opened.access == autoupdater::RootAccess::ReadOnly);
             LAU_REQUIRE(!opened.create);
@@ -806,9 +790,8 @@ void testUpdaterQueuedCallbacksOutliveUpdater() {
 void testUpdaterDirectCallbacksAreExceptionSafeAndReentrant() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
     auto stateStore = std::make_shared<PendingStateStore>();
     auto launcher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater updater(config);
@@ -871,10 +854,9 @@ void testUpdaterDirectCallbacksAreExceptionSafeAndReentrant() {
 void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::waitForCancellation(),
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::waitForCancellation(),
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
     auto stateStore = std::make_shared<PendingStateStore>();
     autoupdater::Updater updater(config);
     updater.setNetworkClient(network);
@@ -896,11 +878,11 @@ void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated() {
         updater.checkAsync();
         callerReturned.store(true, std::memory_order_release);
     });
-    const bool startedInTime = waitUntil(
-        [&] { return callerStarted.load(std::memory_order_acquire); }, std::chrono::milliseconds(500));
+    const bool startedInTime =
+        waitUntil([&] { return callerStarted.load(std::memory_order_acquire); }, std::chrono::milliseconds(500));
     const bool returnedBeforeCancellation =
-        startedInTime && waitUntil([&] { return callerReturned.load(std::memory_order_acquire); },
-                                   std::chrono::milliseconds(500));
+        startedInTime &&
+        waitUntil([&] { return callerReturned.load(std::memory_order_acquire); }, std::chrono::milliseconds(500));
 
     updater.cancel();
     network->releaseBlockedRequests();
@@ -992,11 +974,10 @@ void testUpdaterOverlappingChecksAreNonBlockingAndCancellationIsolated() {
 void testUpdaterCanBeDestroyedFromDirectCallback() {
     const auto root = uniqueTempDir();
     const auto config = updaterConfig(root);
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
-    auto owner = std::make_shared<std::unique_ptr<autoupdater::Updater>>(
-        std::make_unique<autoupdater::Updater>(config));
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    auto owner =
+        std::make_shared<std::unique_ptr<autoupdater::Updater>>(std::make_unique<autoupdater::Updater>(config));
     auto destroyed = std::make_shared<std::atomic_bool>(false);
     (*owner)->setNetworkClient(network);
 
@@ -1072,9 +1053,7 @@ void testUpdaterNewGenerationInvalidatesReadyPlan() {
         std::atomic<int> errorCallbacks{0};
         autoupdater::Callbacks callbacks;
         callbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_relaxed); };
-        callbacks.onError = [&](const autoupdater::Error&) {
-            errorCallbacks.fetch_add(1, std::memory_order_relaxed);
-        };
+        callbacks.onError = [&](const autoupdater::Error&) { errorCallbacks.fetch_add(1, std::memory_order_relaxed); };
         updater.setCallbacks(std::move(callbacks));
 
         updater.checkAndDownloadAsync();
@@ -1093,9 +1072,7 @@ void testUpdaterNewGenerationInvalidatesReadyPlan() {
 
         const auto errorsBeforeApply = errorCallbacks.load(std::memory_order_relaxed);
         updater.applyAndRestartAsync();
-        LAU_REQUIRE(waitUntil([&] {
-            return errorCallbacks.load(std::memory_order_relaxed) > errorsBeforeApply;
-        }));
+        LAU_REQUIRE(waitUntil([&] { return errorCallbacks.load(std::memory_order_relaxed) > errorsBeforeApply; }));
         LAU_REQUIRE(launcher->launchCalls() == 0);
         LAU_REQUIRE(updater.state() == expectedState);
     }
@@ -1104,10 +1081,9 @@ void testUpdaterNewGenerationInvalidatesReadyPlan() {
 void testUpdaterQueuedDownloadKeepsRequestedGeneration() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2")),
-            ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2")),
+        ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3"))});
     auto stateStore = std::make_shared<PendingStateStore>();
     auto launcher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater updater(config);
@@ -1130,9 +1106,7 @@ void testUpdaterQueuedDownloadKeepsRequestedGeneration() {
         }
     };
     callbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_relaxed); };
-    callbacks.onError = [&](const autoupdater::Error&) {
-        errorCallbacks.fetch_add(1, std::memory_order_relaxed);
-    };
+    callbacks.onError = [&](const autoupdater::Error&) { errorCallbacks.fetch_add(1, std::memory_order_relaxed); };
     updater.setCallbacks(std::move(callbacks));
 
     updater.checkAsync();
@@ -1150,9 +1124,8 @@ void testUpdaterRequiresPersistedPendingBeforeReady() {
     for (const bool nullStore : {false, true}) {
         ScopedTempDir temp;
         const auto config = updaterConfig(temp.path());
-        auto network = std::make_shared<ScriptedManifestNetwork>(
-            std::vector<ScriptedManifestNetwork::Step>{
-                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+        auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
         auto stateStore = std::make_shared<PendingStateStore>();
         stateStore->failPendingSaves(true);
         auto launcher = std::make_shared<CapturingProcessLauncher>();
@@ -1180,8 +1153,7 @@ void testUpdaterRequiresPersistedPendingBeforeReady() {
 
         updater.checkAndDownloadAsync();
         LAU_REQUIRE(waitUntil([&] {
-            return updater.state() == autoupdater::State::Failed &&
-                   errorCallbacks.load(std::memory_order_acquire) >= 1;
+            return updater.state() == autoupdater::State::Failed && errorCallbacks.load(std::memory_order_acquire) >= 1;
         }));
         LAU_REQUIRE(readyCallbacks.load(std::memory_order_relaxed) == 0);
         LAU_REQUIRE(readyStates.load(std::memory_order_relaxed) == 0);
@@ -1194,9 +1166,7 @@ void testUpdaterRequiresPersistedPendingBeforeReady() {
 
         const auto errorsBeforeApply = errorCallbacks.load(std::memory_order_acquire);
         updater.applyAndRestartAsync();
-        LAU_REQUIRE(waitUntil([&] {
-            return errorCallbacks.load(std::memory_order_acquire) > errorsBeforeApply;
-        }));
+        LAU_REQUIRE(waitUntil([&] { return errorCallbacks.load(std::memory_order_acquire) > errorsBeforeApply; }));
         LAU_REQUIRE(launcher->launchCalls() == 0);
     }
 }
@@ -1205,9 +1175,8 @@ void testUpdaterApplyRequiresMatchingPersistedPending() {
     for (const bool clearPending : {false, true}) {
         ScopedTempDir temp;
         const auto config = updaterConfig(temp.path());
-        auto network = std::make_shared<ScriptedManifestNetwork>(
-            std::vector<ScriptedManifestNetwork::Step>{
-                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+        auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
         auto stateStore = std::make_shared<PendingStateStore>();
         auto launcher = std::make_shared<CapturingProcessLauncher>();
         autoupdater::Updater updater(config);
@@ -1219,9 +1188,7 @@ void testUpdaterApplyRequiresMatchingPersistedPending() {
         std::atomic<int> errorCallbacks{0};
         autoupdater::Callbacks callbacks;
         callbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_relaxed); };
-        callbacks.onError = [&](const autoupdater::Error&) {
-            errorCallbacks.fetch_add(1, std::memory_order_relaxed);
-        };
+        callbacks.onError = [&](const autoupdater::Error&) { errorCallbacks.fetch_add(1, std::memory_order_relaxed); };
         updater.setCallbacks(std::move(callbacks));
 
         updater.checkAndDownloadAsync();
@@ -1240,8 +1207,7 @@ void testUpdaterApplyRequiresMatchingPersistedPending() {
 
         updater.applyAndRestartAsync();
         LAU_REQUIRE(waitUntil([&] {
-            return updater.state() == autoupdater::State::Failed &&
-                   errorCallbacks.load(std::memory_order_relaxed) >= 1;
+            return updater.state() == autoupdater::State::Failed && errorCallbacks.load(std::memory_order_relaxed) >= 1;
         }));
         LAU_REQUIRE(launcher->launchCalls() == 0);
     }
@@ -1274,9 +1240,8 @@ void testUpdaterHealthyMarkPreservesFuturePending() {
 void testUpdaterPeriodicCheckPreservesReadyGeneration() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
     auto stateStore = std::make_shared<PendingStateStore>();
     auto launcher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater updater(config);
@@ -1288,9 +1253,7 @@ void testUpdaterPeriodicCheckPreservesReadyGeneration() {
     std::atomic<int> errorCallbacks{0};
     autoupdater::Callbacks callbacks;
     callbacks.onReadyToApply = [&] { readyCallbacks.fetch_add(1, std::memory_order_relaxed); };
-    callbacks.onError = [&](const autoupdater::Error&) {
-        errorCallbacks.fetch_add(1, std::memory_order_relaxed);
-    };
+    callbacks.onError = [&](const autoupdater::Error&) { errorCallbacks.fetch_add(1, std::memory_order_relaxed); };
     updater.setCallbacks(std::move(callbacks));
     updater.checkAndDownloadAsync();
     LAU_REQUIRE(waitUntil([&] {
@@ -1354,10 +1317,9 @@ void testUpdaterQueuedDispatcherSuppressesStaleGenerationAfterDestruction() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
     auto dispatcher = std::make_shared<QueuedDispatcher>();
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2")),
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2")),
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
     std::atomic<int> staleCallbacks{0};
     std::atomic<int> currentCallbacks{0};
 
@@ -1453,9 +1415,8 @@ void testUpdaterScopesCustomStagingByManifest() {
     const auto config = updaterConfig(temp.path());
 
     const auto prepare = [&](const std::string& releaseId) {
-        auto network = std::make_shared<ScriptedManifestNetwork>(
-            std::vector<ScriptedManifestNetwork::Step>{
-                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", releaseId))});
+        auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", releaseId))});
         auto stateStore = std::make_shared<PendingStateStore>();
         {
             autoupdater::Updater updater(config);
@@ -1498,13 +1459,11 @@ void testUpdaterHealthConfirmationDeadlineAndRetention() {
         const auto pending = pendingUpdateFor(config, planDigest);
         const auto backupMarker = pending.backupDir / "retained.marker";
         writeFileContents(backupMarker, "rollback evidence");
-        writeTerminalReceipt(config.installDir, std::string(64, 'a'), planDigest,
-                             autoupdater::util::UtcInstant{0, 0});
+        writeTerminalReceipt(config.installDir, std::string(64, 'a'), planDigest, autoupdater::util::UtcInstant{0, 0});
 
         auto stateStore = std::make_shared<PendingStateStore>(pending);
-        auto network = std::make_shared<ScriptedManifestNetwork>(
-            std::vector<ScriptedManifestNetwork::Step>{
-                ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+        auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
         autoupdater::Updater updater(config);
         updater.setStateStore(stateStore);
         updater.setNetworkClient(network);
@@ -1520,8 +1479,7 @@ void testUpdaterHealthConfirmationDeadlineAndRetention() {
         updater.setCallbacks(std::move(callbacks));
         updater.checkOnStartupAsync();
         LAU_REQUIRE(waitUntil([&] {
-            return updater.state() == autoupdater::State::Failed &&
-                   deadlineErrors.load(std::memory_order_relaxed) == 1;
+            return updater.state() == autoupdater::State::Failed && deadlineErrors.load(std::memory_order_relaxed) == 1;
         }));
         LAU_REQUIRE(network->calls() == 0);
         LAU_REQUIRE(stateStore->hasPendingUpdate());
@@ -1571,8 +1529,7 @@ void testUpdaterHealthConfirmationDeadlineAndRetention() {
         const auto pending = pendingUpdateFor(config, planDigest);
         const auto backupMarker = pending.backupDir / "retained.marker";
         writeFileContents(backupMarker, "rollback evidence");
-        writeTerminalReceipt(config.installDir, std::string(64, 'c'), planDigest,
-                             autoupdater::util::UtcInstant{0, 0});
+        writeTerminalReceipt(config.installDir, std::string(64, 'c'), planDigest, autoupdater::util::UtcInstant{0, 0});
         auto stateStore = std::make_shared<PendingStateStore>(pending);
         autoupdater::Updater updater(config);
         updater.setStateStore(stateStore);
@@ -1588,9 +1545,8 @@ void testUpdaterHealthConfirmationDeadlineAndRetention() {
         ScopedTempDir temp;
         auto config = updaterConfig(temp.path());
         config.healthConfirmationTimeout = invalidTimeout;
-        auto network = std::make_shared<ScriptedManifestNetwork>(
-            std::vector<ScriptedManifestNetwork::Step>{
-                ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+        auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
         autoupdater::Updater updater(config);
         updater.setNetworkClient(network);
         std::atomic<int> invalidConfigErrors{0};
@@ -1618,8 +1574,7 @@ void testUpdaterReconcilesCompletedRollbackPendingState() {
     autoupdater::PendingUpdate pending;
     pending.version = autoupdater::Version::parse("2.0.0").value();
     pending.releaseId = "release-2";
-    pending.backupDir = config.installDir / ".autoupdater" / "backup" / "1.0.0-to-2.0.0" /
-                        std::string(64, 'e');
+    pending.backupDir = config.installDir / ".autoupdater" / "backup" / "1.0.0-to-2.0.0" / std::string(64, 'e');
     pending.applyPlanPath = config.tempDir / "apply-plan.json";
     pending.applyPlanDigest = forwardPlanDigest;
 
@@ -1634,37 +1589,30 @@ void testUpdaterReconcilesCompletedRollbackPendingState() {
     rollback.manifestSha256 = std::string(64, 'e');
     rollback.installDir = config.installDir;
     rollback.stagingDir = pending.backupDir;
-    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" /
-                         forwardTransactionId;
+    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" / forwardTransactionId;
     const auto rollbackJson = rollback.toJson();
     const auto rollbackDigest = autoupdater::util::sha256Bytes(rollbackJson);
     const std::string rollbackTransactionId(64, 'c');
-    writeFileContents(config.installDir / ".autoupdater" / "journal" /
-                          (rollbackTransactionId + ".plan.json"),
+    writeFileContents(config.installDir / ".autoupdater" / "journal" / (rollbackTransactionId + ".plan.json"),
                       rollbackJson);
-    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest,
-                         autoupdater::util::UtcInstant{0, 0});
+    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest, autoupdater::util::UtcInstant{0, 0});
 
     auto stateStore = std::make_shared<PendingStateStore>(pending);
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
     autoupdater::Updater updater(config);
     updater.setStateStore(stateStore);
     updater.setNetworkClient(network);
     updater.checkOnStartupAsync();
-    LAU_REQUIRE(waitUntil([&] {
-        return updater.state() == autoupdater::State::UpToDate && network->calls() == 1;
-    }));
+    LAU_REQUIRE(waitUntil([&] { return updater.state() == autoupdater::State::UpToDate && network->calls() == 1; }));
     LAU_REQUIRE(!stateStore->hasPendingUpdate());
     LAU_REQUIRE(stateStore->clearCalls() == 1);
 
     auto pendingWithoutCapability = std::make_shared<PendingStateStore>(pending);
-    auto stateStoreWithoutCapability = std::make_shared<StateStoreWithoutPendingCompareAndSet>(
-        pendingWithoutCapability);
-    auto unusedNetwork = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
+    auto stateStoreWithoutCapability =
+        std::make_shared<StateStoreWithoutPendingCompareAndSet>(pendingWithoutCapability);
+    auto unusedNetwork = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1"))});
     autoupdater::Updater updaterWithoutCapability(config);
     updaterWithoutCapability.setStateStore(stateStoreWithoutCapability);
     updaterWithoutCapability.setNetworkClient(unusedNetwork);
@@ -1693,10 +1641,8 @@ void testUpdaterReconcilesLegacyCompletedRollbackPendingState() {
     autoupdater::PendingUpdate pending;
     pending.version = autoupdater::Version::parse("2.0.0").value();
     pending.releaseId = "release-2";
-    pending.backupDir = config.installDir / ".autoupdater" / "backup" /
-                        "1.0.0-to-2.0.0" / std::string(64, 'e');
-    pending.applyPlanPath = config.tempDir / "2.0.0" / std::string(64, 'e') /
-                            "apply-plan.json";
+    pending.backupDir = config.installDir / ".autoupdater" / "backup" / "1.0.0-to-2.0.0" / std::string(64, 'e');
+    pending.applyPlanPath = config.tempDir / "2.0.0" / std::string(64, 'e') / "apply-plan.json";
 
     autoupdater::ApplyPlan forward;
     forward.schemaVersion = 2;
@@ -1723,37 +1669,31 @@ void testUpdaterReconcilesLegacyCompletedRollbackPendingState() {
     rollback.manifestSha256 = forward.manifestSha256;
     rollback.installDir = forward.installDir;
     rollback.stagingDir = forward.backupDir;
-    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" /
-                         forwardTransactionId;
+    rollback.backupDir = config.installDir / ".autoupdater" / "backup" / "rollback" / forwardTransactionId;
     const std::string rollbackTransactionId(64, 'c');
     const auto rollbackDigest = writeApplyPlanSnapshot(config.installDir, rollbackTransactionId, rollback);
-    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest,
-                         autoupdater::util::UtcInstant{0, 0});
+    writeTerminalReceipt(config.installDir, rollbackTransactionId, rollbackDigest, autoupdater::util::UtcInstant{0, 0});
 
     const auto statePath = config.installDir / ".autoupdater" / "state.json";
     writeLegacyPendingState(statePath, pending);
     auto stateStore = autoupdater::createJsonStateStore(statePath);
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1")),
-            ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3")),
-        });
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("1.0.0", "release-1")),
+        ScriptedManifestNetwork::Step::response(manifestJson("3.0.0", "release-3")),
+    });
     autoupdater::Updater updater(config);
     updater.setStateStore(stateStore);
     updater.setNetworkClient(network);
 
     updater.checkOnStartupAsync();
-    LAU_REQUIRE(waitUntil([&] {
-        return updater.state() == autoupdater::State::UpToDate && network->calls() == 1;
-    }));
+    LAU_REQUIRE(waitUntil([&] { return updater.state() == autoupdater::State::UpToDate && network->calls() == 1; }));
     auto afterRollback = stateStore->loadPendingUpdate();
     LAU_REQUIRE(afterRollback);
     LAU_REQUIRE(!afterRollback.value().has_value());
 
     updater.checkAndDownloadAsync();
-    LAU_REQUIRE(waitUntil([&] {
-        return updater.state() == autoupdater::State::ReadyToApply && network->calls() == 2;
-    }));
+    LAU_REQUIRE(
+        waitUntil([&] { return updater.state() == autoupdater::State::ReadyToApply && network->calls() == 2; }));
     auto nextPending = stateStore->loadPendingUpdate();
     LAU_REQUIRE(nextPending);
     LAU_REQUIRE(nextPending.value().has_value());
@@ -1770,21 +1710,20 @@ void testApplyLauncherBoundsProcessWaitTimeout() {
 
     config.applyWaitTimeout = std::chrono::seconds(-1);
     auto launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
-                                                     autoupdater::ApplyLaunchIntent::Install, launcher);
+                                                    autoupdater::ApplyLaunchIntent::Install, launcher);
     LAU_REQUIRE(!launched);
     LAU_REQUIRE(launched.error().code == autoupdater::ErrorCode::ApplyLaunchFailed);
     LAU_REQUIRE(launcher.launchCalls() == 0);
 
-    config.applyWaitTimeout =
-        autoupdater::detail::kMaximumProcessWaitTimeout + std::chrono::seconds(1);
+    config.applyWaitTimeout = autoupdater::detail::kMaximumProcessWaitTimeout + std::chrono::seconds(1);
     launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
-                                                autoupdater::ApplyLaunchIntent::Install, launcher);
+                                               autoupdater::ApplyLaunchIntent::Install, launcher);
     LAU_REQUIRE(!launched);
     LAU_REQUIRE(launcher.launchCalls() == 0);
 
     config.applyWaitTimeout = std::chrono::seconds(0);
     launched = autoupdater::launchApplyProcess(config, "apply-plan.json", digest,
-                                                autoupdater::ApplyLaunchIntent::Install, launcher);
+                                               autoupdater::ApplyLaunchIntent::Install, launcher);
     LAU_REQUIRE(launched);
     LAU_REQUIRE(launcher.launchCalls() == 1);
     const auto request = launcher.request();
@@ -1848,7 +1787,8 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
     LAU_REQUIRE(launchedDigest.has_value());
     LAU_REQUIRE(launchedInstallRoot.has_value());
     LAU_REQUIRE(std::filesystem::u8path(*launchedPlan).lexically_normal() == requestPath.lexically_normal());
-    LAU_REQUIRE(std::filesystem::u8path(*launchedInstallRoot).lexically_normal() == config.installDir.lexically_normal());
+    LAU_REQUIRE(std::filesystem::u8path(*launchedInstallRoot).lexically_normal() ==
+                config.installDir.lexically_normal());
     auto hashProvider = autoupdater::createDefaultHashProvider();
     auto requestDigest = hashProvider->sha256Bytes(requestText);
     LAU_REQUIRE(requestDigest);
@@ -1884,8 +1824,7 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
     const auto overlapManagedFile = overlapConfig.installDir / "bin" / "app.bin";
     writeFileContents(overlapManagedFile, "installed-version-2");
     writeTerminalReceipt(overlapConfig.installDir, transactionId, planDigest);
-    auto overlapStore =
-        std::make_shared<PendingStateStore>(pendingUpdateFor(overlapConfig, planDigest));
+    auto overlapStore = std::make_shared<PendingStateStore>(pendingUpdateFor(overlapConfig, planDigest));
     auto overlapLauncher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater overlapUpdater(overlapConfig);
     overlapUpdater.setStateStore(overlapStore);
@@ -1903,8 +1842,7 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
     privateConfig.tempDir = privateConfig.installDir / ".autoupdater" / "staging" / "requests";
     writeFileContents(privateConfig.installDir / "bin" / "app.bin", "installed-version-2");
     writeTerminalReceipt(privateConfig.installDir, transactionId, planDigest);
-    auto privateStore =
-        std::make_shared<PendingStateStore>(pendingUpdateFor(privateConfig, planDigest));
+    auto privateStore = std::make_shared<PendingStateStore>(pendingUpdateFor(privateConfig, planDigest));
     auto privateLauncher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater privateUpdater(privateConfig);
     privateUpdater.setStateStore(privateStore);
@@ -1921,8 +1859,7 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
     backupOverlapConfig.tempDir = backupOverlapPending.backupDir;
     writeFileContents(backupOverlapConfig.installDir / "bin" / "app.bin", "installed-version-2");
     writeTerminalReceipt(backupOverlapConfig.installDir, transactionId, planDigest);
-    auto backupOverlapStore =
-        std::make_shared<PendingStateStore>(backupOverlapPending);
+    auto backupOverlapStore = std::make_shared<PendingStateStore>(backupOverlapPending);
     auto backupOverlapLauncher = std::make_shared<CapturingProcessLauncher>();
     autoupdater::Updater backupOverlapUpdater(backupOverlapConfig);
     backupOverlapUpdater.setStateStore(backupOverlapStore);
@@ -1941,9 +1878,8 @@ void testUpdaterDelegatesRollbackToTerminalBoundExternalPlan() {
 void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable() {
     ScopedTempDir temp;
     const auto config = updaterConfig(temp.path());
-    auto network = std::make_shared<ScriptedManifestNetwork>(
-        std::vector<ScriptedManifestNetwork::Step>{
-            ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
+    auto network = std::make_shared<ScriptedManifestNetwork>(std::vector<ScriptedManifestNetwork::Step>{
+        ScriptedManifestNetwork::Step::response(manifestJson("2.0.0", "release-2"))});
     auto stateStore = std::make_shared<PendingStateStore>();
     stateStore->failAcceptedLoads(true);
 
@@ -1966,8 +1902,7 @@ void testUpdaterFailsClosedWhenAcceptedStateIsUnreadable() {
 
     updater.checkAsync();
     LAU_REQUIRE(waitUntil([&] {
-        return updater.state() == autoupdater::State::Failed &&
-               stateErrors.load(std::memory_order_relaxed) == 1;
+        return updater.state() == autoupdater::State::Failed && stateErrors.load(std::memory_order_relaxed) == 1;
     }));
     LAU_REQUIRE(checkCallbacks.load(std::memory_order_relaxed) == 0);
     LAU_REQUIRE(network->calls() == 1);

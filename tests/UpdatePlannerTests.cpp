@@ -380,16 +380,16 @@ void testUpdatePlannerIndexesLargeSnapshots() {
     normalizedEnvelope.manifest.files.push_back({"objects/app.bin", "Bin/App.exe", hash, 64});
     autoupdater::LocalSnapshot normalizedSnapshot;
     normalizedSnapshot.files.push_back({"bin/app.EXE", true, hash, 64});
-    const auto normalized = autoupdater::planUpdate(config, normalizedEnvelope, normalizedSnapshot,
-                                                     std::nullopt, plannerNow());
+    const auto normalized =
+        autoupdater::planUpdate(config, normalizedEnvelope, normalizedSnapshot, std::nullopt, plannerNow());
     LAU_REQUIRE(normalized);
     LAU_REQUIRE(normalized.value().downloads.empty());
     LAU_REQUIRE(normalized.value().operations.empty());
 
     autoupdater::LocalSnapshot invalidSnapshot;
     invalidSnapshot.files.push_back({"Bin\\App.exe", true, hash, 64});
-    const auto invalid = autoupdater::planUpdate(config, normalizedEnvelope, invalidSnapshot,
-                                                  std::nullopt, plannerNow());
+    const auto invalid =
+        autoupdater::planUpdate(config, normalizedEnvelope, invalidSnapshot, std::nullopt, plannerNow());
     LAU_REQUIRE(!invalid);
     LAU_REQUIRE(invalid.error().code == autoupdater::ErrorCode::PathTraversalRejected);
 }

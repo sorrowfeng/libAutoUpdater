@@ -43,16 +43,11 @@ Result<void> launchApplyProcess(const Config& config, const std::filesystem::pat
     request.executable = config.updaterExecutable;
     request.workingDirectory = config.installDir;
     request.detached = true;
-    request.arguments = {"--plan",
-                         util::pathToUtf8(applyPlanPath),
-                         "--plan-sha256",
-                         applyPlanDigest,
-                         "--install-root",
-                         util::pathToUtf8(config.installDir),
-                         "--pid",
-                         std::to_string(currentProcessId()),
-                         "--wait",
-                         std::to_string(config.applyWaitTimeout.count())};
+    request.arguments = {"--plan",         util::pathToUtf8(applyPlanPath),
+                         "--plan-sha256",  applyPlanDigest,
+                         "--install-root", util::pathToUtf8(config.installDir),
+                         "--pid",          std::to_string(currentProcessId()),
+                         "--wait",         std::to_string(config.applyWaitTimeout.count())};
     if (intent == ApplyLaunchIntent::Rollback) {
         request.arguments.push_back("--rollback");
     }

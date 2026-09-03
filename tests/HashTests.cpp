@@ -101,8 +101,7 @@ class ChunkedRootedFile final : public autoupdater::IRootedFile {
         return autoupdater::Result<void>::ok();
     }
     autoupdater::Result<void> truncate(std::uint64_t) noexcept override {
-        return autoupdater::Result<void>::fail(
-            {autoupdater::ErrorCode::FileSystemError, "Unexpected rooted truncate"});
+        return autoupdater::Result<void>::fail({autoupdater::ErrorCode::FileSystemError, "Unexpected rooted truncate"});
     }
     autoupdater::Result<void> flush() noexcept override {
         return autoupdater::Result<void>::ok();

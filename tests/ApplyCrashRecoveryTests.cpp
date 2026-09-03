@@ -664,13 +664,12 @@ void testReplaceAndJournalBoundaries(const std::filesystem::path& helper) {
         const auto boundaryName = std::string_view(boundary.name);
         if (boundaryName == "journal.complete.after" || boundaryName == "journal.terminal.after" ||
             boundaryName == "journal.active_clear.after") {
-            const auto transaction = boundary.activeRecorded ? readActiveTransaction(plan)
-                                                             : readTerminalTransaction(plan);
+            const auto transaction =
+                boundary.activeRecorded ? readActiveTransaction(plan) : readTerminalTransaction(plan);
             auto summary = readSummary(plan, transaction.transactionId);
             LAU_REQUIRE(summary.completedAt.has_value());
             if (boundaryName == "journal.complete.after") {
-                const auto fixedTimestamp =
-                    autoupdater::util::parseRfc3339("2001-02-03T04:05:06.000000007Z");
+                const auto fixedTimestamp = autoupdater::util::parseRfc3339("2001-02-03T04:05:06.000000007Z");
                 LAU_REQUIRE(fixedTimestamp);
                 summary.completedAt = fixedTimestamp.value();
                 const auto serialized = autoupdater::updater::serializeApplyJournalSummary(summary);
@@ -1560,24 +1559,21 @@ void testPublicRollbackCrashRecovery(const std::filesystem::path& helper) {
 
         autoupdater::ApplyPlan interruptedRequest;
         interruptedRequest.intent = autoupdater::ApplyPlanIntent::Rollback;
-        interruptedRequest.rollbackOf = autoupdater::ApplyTransactionReference{
-            interruptedTerminal.transactionId, interruptedTerminal.planDigest};
+        interruptedRequest.rollbackOf =
+            autoupdater::ApplyTransactionReference{interruptedTerminal.transactionId, interruptedTerminal.planDigest};
         interruptedRequest.appId = interruptedForward.appId;
         interruptedRequest.fromVersion = interruptedForward.toVersion;
         interruptedRequest.releaseId = interruptedForward.releaseId;
         interruptedRequest.installDir = interruptedForward.installDir;
         interruptedRequest.stagingDir = interruptedForward.backupDir;
-        interruptedRequest.backupDir =
-            autoupdater::util::defaultStagingRoot(interruptedForward.installDir) / "backup" / "rollback" /
-            autoupdater::util::pathFromUtf8(interruptedTerminal.transactionId);
-        const auto interruptedRequestPath =
-            savePlanAs(terminalCrash, interruptedRequest, "rollback-request.json");
+        interruptedRequest.backupDir = autoupdater::util::defaultStagingRoot(interruptedForward.installDir) / "backup" /
+                                       "rollback" / autoupdater::util::pathFromUtf8(interruptedTerminal.transactionId);
+        const auto interruptedRequestPath = savePlanAs(terminalCrash, interruptedRequest, "rollback-request.json");
 
         LAU_REQUIRE(recover(helper, interruptedRequestPath) == 0);
         requireActiveJournalCleared(interruptedRequest, "rollback after forward terminal publication");
         LAU_REQUIRE(readFile(interruptedTarget) == kOldContents);
-        LAU_REQUIRE(readTerminalTransaction(interruptedRequest).transactionId !=
-                    interruptedTerminal.transactionId);
+        LAU_REQUIRE(readTerminalTransaction(interruptedRequest).transactionId != interruptedTerminal.transactionId);
     }
 
     TemporaryDirectory temporary("public-rollback-crash-recovery");
@@ -1619,8 +1615,8 @@ void testPublicRollbackCrashRecovery(const std::filesystem::path& helper) {
     const auto rollbackTerminal = readTerminalTransaction(request);
     LAU_REQUIRE(rollbackTerminal.transactionId == terminalAfterRecovery.transactionId);
     LAU_REQUIRE(rollbackTerminal.planDigest == terminalAfterRecovery.planDigest);
-    const auto rollbackSnapshot = autoupdater::ApplyPlan::parse(
-        readFile(planJournal(request, rollbackTerminal.transactionId)));
+    const auto rollbackSnapshot =
+        autoupdater::ApplyPlan::parse(readFile(planJournal(request, rollbackTerminal.transactionId)));
     LAU_REQUIRE(rollbackSnapshot);
     LAU_REQUIRE(rollbackSnapshot.value().intent == autoupdater::ApplyPlanIntent::Rollback);
     LAU_REQUIRE(rollbackSnapshot.value().rollbackOf.has_value());

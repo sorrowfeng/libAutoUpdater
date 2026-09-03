@@ -92,14 +92,14 @@ void verifySharedJsonCorpus() {
         }
         const auto first = line.find('|');
         const auto second = first == std::string::npos ? std::string::npos : line.find('|', first + 1);
-        if (first == std::string::npos || second == std::string::npos || line.find('|', second + 1) != std::string::npos) {
+        if (first == std::string::npos || second == std::string::npos ||
+            line.find('|', second + 1) != std::string::npos) {
             throw std::runtime_error("Malformed JSON conformance corpus line " + std::to_string(lineNumber));
         }
         const auto expectation = line.substr(0, first);
         const auto name = line.substr(first + 1, second - first - 1);
         if ((expectation != "accept" && expectation != "reject") || name.empty()) {
-            throw std::runtime_error("Invalid JSON conformance corpus metadata on line " +
-                                     std::to_string(lineNumber));
+            throw std::runtime_error("Invalid JSON conformance corpus metadata on line " + std::to_string(lineNumber));
         }
 
         const auto parsed = Json::parse(decodeHex(line.substr(second + 1)), autoupdater::JsonResourceLimits{});
@@ -224,26 +224,15 @@ void testJsonRfc8259SyntaxAndUnicode() {
     LAU_REQUIRE(nul.stringify() == R"json("\u0000")json");
 
     for (const auto& text : std::vector<std::string>{
-             R"json({"a":0,"a":1})json",
-             R"json({"a":0,"\u0061":1})json",
-             R"json("\ud800")json",
-             R"json("\udc00")json",
-             R"json("\ud800\u0041")json",
-             R"json("\udc00\ud800")json",
-             std::string("\"bad\0value\"", 11),
-             std::string("\f0", 2),
-             std::string("\v0", 2),
-             std::string("\"line\nfeed\"")}) {
+             R"json({"a":0,"a":1})json", R"json({"a":0,"\u0061":1})json", R"json("\ud800")json", R"json("\udc00")json",
+             R"json("\ud800\u0041")json", R"json("\udc00\ud800")json", std::string("\"bad\0value\"", 11),
+             std::string("\f0", 2), std::string("\v0", 2), std::string("\"line\nfeed\"")}) {
         requireInvalidJson(text);
     }
 
-    for (const auto& malformed : std::vector<std::string>{
-             bytes({0x80}),
-             bytes({0xc0, 0x80}),
-             bytes({0xe2, 0x82}),
-             bytes({0xed, 0xa0, 0x80}),
-             bytes({0xf4, 0x90, 0x80, 0x80}),
-             bytes({0xf8, 0x88, 0x80, 0x80, 0x80})}) {
+    for (const auto& malformed :
+         std::vector<std::string>{bytes({0x80}), bytes({0xc0, 0x80}), bytes({0xe2, 0x82}), bytes({0xed, 0xa0, 0x80}),
+                                  bytes({0xf4, 0x90, 0x80, 0x80}), bytes({0xf8, 0x88, 0x80, 0x80, 0x80})}) {
         requireInvalidJson(std::string("\"") + malformed + "\"");
     }
 
@@ -287,9 +276,8 @@ void testJsonExactNumericContract() {
     LAU_REQUIRE(smallestSubnormalRoundTrip.isFloatingPoint());
     LAU_REQUIRE(smallestSubnormalRoundTrip.asDouble() == std::numeric_limits<double>::denorm_min());
 
-    for (const auto& text : {"+1", ".1", "01", "-01", "1.", "1e", "1e+", "--1",
-                             "-9223372036854775809", "18446744073709551616", "1e309", "1e-9999",
-                             "NaN", "Infinity"}) {
+    for (const auto& text : {"+1", ".1", "01", "-01", "1.", "1e", "1e+", "--1", "-9223372036854775809",
+                             "18446744073709551616", "1e309", "1e-9999", "NaN", "Infinity"}) {
         requireInvalidJson(text);
     }
 
@@ -336,23 +324,23 @@ void testMetadataSchemasRequireExactTypesAndRanges() {
     LAU_REQUIRE(!futureManifest);
     LAU_REQUIRE(futureManifest.error().code == autoupdater::ErrorCode::UnsupportedManifestSchema);
 
-    for (const auto& text : std::vector<std::string>{
-             R"json({"schemaVersion":1.0,"version":"1.2.3"})json",
-             R"json({"schemaVersion":1,"version":"1.2.3","unknown":true})json",
-             R"json({"schemaVersion":1,"version":"1.2.3","expiresAt":false})json",
-             std::string(R"json({"schemaVersion":1,"version":"1.2.3-)json") + bytes({0xc2, 0xaa}) +
-                 R"json("})json",
-             std::string(R"json({"schemaVersion":1,"version":")json") + std::string(100000, '9') +
-                 R"json(.2.3"})json",
-             std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
-                 sha('A') + R"json(","size":1}]})json",
-             std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
-                 sha('a') + R"json(","size":1.5}]})json",
-             std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
-                 sha('a') + R"json(","size":-1}]})json",
-             std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"shared.bin","localPath":"a.bin","sha256":")json") +
-                 sha('a') + R"json(","size":1},{"path":"shared.bin","localPath":"b.bin","sha256":")json" +
-                 sha('b') + R"json(","size":1}]})json"}) {
+    for (
+        const auto& text : std::vector<std::string>{
+            R"json({"schemaVersion":1.0,"version":"1.2.3"})json",
+            R"json({"schemaVersion":1,"version":"1.2.3","unknown":true})json",
+            R"json({"schemaVersion":1,"version":"1.2.3","expiresAt":false})json",
+            std::string(R"json({"schemaVersion":1,"version":"1.2.3-)json") + bytes({0xc2, 0xaa}) + R"json("})json",
+            std::string(R"json({"schemaVersion":1,"version":")json") + std::string(100000, '9') + R"json(.2.3"})json",
+            std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
+                sha('A') + R"json(","size":1}]})json",
+            std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
+                sha('a') + R"json(","size":1.5}]})json",
+            std::string(R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"app.bin","sha256":")json") +
+                sha('a') + R"json(","size":-1}]})json",
+            std::string(
+                R"json({"schemaVersion":1,"version":"1.2.3","files":[{"path":"shared.bin","localPath":"a.bin","sha256":")json") +
+                sha('a') + R"json(","size":1},{"path":"shared.bin","localPath":"b.bin","sha256":")json" + sha('b') +
+                R"json(","size":1}]})json"}) {
         LAU_REQUIRE(!autoupdater::Manifest::parse(text, limits));
     }
 
@@ -368,8 +356,8 @@ void testMetadataSchemasRequireExactTypesAndRanges() {
         {"a/child", "bin/child", sha('a'), 1},
     };
     requireManifestSourceConflict(conflictingManifestSources);
-    requireManifestSourceConflict(std::vector<autoupdater::ManifestFile>(conflictingManifestSources.rbegin(),
-                                                                          conflictingManifestSources.rend()));
+    requireManifestSourceConflict(
+        std::vector<autoupdater::ManifestFile>(conflictingManifestSources.rbegin(), conflictingManifestSources.rend()));
 
     const auto indexWrongType =
         R"json({"schemaVersion":1,"targets":[{"platform":false,"manifestUrl":"manifest.json"}]})json";
@@ -386,18 +374,19 @@ void testMetadataSchemasRequireExactTypesAndRanges() {
     LAU_REQUIRE(planRoundTrip);
     LAU_REQUIRE(planRoundTrip.value().operations.front().size == kBeyondDoubleInteger);
 
-    for (const auto& text : std::vector<std::string>{
-             R"json({"schemaVersion":2.0,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[]})json",
-             addField(validApplyPlan(1), "unknown", Json(true)),
-             replaceField(validApplyPlan(1), "fromVersion", Json(false)),
-             replaceField(validApplyPlan(1), "restartCommand", Json("not-an-array")),
-             std::string(
-                 R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","restartCommand":["app",1],"operations":[]})json"),
-             std::string(
-                 R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"replace","source":"app","target":"app","sha256":")json") +
-                 sha('a') + R"json(","size":1.5}]})json",
-             R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"remove","target":"old","size":1}]})json",
-             R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"remove","target":"old","precondition":{"exists":false,"size":0}}]})json"}) {
+    for (
+        const auto& text : std::vector<std::string>{
+            R"json({"schemaVersion":2.0,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[]})json",
+            addField(validApplyPlan(1), "unknown", Json(true)),
+            replaceField(validApplyPlan(1), "fromVersion", Json(false)),
+            replaceField(validApplyPlan(1), "restartCommand", Json("not-an-array")),
+            std::string(
+                R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","restartCommand":["app",1],"operations":[]})json"),
+            std::string(
+                R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"replace","source":"app","target":"app","sha256":")json") +
+                sha('a') + R"json(","size":1.5}]})json",
+            R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"remove","target":"old","size":1}]})json",
+            R"json({"schemaVersion":2,"intent":"install","installDir":"/i","stagingDir":"/s","backupDir":"/b","operations":[{"type":"remove","target":"old","precondition":{"exists":false,"size":0}}]})json"}) {
         LAU_REQUIRE(!autoupdater::ApplyPlan::parse(text, limits));
     }
 
@@ -415,8 +404,8 @@ void testMetadataSchemasRequireExactTypesAndRanges() {
         {autoupdater::ApplyOperationType::Replace, "a/child", "bin/child", sha('a'), 1},
     };
     requireApplySourceConflict(conflictingApplySources);
-    requireApplySourceConflict(std::vector<autoupdater::ApplyOperation>(conflictingApplySources.rbegin(),
-                                                                         conflictingApplySources.rend()));
+    requireApplySourceConflict(
+        std::vector<autoupdater::ApplyOperation>(conflictingApplySources.rbegin(), conflictingApplySources.rend()));
 }
 
 void testStateAndJournalSchemasFailClosed() {
@@ -449,7 +438,8 @@ void testStateAndJournalSchemasFailClosed() {
     LAU_REQUIRE(!stateStore->savePendingUpdate(pending));
 
     const std::string validatorRecord =
-        std::string(R"json({"schemaVersion":1,"downloadResume":{"artifact":{"offset":1,"etag":"ok\r\nInjected: true","lastModified":"","sha256":")json") +
+        std::string(
+            R"json({"schemaVersion":1,"downloadResume":{"artifact":{"offset":1,"etag":"ok\r\nInjected: true","lastModified":"","sha256":")json") +
         sha('a') + R"json("}}})json";
     const auto invalidValidatorPath = temporary.path() / "invalid-validator.json";
     writeFile(invalidValidatorPath, validatorRecord);
@@ -480,17 +470,16 @@ void testStateAndJournalSchemasFailClosed() {
     for (std::size_t index = 0; index < 3; ++index) {
         const auto invalidPath = temporary.path() / ("invalid-" + std::to_string(index) + ".json");
         const std::vector<std::string> invalidStates = {
-            R"json({"schemaVersion":1.0})json",
-            R"json({"schemaVersion":1,"unknown":true})json",
-            std::string(R"json({"schemaVersion":1,"downloadResume":{"artifact":{"offset":1.5,"etag":"","lastModified":"","sha256":")json") +
+            R"json({"schemaVersion":1.0})json", R"json({"schemaVersion":1,"unknown":true})json",
+            std::string(
+                R"json({"schemaVersion":1,"downloadResume":{"artifact":{"offset":1.5,"etag":"","lastModified":"","sha256":")json") +
                 sha('a') + R"json("}}})json"};
         writeFile(invalidPath, invalidStates[index]);
         LAU_REQUIRE(!autoupdater::createJsonStateStore(invalidPath, limits)->loadLastAcceptedVersion());
     }
     const auto futureStatePath = temporary.path() / "future-state.json";
     writeFile(futureStatePath, R"json({"schemaVersion":2,"futureField":true})json");
-    const auto futureState =
-        autoupdater::createJsonStateStore(futureStatePath, limits)->loadLastAcceptedVersion();
+    const auto futureState = autoupdater::createJsonStateStore(futureStatePath, limits)->loadLastAcceptedVersion();
     LAU_REQUIRE(!futureState);
     LAU_REQUIRE(futureState.error().message.find("unsupported") != std::string::npos);
 
@@ -503,8 +492,7 @@ void testStateAndJournalSchemasFailClosed() {
     LAU_REQUIRE(!legacyReceipt.value().completedAt);
     LAU_REQUIRE(parseJson(receipt.value()).get("schemaVersion")->asUInt64() == 2);
     LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(addField(receipt.value(), "unknown", Json(true))));
-    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
-        replaceField(receipt.value(), "schemaVersion", Json(2.0))));
+    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(replaceField(receipt.value(), "schemaVersion", Json(2.0))));
     const auto futureReceipt = autoupdater::parseApplyTransactionReceipt(
         R"json({"schemaVersion":4,"transactionId":"ignored","futureField":true})json");
     LAU_REQUIRE(!futureReceipt);
@@ -519,8 +507,8 @@ void testStateAndJournalSchemasFailClosed() {
     const auto terminalReceipt = autoupdater::parseApplyTransactionReceipt(terminalReceiptJson.value());
     LAU_REQUIRE(terminalReceipt);
     LAU_REQUIRE(terminalReceipt.value().completedAt == completedAt.value());
-    LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
-        replaceField(receipt.value(), "schemaVersion", Json(UINT64_C(3)))));
+    LAU_REQUIRE(
+        !autoupdater::parseApplyTransactionReceipt(replaceField(receipt.value(), "schemaVersion", Json(UINT64_C(3)))));
     LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
         replaceField(terminalReceiptJson.value(), "schemaVersion", Json(UINT64_C(2)))));
     LAU_REQUIRE(!autoupdater::parseApplyTransactionReceipt(
@@ -539,8 +527,8 @@ void testStateAndJournalSchemasFailClosed() {
     LAU_REQUIRE(snapshotDigest);
     const autoupdater::ApplyTransactionReceipt snapshotReceipt{transactionId, snapshotDigest.value(),
                                                                completedAt.value()};
-    const auto snapshotPath = temporary.path() / "terminal-plan-install" / ".autoupdater" / "journal" /
-                              (transactionId + ".plan.json");
+    const auto snapshotPath =
+        temporary.path() / "terminal-plan-install" / ".autoupdater" / "journal" / (transactionId + ".plan.json");
     writeFile(snapshotPath, snapshotJson);
     auto fileSystem = autoupdater::createDefaultFileSystem();
     auto loadedSnapshot = autoupdater::detail::loadTerminalApplyPlan(
@@ -548,13 +536,13 @@ void testStateAndJournalSchemasFailClosed() {
     LAU_REQUIRE(loadedSnapshot);
     LAU_REQUIRE(loadedSnapshot.value().toVersion == snapshotPlan.value().toVersion);
     writeFile(snapshotPath, "{}");
-    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(
-        *fileSystem, temporary.path() / "terminal-plan-install", snapshotReceipt, limits));
+    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(*fileSystem, temporary.path() / "terminal-plan-install",
+                                                            snapshotReceipt, limits));
     std::error_code snapshotError;
     LAU_REQUIRE(std::filesystem::remove(snapshotPath, snapshotError));
     LAU_REQUIRE(!snapshotError);
-    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(
-        *fileSystem, temporary.path() / "terminal-plan-install", snapshotReceipt, limits));
+    LAU_REQUIRE(!autoupdater::detail::loadTerminalApplyPlan(*fileSystem, temporary.path() / "terminal-plan-install",
+                                                            snapshotReceipt, limits));
 
     autoupdater::updater::ApplyJournalSummary summary;
     summary.transactionId = transactionId;
@@ -570,8 +558,7 @@ void testStateAndJournalSchemasFailClosed() {
     invalidSummary.fileState = static_cast<autoupdater::updater::JournalFileState>(255);
     LAU_REQUIRE(!autoupdater::updater::serializeApplyJournalSummary(invalidSummary));
     LAU_REQUIRE(autoupdater::updater::parseApplyJournalSummary(summaryJson.value()));
-    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
-        addField(summaryJson.value(), "unknown", Json(true))));
+    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(addField(summaryJson.value(), "unknown", Json(true))));
     LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
         replaceField(summaryJson.value(), "operationCount", Json("00"))));
 
@@ -581,13 +568,12 @@ void testStateAndJournalSchemasFailClosed() {
     completeSummary.completedAt = completedAt.value();
     const auto completeSummaryJson = autoupdater::updater::serializeApplyJournalSummary(completeSummary);
     LAU_REQUIRE(completeSummaryJson);
-    const auto parsedCompleteSummary =
-        autoupdater::updater::parseApplyJournalSummary(completeSummaryJson.value());
+    const auto parsedCompleteSummary = autoupdater::updater::parseApplyJournalSummary(completeSummaryJson.value());
     LAU_REQUIRE(parsedCompleteSummary);
     LAU_REQUIRE(parsedCompleteSummary.value().completedAt == completedAt.value());
     LAU_REQUIRE(!autoupdater::updater::parseApplyJournalSummary(
-        replaceField(replaceField(replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(3))),
-                                  "fileState", Json("complete")),
+        replaceField(replaceField(replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(3))), "fileState",
+                                  Json("complete")),
                      "restartState", Json("not_requested"))));
     auto legacyCompleteJson = replaceField(summaryJson.value(), "schemaVersion", Json(UINT64_C(2)));
     legacyCompleteJson = replaceField(legacyCompleteJson, "fileState", Json("complete"));
@@ -627,8 +613,8 @@ void testStateAndJournalSchemasFailClosed() {
     invalidOperation.applyState = static_cast<autoupdater::updater::JournalApplyState>(255);
     LAU_REQUIRE(!autoupdater::updater::serializeApplyJournalOperation(invalidOperation));
     LAU_REQUIRE(autoupdater::updater::parseApplyJournalOperation(operationJson.value()));
-    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalOperation(
-        addField(operationJson.value(), "unknown", Json(true))));
-    LAU_REQUIRE(!autoupdater::updater::parseApplyJournalOperation(
-        replaceField(operationJson.value(), "index", Json("00"))));
+    LAU_REQUIRE(
+        !autoupdater::updater::parseApplyJournalOperation(addField(operationJson.value(), "unknown", Json(true))));
+    LAU_REQUIRE(
+        !autoupdater::updater::parseApplyJournalOperation(replaceField(operationJson.value(), "index", Json("00"))));
 }

@@ -1275,8 +1275,8 @@ class JsonStateStore final : public IStateStore,
         }
         const auto contents = json.stringify(2);
         if (contents.size() > limits_.maxStateBytes) {
-            return Result<void>::fail({ErrorCode::ResourceLimitExceeded, "State file exceeds its byte limit",
-                                       ErrorPhase::StatePersistence});
+            return Result<void>::fail(
+                {ErrorCode::ResourceLimitExceeded, "State file exceeds its byte limit", ErrorPhase::StatePersistence});
         }
 
         if (state.primary.exists) {

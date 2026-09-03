@@ -278,8 +278,7 @@ Result<void> validateSummaryRecord(const ApplyJournalSummary& summary, bool allo
     }
     if (summary.completedAt) {
         if (summary.fileState != JournalFileState::Complete) {
-            return Result<void>::fail(
-                journalError("Apply journal completion timestamp is present before completion"));
+            return Result<void>::fail(journalError("Apply journal completion timestamp is present before completion"));
         }
         auto formatted = autoupdater::detail::formatApplyCompletionTimestamp(*summary.completedAt);
         if (!formatted) {
@@ -457,8 +456,7 @@ Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summ
         if (!valid)
             return Result<std::string>::fail(valid.error());
         util::Json::Object object;
-        object.emplace("schemaVersion",
-                       summary.completedAt ? kSummarySchemaVersion : kLegacySummarySchemaVersion);
+        object.emplace("schemaVersion", summary.completedAt ? kSummarySchemaVersion : kLegacySummarySchemaVersion);
         object.emplace("transactionId", summary.transactionId);
         object.emplace("planDigest", summary.planDigest);
         object.emplace("fileState", journalFileStateName(summary.fileState));
@@ -482,22 +480,20 @@ Result<std::string> serializeApplyJournalSummary(const ApplyJournalSummary& summ
 
 Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) noexcept {
     try {
-        auto object = parseObject(text, "apply journal summary",
-                                  {kLegacySummarySchemaVersion, kSummarySchemaVersion});
+        auto object = parseObject(text, "apply journal summary", {kLegacySummarySchemaVersion, kSummarySchemaVersion});
         if (!object)
             return Result<ApplyJournalSummary>::fail(object.error());
         const auto schemaVersion = object.value().get("schemaVersion")->asUInt64();
-        auto keys = schemaVersion == kLegacySummarySchemaVersion
-                        ? requireOnlyKeys(object.value().asObject(),
-                                          {"schemaVersion", "transactionId", "planDigest", "fileState",
-                                           "operationCount", "applyError", "rollbackError", "restartState",
-                                           "restartError"},
-                                          "Apply journal summary")
-                        : requireOnlyKeys(object.value().asObject(),
-                                          {"schemaVersion", "transactionId", "planDigest", "fileState",
-                                           "completedAt", "operationCount", "applyError", "rollbackError",
-                                           "restartState", "restartError"},
-                                          "Apply journal summary");
+        auto keys =
+            schemaVersion == kLegacySummarySchemaVersion
+                ? requireOnlyKeys(object.value().asObject(),
+                                  {"schemaVersion", "transactionId", "planDigest", "fileState", "operationCount",
+                                   "applyError", "rollbackError", "restartState", "restartError"},
+                                  "Apply journal summary")
+                : requireOnlyKeys(object.value().asObject(),
+                                  {"schemaVersion", "transactionId", "planDigest", "fileState", "completedAt",
+                                   "operationCount", "applyError", "rollbackError", "restartState", "restartError"},
+                                  "Apply journal summary");
         if (!keys)
             return Result<ApplyJournalSummary>::fail(keys.error());
         auto transactionId = requiredString(object.value(), "transactionId");
@@ -544,8 +540,7 @@ Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) no
             }
             auto instant = util::parseRfc3339(timestamp->asString());
             if (!instant || !autoupdater::detail::formatApplyCompletionTimestamp(instant.value())) {
-                return Result<ApplyJournalSummary>::fail(
-                    journalError("Invalid apply journal completion timestamp"));
+                return Result<ApplyJournalSummary>::fail(journalError("Invalid apply journal completion timestamp"));
             }
             completedAt = instant.value();
         } else if (schemaVersion == kSummarySchemaVersion) {
@@ -563,8 +558,7 @@ Result<ApplyJournalSummary> parseApplyJournalSummary(const std::string& text) no
         summary.rollbackError = rollbackError.value();
         summary.restartState = restartState.value();
         summary.restartError = restartError.value();
-        auto validSummary =
-            validateSummaryRecord(summary, schemaVersion == kLegacySummarySchemaVersion);
+        auto validSummary = validateSummaryRecord(summary, schemaVersion == kLegacySummarySchemaVersion);
         if (!validSummary) {
             return Result<ApplyJournalSummary>::fail(validSummary.error());
         }
@@ -890,8 +884,7 @@ Result<std::optional<ActiveTransaction>> ApplyJournalStore::loadActive() noexcep
 Result<void> ApplyJournalStore::writeActive(const ActiveTransaction& active) noexcept {
     try {
         if (active.completedAt) {
-            return Result<void>::fail(
-                journalError("Active apply transaction cannot contain a completion timestamp"));
+            return Result<void>::fail(journalError("Active apply transaction cannot contain a completion timestamp"));
         }
         auto serialized = serializeActiveTransaction(active);
         if (!serialized)
@@ -922,8 +915,7 @@ Result<std::optional<ActiveTransaction>> ApplyJournalStore::loadTerminal() noexc
 Result<void> ApplyJournalStore::writeTerminal(const ActiveTransaction& terminal) noexcept {
     try {
         if (!terminal.completedAt) {
-            return Result<void>::fail(
-                journalError("Terminal apply transaction is missing its completion timestamp"));
+            return Result<void>::fail(journalError("Terminal apply transaction is missing its completion timestamp"));
         }
         auto serialized = serializeActiveTransaction(terminal);
         if (!serialized)

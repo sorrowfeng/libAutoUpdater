@@ -54,8 +54,8 @@ bool wideToUtf8(const wchar_t* text, std::string& output) {
         return false;
     }
     output.resize(static_cast<std::size_t>(count));
-    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, length, output.data(), count, nullptr,
-                               nullptr) == count;
+    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, length, output.data(), count, nullptr, nullptr) ==
+           count;
 }
 #endif
 
@@ -139,8 +139,7 @@ bool parseArgs(const std::vector<std::string>& values, Args& args) {
         } else if (arg == "--wait" && i + 1 < values.size() && !waitSeen) {
             waitSeen = true;
             std::uint64_t seconds = 0;
-            const auto maximum =
-                static_cast<std::uint64_t>(autoupdater::detail::kMaximumProcessWaitTimeout.count());
+            const auto maximum = static_cast<std::uint64_t>(autoupdater::detail::kMaximumProcessWaitTimeout.count());
             if (!parseUnsignedDecimal(values[++i], maximum, seconds)) {
                 return false;
             }
