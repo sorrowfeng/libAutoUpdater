@@ -632,7 +632,9 @@ Result<void> launchRestart(const ApplyPlan& plan, IProcessLauncher& launcher) {
         return Result<void>::ok();
     }
     ProcessLaunchRequest request;
-    request.executable = plan.restartCommand.front();
+    // restartCommand 是 UTF-8 字符串；转 path 必须走 pathFromUtf8，
+    // 否则 Windows 按 ANSI 码页解码中文路径导致重启 CreateProcessW 失败。
+    request.executable = util::pathFromUtf8(plan.restartCommand.front());
     request.workingDirectory = plan.installDir;
     request.detached = true;
     for (std::size_t index = 1; index < plan.restartCommand.size(); ++index) {

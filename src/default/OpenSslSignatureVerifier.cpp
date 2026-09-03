@@ -63,20 +63,34 @@ std::optional<std::string> base64Decode(std::string_view input) {
     std::string output;
     output.reserve(clean.size() / 4 * 3);
     for (std::size_t i = 0; i < clean.size(); i += 4) {
+        const bool lastGroup = i + 4 == clean.size();
         int values[4]{};
         int padding = 0;
+        bool paddingStarted = false;
         for (int j = 0; j < 4; ++j) {
             const auto ch = clean[i + static_cast<std::size_t>(j)];
             if (ch == '=') {
+                // Padding is only legal as one or two trailing '=' characters
+                // in the final group.
+                if (!lastGroup || j < 2) {
+                    return std::nullopt;
+                }
+                paddingStarted = true;
                 values[j] = 0;
                 ++padding;
             } else {
+                if (paddingStarted) {
+                    return std::nullopt; // data after '=' is malformed
+                }
                 const int value = table[static_cast<unsigned char>(ch)];
                 if (value < 0) {
                     return std::nullopt;
                 }
                 values[j] = value;
             }
+        }
+        if (padding > 2 || (padding > 0 && !lastGroup)) {
+            return std::nullopt;
         }
 
         const auto triple = (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
