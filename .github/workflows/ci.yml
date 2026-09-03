@@ -564,6 +564,7 @@ jobs:
           --filter src
           --exclude 'src/default/CfNetworkClient.cpp'
           --exclude 'src/default/WinHttpNetworkClient.cpp'
+          --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
           --print-summary
           --xml-pretty
           --output coverage.xml
