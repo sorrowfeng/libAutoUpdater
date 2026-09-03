@@ -419,15 +419,17 @@ class Parser {
             return Result<Json>::ok(Json(!token.empty() && token.front() == '-' ? -0.0 : 0.0));
         }
 
-        std::istringstream stream{std::string(token)};
-        stream.imbue(std::locale::classic());
-        stream >> std::noskipws;
-        double value = 0;
-        stream >> value;
-        if (stream.fail() || !stream.eof() || !std::isfinite(value)) {
+        // std::from_chars is locale-independent and performs exact decimal to
+        // binary conversion, so it accepts subnormal values such as
+        // 4.9406564584124654e-324. iostream extraction would reject them on
+        // platforms whose libc++ treats a raised underflow flag as a parse
+        // failure, breaking the shared JSON conformance corpus.
+        double value = 0.0;
+        const auto converted = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (converted.ec == std::errc::result_out_of_range || converted.ptr != token.data() + token.size()) {
             return fail("JSON floating-point number is out of range");
         }
-        if (value == 0.0) {
+        if (converted.ec != std::errc{} || value == 0.0) {
             return fail("JSON floating-point number underflows");
         }
         return Result<Json>::ok(Json(value));

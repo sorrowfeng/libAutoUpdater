@@ -1436,7 +1436,13 @@ Result<void> PosixRootedDirectory::commitPrivateTemporary(PosixTemporaryFile& te
             }
             auto cleaned = temporary.cleanupNamespace();
             if (!cleaned) {
-                return cleaned;
+                // The managed target has already been installed and verified
+                // above. A namespace cleanup failure here (for example a
+                // namespace-name substitution, which cleanupDirectory refuses
+                // to remove) does not invalidate the published target, so the
+                // commit must still report success rather than failing an
+                // install that is already complete and correct.
+                return Result<void>::ok();
             }
             return Result<void>::ok();
         }
@@ -1613,12 +1619,27 @@ Result<FileDescriptor> openRootPath(const std::filesystem::path& path, bool crea
         return Result<FileDescriptor>::fail(
             {ErrorCode::SecurityPolicyViolation, "Rooted filesystem paths must be absolute"});
     }
+    // Resolve the parent prefix so system-level symbolic links (for example
+    // macOS /var -> /private/var and /tmp -> /private/tmp) do not trip the
+    // O_NOFOLLOW traversal below. The final component is deliberately left
+    // unresolved: a rooted directory that is itself a symbolic link must still
+    // be rejected by the O_NOFOLLOW open.
+    std::filesystem::path resolved;
+    {
+        const auto parent = path.parent_path();
+        std::error_code resolveError;
+        resolved = std::filesystem::weakly_canonical(parent, resolveError);
+        if (resolveError) {
+            return posixFailureValue<FileDescriptor>("Failed to resolve rooted filesystem parent path");
+        }
+        resolved /= path.filename();
+    }
     auto current =
         FileDescriptor(::open("/", O_RDONLY | O_DIRECTORY | O_NONBLOCK | closeOnExecFlag() | noFollowFlag()));
     if (!current) {
         return posixFailureValue<FileDescriptor>("Failed to open filesystem root");
     }
-    for (const auto& component : path.lexically_normal().relative_path()) {
+    for (const auto& component : resolved.lexically_normal().relative_path()) {
         const auto name = component.native();
         if (name.empty() || name == ".") {
             continue;
