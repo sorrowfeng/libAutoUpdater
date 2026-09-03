@@ -32,6 +32,9 @@ Testing/
 __pycache__/
 *.pyc
 
+# Local assistant workspace data
+.workbuddy/
+
 # Editor and OS files
 .vscode/
 .idea/

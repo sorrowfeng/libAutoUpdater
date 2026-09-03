@@ -60,6 +60,12 @@ endif()
 if(DEFINED INSTALL_CONFIG AND NOT "${INSTALL_CONFIG}" STREQUAL "")
     list(APPEND configure_command "-DCMAKE_BUILD_TYPE=${INSTALL_CONFIG}")
 endif()
+if(DEFINED CONSUMER_CXX_FLAGS AND NOT "${CONSUMER_CXX_FLAGS}" STREQUAL "")
+    list(APPEND configure_command "-DCMAKE_CXX_FLAGS=${CONSUMER_CXX_FLAGS}")
+endif()
+if(DEFINED CONSUMER_LINK_FLAGS AND NOT "${CONSUMER_LINK_FLAGS}" STREQUAL "")
+    list(APPEND configure_command "-DCMAKE_EXE_LINKER_FLAGS=${CONSUMER_LINK_FLAGS}")
+endif()
 
 execute_process(
     COMMAND ${configure_command}

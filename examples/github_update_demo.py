@@ -38,6 +38,12 @@ def default_manifest_url(repo: str, branch: str) -> str:
     return f"https://raw.githubusercontent.com/{repo}/{branch}/{RELEASE_PATH}/manifest.json"
 
 
+def default_allow_base(repo: str, branch: str) -> str:
+    # The manifest and every file it references live under this directory, so
+    # it is the narrowest allowed base URL that authorizes the whole update.
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/{RELEASE_PATH}/"
+
+
 def default_build_path(root: Path, *parts: str) -> Path:
     return root.joinpath("build", *parts)
 
@@ -144,6 +150,7 @@ def main() -> int:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub owner/repo used by raw.githubusercontent.com")
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--manifest-url", default="")
+    parser.add_argument("--allow-base", default="", help="Override the allowed base URL passed to the CLI")
     parser.add_argument("--work-dir", type=Path, default=repo_root / "demo-work" / "github-update")
     parser.add_argument("--cli", type=Path, default=default_cli(repo_root))
     parser.add_argument("--updater", type=Path, default=default_updater(repo_root))
@@ -151,6 +158,7 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_url = args.manifest_url or default_manifest_url(args.repo, args.branch)
+    allow_base = args.allow_base or default_allow_base(args.repo, args.branch)
     install_dir = args.work_dir.resolve() / "install"
 
     print("GitHub-hosted update demo")
@@ -179,6 +187,8 @@ def main() -> int:
         str(args.cli),
         "--manifest",
         manifest_url,
+        "--allow-base",
+        allow_base,
         "--version",
         "1.0.0",
         "--install",

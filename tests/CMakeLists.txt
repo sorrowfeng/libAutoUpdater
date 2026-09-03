@@ -117,6 +117,14 @@ if(TARGET autoupdater_apply)
         list(APPEND libautoupdater_install_package_test_args
             -DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
     endif()
+    if(LIBAUTOUPDATER_PACKAGE_CONSUMER_CXX_FLAGS)
+        list(APPEND libautoupdater_install_package_test_args
+            -DCONSUMER_CXX_FLAGS=${LIBAUTOUPDATER_PACKAGE_CONSUMER_CXX_FLAGS})
+    endif()
+    if(LIBAUTOUPDATER_PACKAGE_CONSUMER_LINK_FLAGS)
+        list(APPEND libautoupdater_install_package_test_args
+            -DCONSUMER_LINK_FLAGS=${LIBAUTOUPDATER_PACKAGE_CONSUMER_LINK_FLAGS})
+    endif()
 
     add_test(
         NAME libAutoUpdater_install_package_validation

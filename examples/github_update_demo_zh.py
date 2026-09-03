@@ -37,6 +37,11 @@ def default_manifest_url(repo: str, branch: str) -> str:
     return f"https://raw.githubusercontent.com/{repo}/{branch}/{RELEASE_PATH}/manifest.json"
 
 
+def default_allow_base(repo: str, branch: str) -> str:
+    # manifest 及其引用的所有文件都位于该目录下，因此这是覆盖整个更新的最窄允许根 URL。
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/{RELEASE_PATH}/"
+
+
 def default_build_path(root: Path, *parts: str) -> Path:
     return root.joinpath("build", *parts)
 
@@ -143,6 +148,7 @@ def main() -> int:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="作为 raw.githubusercontent.com 源的 GitHub owner/repo")
     parser.add_argument("--branch", default=DEFAULT_BRANCH, help="GitHub 分支或 tag")
     parser.add_argument("--manifest-url", default="", help="覆盖默认 manifest URL")
+    parser.add_argument("--allow-base", default="", help="覆盖传给 CLI 的允许根 URL")
     parser.add_argument("--work-dir", type=Path, default=repo_root / "demo-work" / "中文云端更新")
     parser.add_argument("--cli", type=Path, default=default_cli(repo_root))
     parser.add_argument("--updater", type=Path, default=default_updater(repo_root))
@@ -150,6 +156,7 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_url = args.manifest_url or default_manifest_url(args.repo, args.branch)
+    allow_base = args.allow_base or default_allow_base(args.repo, args.branch)
     install_dir = args.work_dir.resolve() / "安装目录"
 
     print("GitHub 云端更新中文路径演示")
@@ -178,6 +185,8 @@ def main() -> int:
         str(args.cli),
         "--manifest",
         manifest_url,
+        "--allow-base",
+        allow_base,
         "--version",
         "1.0.0",
         "--install",

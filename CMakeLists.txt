@@ -79,6 +79,14 @@ if(LIBAUTOUPDATER_ENABLE_SANITIZERS)
     else()
         add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address,undefined)
+        # A statically linked sanitizer-instrumented library cannot be linked
+        # into a consumer executable that does not also link the sanitizer
+        # runtime. Record the flags so the installed-package consumer probe can
+        # reproduce the same instrumentation.
+        set(LIBAUTOUPDATER_PACKAGE_CONSUMER_CXX_FLAGS
+            "-fsanitize=address,undefined -fno-omit-frame-pointer" CACHE INTERNAL "")
+        set(LIBAUTOUPDATER_PACKAGE_CONSUMER_LINK_FLAGS
+            "-fsanitize=address,undefined" CACHE INTERNAL "")
     endif()
 endif()
 
@@ -88,6 +96,10 @@ if(LIBAUTOUPDATER_ENABLE_COVERAGE)
     else()
         add_compile_options(--coverage -O0 -g)
         add_link_options(--coverage)
+        set(LIBAUTOUPDATER_PACKAGE_CONSUMER_CXX_FLAGS
+            "--coverage -O0 -g" CACHE INTERNAL "")
+        set(LIBAUTOUPDATER_PACKAGE_CONSUMER_LINK_FLAGS
+            "--coverage" CACHE INTERNAL "")
     endif()
 endif()
 
