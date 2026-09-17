@@ -1,7 +1,9 @@
 #include "util/Json.h"
 
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -425,6 +427,22 @@ class Parser {
         // platforms whose libc++ treats a raised underflow flag as a parse
         // failure, breaking the shared JSON conformance corpus.
         double value = 0.0;
+#if defined(__APPLE__)
+        // libc++ only exposes floating-point std::from_chars when targeting
+        // macOS 26 or newer. Fall back to strtod so the library still builds
+        // against older deployment targets. strtod reports subnormal values as
+        // a successful parse with a nonzero result, which matches the from_chars
+        // behaviour this code relies on.
+        const std::string buffer(token);
+        char* parseEnd = nullptr;
+        errno = 0;
+        value = std::strtod(buffer.c_str(), &parseEnd);
+        const bool parsedAll = parseEnd == buffer.c_str() + buffer.size();
+        const bool overflow = value == HUGE_VAL || value == -HUGE_VAL;
+        if (!parsedAll || overflow || (value == 0.0 && errno == ERANGE)) {
+            return fail("JSON floating-point number is out of range");
+        }
+#else
         const auto converted = std::from_chars(token.data(), token.data() + token.size(), value);
         if (converted.ec == std::errc::result_out_of_range || converted.ptr != token.data() + token.size()) {
             return fail("JSON floating-point number is out of range");
@@ -432,6 +450,7 @@ class Parser {
         if (converted.ec != std::errc{} || value == 0.0) {
             return fail("JSON floating-point number underflows");
         }
+#endif
         return Result<Json>::ok(Json(value));
     }
 
