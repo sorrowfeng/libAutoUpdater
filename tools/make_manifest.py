@@ -150,9 +150,14 @@ def build_manifest(args: argparse.Namespace) -> dict:
         if output is not None
     }
     files = []
-    for root, _, names in os.walk(release_dir):
+    for root, dirs, names in os.walk(release_dir):
+        if args.skip_symlinks:
+            # 不进入符号链接目录(如 Qt framework 的 Versions/Current)
+            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
         for name in names:
             path = Path(root) / name
+            if args.skip_symlinks and path.is_symlink():
+                continue
             rel = normalize(path.relative_to(release_dir))
             if path.resolve() in generated_outputs or rel in {
                 "manifest.json",
@@ -256,6 +261,12 @@ def main() -> int:
         "--object-prefix",
         default="objects/sha256",
         help="URL path prefix for object files in generated manifest entries",
+    )
+    parser.add_argument(
+        "--skip-symlinks",
+        action="store_true",
+        help="Skip symbolic links (needed for macOS .app bundles: framework "
+        "entries are symlinks and the applier opens targets with O_NOFOLLOW)",
     )
     parser.add_argument("--include", action="append", default=[], help="Glob or directory prefix to include")
     parser.add_argument("--exclude", action="append", default=[], help="Glob or directory prefix to exclude")
